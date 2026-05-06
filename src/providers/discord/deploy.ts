@@ -1,5 +1,5 @@
 import { REST, Routes } from 'discord.js';
-import { config } from './config';
+import { discordConfig } from './config';
 import * as health from './commands/health';
 import * as agents from './commands/agents';
 import * as session from './commands/session';
@@ -18,12 +18,13 @@ const commands = [
   autoRun.data.toJSON(),
 ];
 
-const rest = new REST().setToken(config.token);
+const rest = new REST().setToken(discordConfig.token);
 
 (async () => {
   console.log('Deploying slash commands...');
-  await rest.put(Routes.applicationGuildCommands(config.clientId, config.guildId), {
-    body: commands,
-  });
+  await rest.put(
+    Routes.applicationGuildCommands(discordConfig.clientId, discordConfig.guildId),
+    { body: commands },
+  );
   console.log('Done.');
 })();

@@ -1,6 +1,7 @@
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { channelDb, threadDb } from '../db';
+import { channelDb } from '../providers/discord/channelsDb';
+import { threadDb } from '../providers/discord/threadsDb';
 
 // Use unique IDs per test run to avoid cross-test contamination
 let testId = 0;

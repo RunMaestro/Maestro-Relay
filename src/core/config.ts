@@ -7,34 +7,28 @@ export function required(key: string): string {
   return val;
 }
 
-function requiredCsv(key: string): string[] {
+function csv(key: string): string[] {
   const val = process.env[key];
   if (!val) return [];
-
   return val
     .split(',')
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
 }
 
+/**
+ * Provider-neutral kernel configuration. Each provider adapter loads its
+ * own platform credentials (DISCORD_BOT_TOKEN, SLACK_BOT_TOKEN, ...) on
+ * `start()` so missing creds for a disabled provider don't fail the bot.
+ */
 export const config = {
-  get token() {
-    return required('DISCORD_BOT_TOKEN');
-  },
-  get clientId() {
-    return required('DISCORD_CLIENT_ID');
-  },
-  get guildId() {
-    return required('DISCORD_GUILD_ID');
-  },
-  get allowedUserIds() {
-    return requiredCsv('DISCORD_ALLOWED_USER_IDS');
+  /** Comma-separated list of provider names to enable, e.g. `discord` or `discord,slack`. */
+  get enabledProviders(): string[] {
+    const raw = csv('ENABLED_PROVIDERS');
+    return raw.length > 0 ? raw : ['discord'];
   },
   get apiPort() {
     return parseInt(process.env.API_PORT || '3457', 10);
-  },
-  get mentionUserId() {
-    return process.env.DISCORD_MENTION_USER_ID || '';
   },
   get ffmpegPath() {
     return process.env.FFMPEG_PATH || 'ffmpeg';

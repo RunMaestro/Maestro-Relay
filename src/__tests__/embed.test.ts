@@ -8,7 +8,7 @@ import {
   clampFieldValue,
   clampText,
   clampTitle,
-} from '../utils/embed';
+} from '../providers/discord/embed';
 
 test('clampText returns input unchanged when within limit', () => {
   assert.equal(clampText('hello', 10), 'hello');

@@ -5,8 +5,8 @@ import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
 } from 'discord.js';
-import { channelDb } from '../db';
-import { maestro } from '../services/maestro';
+import { channelDb } from '../channelsDb';
+import { maestro } from '../../../core/maestro';
 
 export const data = new SlashCommandBuilder()
   .setName('auto-run')
@@ -61,7 +61,7 @@ export function resolveContainedDocPath(folder: string, doc: string): string | n
   const folderResolved = path.resolve(folder);
   const candidate = path.isAbsolute(doc) ? doc : path.join(folderResolved, doc);
   const resolved = path.resolve(candidate);
-  if (resolved === folderResolved) return null; // doc must be a file inside, not the folder itself
+  if (resolved === folderResolved) return null;
   const prefix = folderResolved.endsWith(path.sep) ? folderResolved : folderResolved + path.sep;
   if (!resolved.startsWith(prefix)) return null;
   return resolved;
@@ -79,9 +79,6 @@ export async function autocomplete(interaction: AutocompleteInteraction): Promis
 
   let entries: string[];
   try {
-    // Recursive so docs in subfolders (e.g. `subdir/plan.md`) are discoverable
-    // — execution already supports those relative paths. Use forward slashes
-    // for the value so the result is portable.
     const dirents = await fs.readdir(folder, { withFileTypes: true, recursive: true });
     entries = dirents
       .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.md'))
@@ -123,9 +120,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const resetOnCompletion =
     interaction.options.getBoolean('reset_on_completion') ?? undefined;
 
-  // The slash command's contract is "one of this agent's Auto Run documents",
-  // so we must enforce containment within the agent's Auto Run folder. Reject
-  // absolute paths pointing elsewhere, and `..` traversal that escapes.
+  // Enforce containment within the agent's Auto Run folder. Reject absolute
+  // paths pointing elsewhere and `..` traversal that escapes.
   const folder = await getAgentFolder(channelInfo.agent_id);
   if (!folder) {
     await interaction.editReply(

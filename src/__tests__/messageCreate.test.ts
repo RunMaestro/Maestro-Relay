@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createMessageCreateHandler } from '../handlers/messageCreate';
+import { createMessageCreateHandler } from '../providers/discord/messageCreate';
 
 function makeAttachments(items: any[] = []) {
   const filter = (predicate: (a: any) => boolean) => makeAttachments(items.filter(predicate));
@@ -203,6 +203,9 @@ test('handleMessageCreate creates and registers a thread for bot mentions in reg
                 return {
                   id: 'msg-forwarded',
                   content: text,
+                  author: { id: 'user-1', username: 'test-user' },
+                  member: { displayName: 'Test User' },
+                  channel: { id: 'thread-new-1', isThread: () => true },
                   attachments: { size: 0, values: () => [] },
                 };
               },
@@ -285,6 +288,9 @@ test('handleMessageCreate forwards attachments as AttachmentPayload objects in m
               return {
                 id: 'msg-att-forwarded',
                 content: typeof msg === 'string' ? msg : (msg.content ?? ''),
+                author: { id: 'user-1', username: 'test-user' },
+                member: { displayName: 'Test User' },
+                channel: { id: 'thread-att-1', isThread: () => true },
                 // Simulate discord.js: when sent with AttachmentPayload, the
                 // returned message should have real attachments
                 attachments: {
@@ -306,9 +312,9 @@ test('handleMessageCreate forwards attachments as AttachmentPayload objects in m
   );
 
   assert.equal(enqueued, 1);
-  // The enqueued message should have real attachments (not size 0)
+  // The enqueued message should have real attachments (not empty)
   assert.ok(enqueuedMessage);
-  assert.equal(enqueuedMessage.attachments.size, 1);
+  assert.equal(enqueuedMessage.attachments.length, 1);
 });
 
 test('handleMessageCreate ignores non-thread channel messages without bot mention', async () => {
@@ -373,7 +379,7 @@ test('handleMessageCreate transcribes voice messages and enqueues transcription 
 
   assert.equal(enqueueCalls.length, 1);
   assert.equal((enqueueCalls[0][1] as any).contentOverride, 'hello from voice');
-  assert.equal((enqueueCalls[0][1] as any).attachmentsOverride.size, 0);
+  assert.equal((enqueueCalls[0][1] as any).attachmentsOverride.length, 0);
   assert.ok(reactions.includes('🎧'), 'should have 🎧 reaction');
   assert.ok(replies.some((r) => r.includes('🎧')), 'should have 🎧 in transcription reply');
   assert.deepEqual(
@@ -405,9 +411,16 @@ test('handleMessageCreate preserves non-voice attachments when message mixes voi
 
   assert.equal(enqueueCalls.length, 1);
   const options = enqueueCalls[0][1] as any;
-  const overrideValues = [...options.attachmentsOverride.values()];
-  assert.equal(options.attachmentsOverride.size, 1, 'voice attachment should be filtered out');
-  assert.equal(overrideValues[0], image, 'non-voice attachment should be preserved for the agent');
+  assert.equal(
+    options.attachmentsOverride.length,
+    1,
+    'voice attachment should be filtered out',
+  );
+  assert.equal(
+    options.attachmentsOverride[0].name,
+    image.name,
+    'non-voice attachment should be preserved for the agent',
+  );
   assert.equal(
     options.contentOverride,
     'see attached\n\nhello from voice',

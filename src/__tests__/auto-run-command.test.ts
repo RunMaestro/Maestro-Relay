@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'os';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { autocomplete, execute, resolveContainedDocPath } from '../commands/auto-run';
+import { autocomplete, execute, resolveContainedDocPath } from '../providers/discord/commands/auto-run';
 
 afterEach(() => {
   mock.restoreAll();
@@ -40,7 +40,7 @@ function makeInteraction(
 }
 
 test('auto-run start rejects channels not connected to an agent', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => undefined);
 
   const i = makeInteraction({ doc: 'plan.md' });
@@ -51,14 +51,14 @@ test('auto-run start rejects channels not connected to an agent', async () => {
 });
 
 test('auto-run start resolves a bare filename against the agent Auto Run folder', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => ({
     id: 'agent-1',
     name: 'TestBot',
@@ -78,14 +78,14 @@ test('auto-run start resolves a bare filename against the agent Auto Run folder'
 });
 
 test('auto-run start resolves a relative subpath against the agent Auto Run folder', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => ({
     id: 'agent-1',
     name: 'TestBot',
@@ -105,14 +105,14 @@ test('auto-run start resolves a relative subpath against the agent Auto Run fold
 });
 
 test('auto-run start accepts an absolute path that lives inside the agent folder', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => ({
     id: 'agent-1',
     name: 'TestBot',
@@ -132,14 +132,14 @@ test('auto-run start accepts an absolute path that lives inside the agent folder
 });
 
 test('auto-run start rejects an absolute path outside the agent folder', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => ({
     id: 'agent-1',
     name: 'TestBot',
@@ -159,14 +159,14 @@ test('auto-run start rejects an absolute path outside the agent folder', async (
 });
 
 test('auto-run start rejects relative paths that escape the folder via traversal', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => ({
     id: 'agent-1',
     name: 'TestBot',
@@ -186,14 +186,14 @@ test('auto-run start rejects relative paths that escape the folder via traversal
 });
 
 test('auto-run start rejects when showAgent fails to resolve a folder', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => {
     throw new Error('cli unavailable');
   });
@@ -209,14 +209,14 @@ test('auto-run start rejects when showAgent fails to resolve a folder', async ()
 });
 
 test('auto-run start rejects when autoRunFolderPath is missing on the agent', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => ({
     id: 'agent-1',
     name: 'TestBot',
@@ -271,14 +271,14 @@ test('resolveContainedDocPath rejects sibling-prefix paths that look similar', (
 });
 
 test('auto-run start surfaces errors from startAutoRun', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => ({
     id: 'agent-1',
     name: 'TestBot',
@@ -312,14 +312,14 @@ test('auto-run autocomplete includes nested .md files using forward slashes', as
     // Non-md file should be ignored
     await fs.writeFile(path.join(tmp, 'sub', 'README.txt'), 'x');
 
-    const { channelDb } = await import('../db');
+    const { channelDb } = await import('../providers/discord/channelsDb');
     mock.method(channelDb, 'get', () => ({
       channel_id: 'ch-1',
       agent_id: 'agent-1',
       agent_name: 'TestBot',
     }));
 
-    const { maestro } = await import('../services/maestro');
+    const { maestro } = await import('../core/maestro');
     mock.method(maestro, 'showAgent', async () => ({
       id: 'agent-1',
       name: 'TestBot',
@@ -356,7 +356,7 @@ test('auto-run autocomplete includes nested .md files using forward slashes', as
 });
 
 test('auto-run autocomplete returns empty when channel is not registered', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => undefined);
 
   const responded: unknown[] = [];

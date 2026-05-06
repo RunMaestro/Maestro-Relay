@@ -1,7 +1,7 @@
 import test, { afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { execute, autocomplete } from '../commands/agents';
-import { EMBED_FIELD_VALUE_MAX, EMBED_TITLE_MAX } from '../utils/embed';
+import { execute, autocomplete } from '../providers/discord/commands/agents';
+import { EMBED_FIELD_VALUE_MAX, EMBED_TITLE_MAX } from '../providers/discord/embed';
 
 afterEach(() => {
   mock.restoreAll();
@@ -42,7 +42,7 @@ function makeInteraction(overrides: Record<string, unknown> = {}) {
 // --- /agents list ---
 
 test('agents list shows agents in an embed', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => [
     { id: 'a-1', name: 'Alpha', toolType: 'claude', cwd: '/home' },
     { id: 'a-2', name: 'Beta', toolType: 'openai', cwd: '/work' },
@@ -67,7 +67,7 @@ test('agents list shows agents in an embed', async () => {
 });
 
 test('agents list shows message when no agents found', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => []);
 
   const interaction = makeInteraction({
@@ -84,12 +84,12 @@ test('agents list shows message when no agents found', async () => {
 // --- /agents new ---
 
 test('agents new creates a channel for a valid agent', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => [
     { id: 'agent-abc', name: 'TestBot', toolType: 'claude', cwd: '/proj' },
   ]);
 
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   const registerMock = mock.method(channelDb, 'register', () => {});
 
   const interaction = makeInteraction({
@@ -112,7 +112,7 @@ test('agents new creates a channel for a valid agent', async () => {
 });
 
 test('agents new rejects unknown agent', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => [
     { id: 'other-agent', name: 'Other', toolType: 'claude', cwd: '/' },
   ]);
@@ -132,7 +132,7 @@ test('agents new rejects unknown agent', async () => {
 });
 
 test('agents new requires a guild', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => []);
 
   const interaction = makeInteraction({
@@ -150,14 +150,14 @@ test('agents new requires a guild', async () => {
 });
 
 test('agents new bounds the channel name to Discord 100-char limit', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   // 200-char agent name will produce a > 100-char channel name (+ "agent-" prefix).
   const longName = 'A'.repeat(200);
   mock.method(maestro, 'listAgents', async () => [
     { id: 'agent-long', name: longName, toolType: 'claude', cwd: '/proj' },
   ]);
 
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'register', () => {});
 
   const interaction = makeInteraction({
@@ -185,12 +185,12 @@ test('agents new bounds the channel name to Discord 100-char limit', async () =>
 });
 
 test('agents new replies with a friendly error when channel is not sendable', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => [
     { id: 'agent-abc', name: 'TestBot', toolType: 'claude', cwd: '/proj' },
   ]);
 
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   const registerMock = mock.method(channelDb, 'register', () => {});
 
   const interaction = makeInteraction({
@@ -223,12 +223,12 @@ test('agents new replies with a friendly error when channel is not sendable', as
 });
 
 test('agents new matches agent by prefix', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => [
     { id: 'agent-abc-123-full', name: 'PrefixBot', toolType: 'claude', cwd: '/proj' },
   ]);
 
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'register', () => {});
 
   const interaction = makeInteraction({
@@ -247,7 +247,7 @@ test('agents new matches agent by prefix', async () => {
 // --- /agents show ---
 
 test('agents show renders an embed with stats and recent activity', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => ({
     id: 'agent-1',
     name: 'TestBot',
@@ -288,7 +288,7 @@ test('agents show renders an embed with stats and recent activity', async () => 
 });
 
 test('agents show clamps an oversize cwd value to the field-value limit', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   // 2000-char path comfortably exceeds the 1024 field limit (with backticks)
   const longCwd = '/very/long/path/segment/'.repeat(100);
   mock.method(maestro, 'showAgent', async () => ({
@@ -317,7 +317,7 @@ test('agents show clamps an oversize cwd value to the field-value limit', async 
 });
 
 test('agents show clamps oversize title and groupName', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   const longName = 'N'.repeat(EMBED_TITLE_MAX + 500);
   const longGroup = 'G'.repeat(EMBED_FIELD_VALUE_MAX + 500);
   mock.method(maestro, 'showAgent', async () => ({
@@ -352,7 +352,7 @@ test('agents show clamps oversize title and groupName', async () => {
 });
 
 test('agents show surfaces a friendly error when load fails', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showAgent', async () => {
     throw new Error('agent missing');
   });
@@ -374,7 +374,8 @@ test('agents show surfaces a friendly error when load fails', async () => {
 // --- /agents disconnect ---
 
 test('agents disconnect removes channel and schedules deletion', async () => {
-  const { channelDb, threadDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  const { threadDb } = await import('../providers/discord/threadsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
@@ -385,7 +386,7 @@ test('agents disconnect removes channel and schedules deletion', async () => {
   const removeThreadsMock = mock.method(threadDb, 'removeByChannel', () => {});
   mock.method(threadDb, 'getByAgentId', () => []);
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   // Return null so cleanupAgentFiles is never called (no real side effects)
   mock.method(maestro, 'getAgentCwd', async () => null);
 
@@ -403,7 +404,7 @@ test('agents disconnect removes channel and schedules deletion', async () => {
 });
 
 test('agents disconnect rejects non-agent channels', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => undefined);
 
   const interaction = makeInteraction({
@@ -419,7 +420,7 @@ test('agents disconnect rejects non-agent channels', async () => {
 // --- /agents readonly ---
 
 test('agents readonly on sets read-only mode', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_name: 'TestBot',
@@ -448,7 +449,7 @@ test('agents readonly on sets read-only mode', async () => {
 });
 
 test('agents readonly off disables read-only mode', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_name: 'TestBot',
@@ -476,7 +477,7 @@ test('agents readonly off disables read-only mode', async () => {
 });
 
 test('agents readonly rejects non-agent channels', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => undefined);
 
   const interaction = makeInteraction({
@@ -495,7 +496,7 @@ test('agents readonly rejects non-agent channels', async () => {
 // --- autocomplete ---
 
 test('autocomplete filters agents by name', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => [
     { id: 'a-1', name: 'AlphaBot', toolType: 'claude', cwd: '/' },
     { id: 'a-2', name: 'BetaBot', toolType: 'openai', cwd: '/' },
@@ -519,7 +520,7 @@ test('autocomplete filters agents by name', async () => {
 });
 
 test('autocomplete returns empty on error', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => {
     throw new Error('CLI fail');
   });

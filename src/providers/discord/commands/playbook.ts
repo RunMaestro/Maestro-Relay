@@ -4,8 +4,8 @@ import {
   EmbedBuilder,
   SlashCommandBuilder,
 } from 'discord.js';
-import { maestro } from '../services/maestro';
-import { clampDescription, clampFieldValue, clampTitle } from '../utils/embed';
+import { maestro } from '../../../core/maestro';
+import { clampDescription, clampFieldValue, clampTitle } from '../embed';
 
 export const data = new SlashCommandBuilder()
   .setName('playbook')

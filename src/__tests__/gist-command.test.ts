@@ -1,6 +1,6 @@
 import test, { afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { execute } from '../commands/gist';
+import { execute } from '../providers/discord/commands/gist';
 
 afterEach(() => {
   mock.restoreAll();
@@ -33,7 +33,7 @@ function makeInteraction(
 }
 
 test('gist rejects channels not connected to an agent', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => undefined);
 
   const i = makeInteraction();
@@ -44,14 +44,14 @@ test('gist rejects channels not connected to an agent', async () => {
 });
 
 test('gist publishes and renders an embed with the gist url', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'createGist', async () => ({
     url: 'https://gist.example/abc',
     id: 'abc',
@@ -69,14 +69,14 @@ test('gist publishes and renders an embed with the gist url', async () => {
 });
 
 test('gist surfaces a friendly error when createGist throws an Error', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'createGist', async () => {
     throw new Error('gh not authenticated');
   });
@@ -91,14 +91,14 @@ test('gist surfaces a friendly error when createGist throws an Error', async () 
 });
 
 test('gist tolerates non-Error throws (string)', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   // Reject with a non-Error value — must not blow up the catch handler.
   mock.method(maestro, 'createGist', async () => {
     throw 'plain string failure';
@@ -114,14 +114,14 @@ test('gist tolerates non-Error throws (string)', async () => {
 });
 
 test('gist tolerates non-Error throws (object without message)', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'createGist', async () => {
     throw { code: 42 };
   });
@@ -135,14 +135,14 @@ test('gist tolerates non-Error throws (object without message)', async () => {
 });
 
 test('gist truncates very long error messages to 1500 chars', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
     agent_name: 'TestBot',
   }));
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   const huge = 'x'.repeat(5000);
   mock.method(maestro, 'createGist', async () => {
     throw new Error(huge);

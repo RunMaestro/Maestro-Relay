@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitMessage } from '../utils/splitMessage';
+import { splitMessage, DEFAULT_MAX_LENGTH } from '../core/splitMessage';
 
-const MAX_LENGTH = 1990; // keep in sync with utils/splitMessage
+const MAX_LENGTH = DEFAULT_MAX_LENGTH;
 
 test('splitMessage returns a single part when under limit', () => {
   const input = 'hello world';

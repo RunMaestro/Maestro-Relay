@@ -1,10 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  MAX_VOICE_ATTACHMENT_BYTES,
-  isVoiceMessage,
-  transcribeVoiceAttachment,
-} from '../services/transcription';
+import { MAX_VOICE_ATTACHMENT_BYTES, transcribeVoiceAttachment } from '../core/transcription';
+import { isVoiceMessage } from '../providers/discord/voice';
 
 test('isVoiceMessage returns true only when MessageFlags.IsVoiceMessage is set', () => {
   // MessageFlags.IsVoiceMessage = 8192

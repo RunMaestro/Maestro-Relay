@@ -1,113 +1,59 @@
-import {
-  AutocompleteInteraction,
-  ChatInputCommandInteraction,
-  Client,
-  GatewayIntentBits,
-  Interaction,
-  SlashCommandBuilder,
-} from 'discord.js';
-import { config } from './config';
-import * as health from './commands/health';
-import * as agents from './commands/agents';
-import * as session from './commands/session';
-import * as playbook from './commands/playbook';
-import * as gist from './commands/gist';
-import * as notes from './commands/notes';
-import * as autoRun from './commands/auto-run';
-import './db'; // ensure DB is initialized on startup
+import './core/db'; // ensure DB is initialized + migrated on startup
+import { config } from './core/config';
+import { logger } from './core/logger';
+import { maestro } from './core/maestro';
+import { createQueue } from './core/queue';
+import { startServer } from './core/api';
+import { buildProviders } from './core/providers';
+import type { KernelContext } from './core/types';
 
-interface CommandModule {
-  data: { name: string } & Pick<SlashCommandBuilder, 'toJSON'>;
-  execute(interaction: ChatInputCommandInteraction): Promise<void>;
-  autocomplete?(interaction: AutocompleteInteraction): Promise<void>;
-}
-import { checkTranscriptionDependencies } from './services/transcription';
-import { handleMessageCreate } from './handlers/messageCreate';
-import { startServer } from './server';
+async function main() {
+  const providers = await buildProviders(config.enabledProviders);
+  if (providers.size === 0) {
+    console.error(
+      `No providers enabled. Set ENABLED_PROVIDERS in .env (default 'discord'). Exiting.`,
+    );
+    process.exit(1);
+  }
 
-const commands = new Map<string, CommandModule>([
-  [health.data.name, health],
-  [agents.data.name, agents],
-  [session.data.name, session],
-  [playbook.data.name, playbook],
-  [gist.data.name, gist],
-  [notes.data.name, notes],
-  [autoRun.data.name, autoRun],
-]);
+  const queue = createQueue({
+    maestro,
+    getProvider: (name) => providers.get(name),
+    logger,
+  });
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
+  const ctx: KernelContext = {
+    enqueue: queue.enqueue,
+    logger,
+  };
 
-let server: ReturnType<typeof startServer> | null = null;
-
-client.once('ready', async (c) => {
-  console.log(`Logged in as ${c.user.tag}`);
-  await checkTranscriptionDependencies();
-  server = startServer(client);
-});
-
-client.on('interactionCreate', async (interaction: Interaction) => {
-  const isUnauthorized =
-    config.allowedUserIds.length > 0 && !config.allowedUserIds.includes(interaction.user.id);
-
-  if (interaction.isAutocomplete()) {
-    if (isUnauthorized) {
-      await interaction.respond([]);
-      return;
+  for (const [name, provider] of providers) {
+    try {
+      await provider.start(ctx);
+      console.log(`[bridge] provider "${name}" started`);
+    } catch (err) {
+      console.error(`[bridge] provider "${name}" failed to start:`, err);
+      process.exit(1);
     }
-    const cmd = commands.get(interaction.commandName);
-    if (cmd?.autocomplete) {
+  }
+
+  const server = startServer(providers);
+
+  const shutdown = async (signal: string) => {
+    console.log(`\n[bridge] received ${signal}, shutting down...`);
+    server.close();
+    for (const [name, provider] of providers) {
       try {
-        await cmd.autocomplete(interaction);
+        await provider.stop();
       } catch (err) {
-        console.error('Autocomplete error:', err);
+        console.error(`[bridge] error stopping provider "${name}":`, err);
       }
     }
-    return;
-  }
+    process.exit(0);
+  };
 
-  if (!interaction.isChatInputCommand()) return;
-  if (isUnauthorized) {
-    await interaction.reply({
-      content: '❌ You are not authorized to use this bot.',
-      ephemeral: true,
-    });
-    return;
-  }
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+}
 
-  const cmd = commands.get(interaction.commandName);
-  if (!cmd) return;
-  try {
-    await cmd.execute(interaction);
-  } catch (err) {
-    console.error('Command error:', err);
-    const msg = { content: '❌ An error occurred.', ephemeral: true };
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(msg);
-    } else {
-      await interaction.reply(msg);
-    }
-  }
-});
-
-client.on('messageCreate', handleMessageCreate);
-
-process.on('SIGINT', () => {
-  console.log('\nShutting down...');
-  server?.close();
-  client.destroy();
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  server?.close();
-  client.destroy();
-  process.exit(0);
-});
-
-client.login(config.token);
+void main();

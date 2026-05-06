@@ -5,17 +5,18 @@ import {
   EmbedBuilder,
   ChannelType,
 } from 'discord.js';
-import { maestro } from '../services/maestro';
-import { channelDb, threadDb } from '../db';
-import { cleanupAgentFiles } from '../utils/attachments';
-import { clampFieldValue, clampTitle } from '../utils/embed';
-import { config } from '../config';
+import { maestro } from '../../../core/maestro';
+import { channelDb } from '../channelsDb';
+import { threadDb } from '../threadsDb';
+import { cleanupAgentFiles } from '../../../core/attachments';
+import { clampFieldValue, clampTitle } from '../embed';
+import { discordConfig } from '../config';
 
 function missingBotScopeMessage(): string {
   return (
     '❌ The bot is not a member of this server. It was likely invited with only slash-command permissions.\n\n' +
     'Re-invite with both `bot` and `applications.commands` scopes:\n' +
-    `https://discord.com/oauth2/authorize?client_id=${config.clientId}&scope=bot+applications.commands&permissions=11344`
+    `https://discord.com/oauth2/authorize?client_id=${discordConfig.clientId}&scope=bot+applications.commands&permissions=11344`
   );
 }
 

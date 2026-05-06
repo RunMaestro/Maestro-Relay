@@ -1,6 +1,6 @@
 import test, { afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { execute } from '../commands/session';
+import { execute } from '../providers/discord/commands/session';
 
 afterEach(() => {
   mock.restoreAll();
@@ -43,7 +43,8 @@ function makeInteraction(overrides: Record<string, unknown> = {}) {
 // --- /session new ---
 
 test('session new creates a thread and registers it', async () => {
-  const { channelDb, threadDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  const { threadDb } = await import('../providers/discord/threadsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
@@ -73,7 +74,8 @@ test('session new creates a thread and registers it', async () => {
 });
 
 test('session new uses provided name', async () => {
-  const { channelDb, threadDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  const { threadDb } = await import('../providers/discord/threadsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
@@ -106,7 +108,8 @@ test('session new uses provided name', async () => {
 });
 
 test('session new from a thread creates a thread on the parent agent channel', async () => {
-  const { channelDb, threadDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  const { threadDb } = await import('../providers/discord/threadsDb');
   const channelGetMock = mock.method(channelDb, 'get', (id: string) =>
     id === 'parent-ch'
       ? { channel_id: 'parent-ch', agent_id: 'agent-1', agent_name: 'TestBot' }
@@ -144,7 +147,7 @@ test('session new from a thread creates a thread on the parent agent channel', a
 });
 
 test('session new from a thread whose parent is not an agent channel rejects', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => undefined);
 
   const interaction = makeInteraction({
@@ -180,7 +183,7 @@ test('session new from a thread with no parentId rejects', async () => {
 });
 
 test('session new rejects when not in an agent channel', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => undefined);
 
   const interaction = makeInteraction({
@@ -197,7 +200,8 @@ test('session new rejects when not in an agent channel', async () => {
 // --- /session list ---
 
 test('session list shows threads with session info', async () => {
-  const { channelDb, threadDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  const { threadDb } = await import('../providers/discord/threadsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
@@ -214,7 +218,7 @@ test('session list shows threads with session info', async () => {
     },
   ]);
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listSessions', async () => [
     {
       sessionId: 'sess-abc123',
@@ -247,7 +251,8 @@ test('session list shows threads with session info', async () => {
 });
 
 test('session list shows empty message when no threads exist', async () => {
-  const { channelDb, threadDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  const { threadDb } = await import('../providers/discord/threadsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
@@ -267,7 +272,8 @@ test('session list shows empty message when no threads exist', async () => {
 });
 
 test('session list handles maestro session fetch failure gracefully', async () => {
-  const { channelDb, threadDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  const { threadDb } = await import('../providers/discord/threadsDb');
   mock.method(channelDb, 'get', () => ({
     channel_id: 'ch-1',
     agent_id: 'agent-1',
@@ -284,7 +290,7 @@ test('session list handles maestro session fetch failure gracefully', async () =
     },
   ]);
 
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listSessions', async () => {
     throw new Error('CLI error');
   });
@@ -302,7 +308,8 @@ test('session list handles maestro session fetch failure gracefully', async () =
 });
 
 test('session list from a thread lists threads of the parent agent channel', async () => {
-  const { channelDb, threadDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  const { threadDb } = await import('../providers/discord/threadsDb');
   mock.method(channelDb, 'get', (id: string) =>
     id === 'parent-ch'
       ? { channel_id: 'parent-ch', agent_id: 'agent-1', agent_name: 'TestBot' }
@@ -332,7 +339,7 @@ test('session list from a thread lists threads of the parent agent channel', asy
 });
 
 test('session list rejects non-agent channels', async () => {
-  const { channelDb } = await import('../db');
+  const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => undefined);
 
   const interaction = makeInteraction({

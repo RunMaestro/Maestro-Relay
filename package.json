@@ -10,7 +10,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "deploy-commands": "tsx src/deploy-commands.ts",
+    "deploy-commands": "tsx src/providers/discord/deploy.ts",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
     "maestro-discord": "tsx src/cli/maestro-discord.ts"
   },

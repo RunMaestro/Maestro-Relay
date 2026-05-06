@@ -1,11 +1,11 @@
 import test, { afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { execute } from '../commands/playbook';
+import { execute } from '../providers/discord/commands/playbook';
 import {
   EMBED_DESCRIPTION_MAX,
   EMBED_FIELD_VALUE_MAX,
   EMBED_TITLE_MAX,
-} from '../utils/embed';
+} from '../providers/discord/embed';
 
 afterEach(() => {
   mock.restoreAll();
@@ -34,7 +34,7 @@ function makeInteraction(sub: string, options: Record<string, string | null> = {
 }
 
 test('playbook list renders an embed with playbooks', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listPlaybooks', async () => [
     {
       id: 'pb-1',
@@ -56,7 +56,7 @@ test('playbook list renders an embed with playbooks', async () => {
 });
 
 test('playbook list shows a friendly message when no playbooks exist', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listPlaybooks', async () => []);
 
   const i = makeInteraction('list');
@@ -68,7 +68,7 @@ test('playbook list shows a friendly message when no playbooks exist', async () 
 });
 
 test('playbook show clamps oversize description and document field', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showPlaybook', async () => ({
     id: 'pb-1',
     name: 'Big Playbook',
@@ -99,7 +99,7 @@ test('playbook show clamps oversize description and document field', async () =>
 });
 
 test('playbook show clamps oversize title and agent name', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   const longName = 'P'.repeat(EMBED_TITLE_MAX + 500);
   const longAgent = 'A'.repeat(EMBED_FIELD_VALUE_MAX + 500);
   mock.method(maestro, 'showPlaybook', async () => ({
@@ -134,7 +134,7 @@ test('playbook show clamps oversize title and agent name', async () => {
 });
 
 test('playbook show surfaces a friendly error when load fails', async () => {
-  const { maestro } = await import('../services/maestro');
+  const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'showPlaybook', async () => {
     throw new Error('not found');
   });

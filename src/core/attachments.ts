@@ -1,41 +1,43 @@
 import { mkdir, rm, writeFile } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import path from 'path';
-import type { Collection, Attachment } from 'discord.js';
+import type { IncomingAttachment } from './types';
 
 export interface DownloadedFile {
   originalName: string;
-  savedPath: string; // absolute path
+  savedPath: string;
 }
 
-export const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB
-export const FILES_DIR = '.maestro/discord-files';
-
-/**
- * Download Discord attachments to the agent's working directory.
- * Returns an array of successfully downloaded files (never throws).
- */
 export interface DownloadResult {
   downloaded: DownloadedFile[];
-  failed: string[]; // original names of files that failed
+  failed: string[];
 }
 
+export const MAX_FILE_SIZE = 25 * 1024 * 1024;
+/** Default subdirectory under the agent cwd. Providers may pass their own. */
+export const DEFAULT_FILES_SUBDIR = '.maestro/discord-files';
+
+/**
+ * Download a list of attachments to the agent's working directory.
+ * Provider-agnostic: each attachment is fetched by URL.
+ */
 export async function downloadAttachments(
-  attachments: Collection<string, Attachment>,
+  attachments: IncomingAttachment[],
   agentCwd: string,
+  subdir: string = DEFAULT_FILES_SUBDIR,
 ): Promise<DownloadResult> {
-  const targetDir = path.join(agentCwd, FILES_DIR);
+  const targetDir = path.join(agentCwd, subdir);
   try {
     await mkdir(targetDir, { recursive: true });
   } catch (err) {
     console.warn(`[attachments] Failed to create directory "${targetDir}":`, err);
-    return { downloaded: [], failed: [...attachments.values()].map((a) => a.name) };
+    return { downloaded: [], failed: attachments.map((a) => a.name) };
   }
 
   const downloaded: DownloadedFile[] = [];
   const failed: string[] = [];
 
-  for (const [, attachment] of attachments) {
+  for (const attachment of attachments) {
     if (attachment.size > MAX_FILE_SIZE) {
       console.warn(
         `[attachments] Skipping "${attachment.name}" (${attachment.size} bytes) — exceeds ${MAX_FILE_SIZE} byte limit`,
@@ -70,23 +72,19 @@ export async function downloadAttachments(
   return { downloaded, failed };
 }
 
-/**
- * Remove the `.maestro/discord-files/` directory for an agent.
- * Silently succeeds if the directory doesn't exist.
- */
-export async function cleanupAgentFiles(agentCwd: string): Promise<void> {
-  const dir = path.join(agentCwd, FILES_DIR);
+/** Remove a downloaded-files directory for an agent. Best-effort. */
+export async function cleanupAgentFiles(
+  agentCwd: string,
+  subdir: string = DEFAULT_FILES_SUBDIR,
+): Promise<void> {
+  const dir = path.join(agentCwd, subdir);
   try {
     await rm(dir, { recursive: true, force: true });
   } catch {
-    // Removal failed (e.g., permission error) — nothing to do
+    // Best-effort cleanup
   }
 }
 
-/**
- * Format downloaded files as "[Attached: /path]" lines for inclusion in messages.
- * Returns empty string if no files.
- */
 export function formatAttachmentRefs(files: DownloadedFile[]): string {
   if (files.length === 0) return '';
   return files.map((f) => `[Attached: ${f.savedPath}]`).join('\n');

@@ -5,8 +5,9 @@ import {
   TextChannel,
   ThreadAutoArchiveDuration,
 } from 'discord.js';
-import { AgentChannel, channelDb, threadDb } from '../db';
-import { maestro, MaestroSession } from '../services/maestro';
+import { AgentChannel, channelDb } from '../channelsDb';
+import { threadDb } from '../threadsDb';
+import { maestro, MaestroSession } from '../../../core/maestro';
 
 export const data = new SlashCommandBuilder()
   .setName('session')

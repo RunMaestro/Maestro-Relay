@@ -1,22 +1,25 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { createQueue, QueueDeps } from '../services/queueFactory';
+import { createQueue, type QueueDeps } from '../core/queue';
+import type {
+  BridgeProvider,
+  ConversationRecord,
+  IncomingAttachment,
+  IncomingMessage,
+} from '../core/types';
 
-// --- Helpers ---
-
-function makeMessage(overrides: Record<string, unknown> = {}) {
+function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
   return {
+    provider: 'mock',
+    messageId: 'msg-1',
+    channelId: 'thread-1',
+    authorId: 'user-1',
+    authorName: 'User One',
     content: 'hello',
-    attachments: { size: 0, values: () => [] },
-    channel: {
-      id: 'thread-1',
-      isThread: () => true,
-      send: mock.fn(async () => {}),
-      sendTyping: mock.fn(async () => {}),
-    },
-    react: mock.fn(async () => ({ remove: mock.fn(async () => {}) })),
+    attachments: [],
+    isThread: true,
     ...overrides,
-  } as any;
+  };
 }
 
 function defaultSendResult(extra: Record<string, unknown> = {}) {
@@ -29,7 +32,17 @@ function defaultSendResult(extra: Record<string, unknown> = {}) {
   };
 }
 
-function createMockDeps(): QueueDeps & { _mocks: Record<string, ReturnType<typeof mock.fn>> } {
+interface MockProviderInstance extends BridgeProvider {
+  sentTexts: string[];
+}
+
+interface MockSetup {
+  deps: QueueDeps & { _mocks: Record<string, ReturnType<typeof mock.fn>> };
+  provider: MockProviderInstance;
+  conv: ConversationRecord;
+}
+
+function createMocks(overrides: Partial<ConversationRecord> = {}): MockSetup {
   const mockGetAgentCwd = mock.fn(async () => '/home/agent' as string | null);
   const mockSend = mock.fn(async () => defaultSendResult());
   const mockDownload = mock.fn(async () => ({
@@ -38,28 +51,39 @@ function createMockDeps(): QueueDeps & { _mocks: Record<string, ReturnType<typeo
   }));
   const mockFormat = mock.fn(() => '');
   const mockLoggerError = mock.fn();
-  const mockChannelGet = mock.fn(
-    () =>
-      ({
-        channel_id: 'channel-1',
-        agent_id: 'agent-1',
-        session_id: 'session-1',
-      }) as any,
-  );
-  const mockThreadGet = mock.fn(
-    () =>
-      ({
-        thread_id: 'thread-1',
-        channel_id: 'channel-1',
-        agent_id: 'agent-1',
-        session_id: 'session-1',
-      }) as any,
-  );
+  const mockPersistSession = mock.fn();
 
-  return {
+  const conv: ConversationRecord = {
+    agentId: 'agent-1',
+    sessionId: 'session-1',
+    readOnly: false,
+    persistSession: mockPersistSession as unknown as (s: string) => void,
+    ...overrides,
+  };
+
+  const sentTexts: string[] = [];
+  const provider: MockProviderInstance = {
+    name: 'mock',
+    sentTexts,
+    async start() {},
+    async stop() {},
+    isReady: () => true,
+    resolveConversation: () => conv,
+    send: async (_target, msg) => {
+      sentTexts.push(msg.text);
+    },
+    findOrCreateAgentChannel: async () => ({
+      channelId: 'channel-1',
+      agentId: conv.agentId,
+      agentName: 'Agent',
+    }),
+    react: mock.fn(async () => ({ remove: async () => {} })) as unknown as BridgeProvider['react'],
+    sendTyping: async () => {},
+  };
+
+  const deps: QueueDeps & { _mocks: Record<string, ReturnType<typeof mock.fn>> } = {
     maestro: { getAgentCwd: mockGetAgentCwd as any, send: mockSend as any },
-    channelDb: { get: mockChannelGet as any, updateSession: mock.fn() },
-    threadDb: { get: mockThreadGet as any, updateSession: mock.fn() },
+    getProvider: (name) => (name === 'mock' ? provider : undefined),
     splitMessage: (text: string) => [text],
     downloadAttachments: mockDownload as any,
     formatAttachmentRefs: mockFormat as any,
@@ -69,17 +93,18 @@ function createMockDeps(): QueueDeps & { _mocks: Record<string, ReturnType<typeo
       send: mockSend,
       download: mockDownload,
       format: mockFormat,
+      loggerError: mockLoggerError,
+      persistSession: mockPersistSession,
     },
   };
+
+  return { deps, provider, conv };
 }
 
-// Allow async queue processing to settle
 const settle = () => new Promise((r) => setTimeout(r, 50));
 
-// --- Tests ---
-
 test('queue calls downloadAttachments when message has attachments', async () => {
-  const deps = createMockDeps();
+  const { deps, provider } = createMocks();
   const attachmentData = {
     downloaded: [
       { originalName: 'file.txt', savedPath: '/home/agent/.maestro/discord-files/123-file.txt' },
@@ -92,51 +117,44 @@ test('queue calls downloadAttachments when message has attachments', async () =>
   );
 
   const { enqueue } = createQueue(deps);
-  const msg = makeMessage({
-    content: 'check this file',
-    attachments: {
-      size: 1,
-      values: () => [{ url: 'https://cdn.example.com/file.txt', name: 'file.txt', size: 100 }],
-    },
-  });
-
-  enqueue(msg);
+  const attachments: IncomingAttachment[] = [
+    { url: 'https://cdn.example.com/file.txt', name: 'file.txt', size: 100 },
+  ];
+  enqueue(makeMessage({ content: 'check this file', attachments }));
   await settle();
 
-  // downloadAttachments should have been called
   assert.equal(deps._mocks.download.mock.callCount(), 1);
   assert.equal(deps._mocks.getAgentCwd.mock.callCount(), 1);
   assert.equal(deps._mocks.getAgentCwd.mock.calls[0].arguments[0], 'agent-1');
 
-  // formatAttachmentRefs should have been called with the downloaded files
   assert.equal(deps._mocks.format.mock.callCount(), 1);
 
-  // maestro.send should receive the combined message
   assert.equal(deps._mocks.send.mock.callCount(), 1);
   const sentMessage = deps._mocks.send.mock.calls[0].arguments[1];
   assert.equal(
     sentMessage,
     'check this file\n\n[Attached: /home/agent/.maestro/discord-files/123-file.txt]',
   );
+
+  // Provider should have been used for the agent reply + the cost line
+  assert.ok(provider.sentTexts.includes('Agent response'));
 });
 
 test('queue does not call downloadAttachments when message has no attachments', async () => {
-  const deps = createMockDeps();
+  const { deps } = createMocks();
   const { enqueue } = createQueue(deps);
 
-  enqueue(makeMessage({ content: 'just text', attachments: { size: 0, values: () => [] } }));
+  enqueue(makeMessage({ content: 'just text' }));
   await settle();
 
   assert.equal(deps._mocks.download.mock.callCount(), 0);
   assert.equal(deps._mocks.getAgentCwd.mock.callCount(), 0);
-
-  // maestro.send should receive only the text content
   assert.equal(deps._mocks.send.mock.callCount(), 1);
   assert.equal(deps._mocks.send.mock.calls[0].arguments[1], 'just text');
 });
 
 test('queue sends only attachment refs when message content is empty', async () => {
-  const deps = createMockDeps();
+  const { deps } = createMocks();
   deps._mocks.download.mock.mockImplementation(async () => ({
     downloaded: [
       { originalName: 'img.png', savedPath: '/home/agent/.maestro/discord-files/456-img.png' },
@@ -151,60 +169,45 @@ test('queue sends only attachment refs when message content is empty', async () 
   enqueue(
     makeMessage({
       content: '',
-      attachments: {
-        size: 1,
-        values: () => [{ url: 'https://cdn.example.com/img.png', name: 'img.png', size: 200 }],
-      },
+      attachments: [{ url: 'https://cdn.example.com/img.png', name: 'img.png', size: 200 }],
     }),
   );
   await settle();
 
   assert.equal(deps._mocks.send.mock.callCount(), 1);
-  const sentMessage = deps._mocks.send.mock.calls[0].arguments[1];
-  assert.equal(sentMessage, '[Attached: /home/agent/.maestro/discord-files/456-img.png]');
+  assert.equal(
+    deps._mocks.send.mock.calls[0].arguments[1],
+    '[Attached: /home/agent/.maestro/discord-files/456-img.png]',
+  );
 });
 
 test('queue handles attachment download failure gracefully', async () => {
-  const deps = createMockDeps();
+  const { deps, provider } = createMocks();
   deps._mocks.download.mock.mockImplementation(async () => {
     throw new Error('Network timeout');
   });
 
   const { enqueue } = createQueue(deps);
-  const msg = makeMessage({
-    content: 'check this file',
-    attachments: {
-      size: 1,
-      values: () => [{ url: 'https://cdn.example.com/file.txt', name: 'file.txt', size: 100 }],
-    },
-  });
-
-  enqueue(msg);
+  enqueue(
+    makeMessage({
+      content: 'check this file',
+      attachments: [{ url: 'https://cdn.example.com/file.txt', name: 'file.txt', size: 100 }],
+    }),
+  );
   await settle();
 
-  // Should log the error
-  assert.equal((deps.logger.error as unknown as ReturnType<typeof mock.fn>).mock.callCount(), 1);
-  const logArgs = (deps.logger.error as unknown as ReturnType<typeof mock.fn>).mock.calls[0]
-    .arguments;
+  assert.equal(deps._mocks.loggerError.mock.callCount(), 1);
+  const logArgs = deps._mocks.loggerError.mock.calls[0].arguments;
   assert.equal(logArgs[0], 'queue:attachment-download');
   assert.ok((logArgs[1] as string).includes('Network timeout'));
 
-  // Should warn the user
-  const sendCalls = msg.channel.send.mock.calls;
-  const warningCall = sendCalls.find(
-    (c: { arguments: unknown[] }) =>
-      typeof c.arguments[0] === 'string' &&
-      c.arguments[0].includes('Failed to download attachments'),
-  );
-  assert.ok(warningCall, 'Expected a warning about failed downloads');
-
-  // Should still send the message text to the agent (without attachment refs)
+  assert.ok(provider.sentTexts.some((t) => t.includes('Failed to download attachments')));
   assert.equal(deps._mocks.send.mock.callCount(), 1);
   assert.equal(deps._mocks.send.mock.calls[0].arguments[1], 'check this file');
 });
 
 test('queue shows specific file names when some downloads fail', async () => {
-  const deps = createMockDeps();
+  const { deps, provider } = createMocks();
   deps._mocks.download.mock.mockImplementation(async () => ({
     downloaded: [
       { originalName: 'ok.txt', savedPath: '/home/agent/.maestro/discord-files/ok.txt' },
@@ -216,68 +219,50 @@ test('queue shows specific file names when some downloads fail', async () => {
   );
 
   const { enqueue } = createQueue(deps);
-  const msg = makeMessage({
-    content: 'files here',
-    attachments: {
-      size: 3,
-      values: () => [
+  enqueue(
+    makeMessage({
+      content: 'files here',
+      attachments: [
         { url: 'u1', name: 'ok.txt', size: 100 },
         { url: 'u2', name: 'broken.png', size: 100 },
         { url: 'u3', name: 'huge.bin', size: 100 },
       ],
-    },
-  });
-
-  enqueue(msg);
+    }),
+  );
   await settle();
 
-  // Should warn about the specific failed files
-  const sendCalls = msg.channel.send.mock.calls;
-  const warningCall = sendCalls.find(
-    (c: { arguments: unknown[] }) =>
-      typeof c.arguments[0] === 'string' &&
-      c.arguments[0].includes('broken.png') &&
-      c.arguments[0].includes('huge.bin'),
+  assert.ok(
+    provider.sentTexts.some((t) => t.includes('broken.png') && t.includes('huge.bin')),
+    'expected a warning naming the failed files',
   );
-  assert.ok(warningCall, 'Expected a warning naming the failed files');
 
-  // Should still send the message with the successful attachment ref
   assert.equal(deps._mocks.send.mock.callCount(), 1);
   const sentMessage = deps._mocks.send.mock.calls[0].arguments[1];
   assert.ok((sentMessage as string).includes('[Attached:'));
 });
 
 test('queue warns when agent cwd cannot be resolved for attachments', async () => {
-  const deps = createMockDeps();
+  const { deps, provider } = createMocks();
   deps._mocks.getAgentCwd.mock.mockImplementation(async () => null);
 
   const { enqueue } = createQueue(deps);
-  const msg = makeMessage({
-    content: 'here is a file',
-    attachments: {
-      size: 1,
-      values: () => [{ url: 'https://cdn.example.com/file.txt', name: 'file.txt', size: 100 }],
-    },
-  });
-
-  enqueue(msg);
+  enqueue(
+    makeMessage({
+      content: 'here is a file',
+      attachments: [{ url: 'https://cdn.example.com/file.txt', name: 'file.txt', size: 100 }],
+    }),
+  );
   await settle();
 
-  // downloadAttachments should NOT be called if cwd is null
   assert.equal(deps._mocks.download.mock.callCount(), 0);
-
-  // Channel should receive a warning message
-  const sendCalls = msg.channel.send.mock.calls;
-  const warningCall = sendCalls.find(
-    (c: { arguments: unknown[] }) =>
-      typeof c.arguments[0] === 'string' &&
-      c.arguments[0].includes('Could not resolve agent working directory'),
+  assert.ok(
+    provider.sentTexts.some((t) => t.includes('Could not resolve agent working directory')),
+    'expected a warning about unresolved agent cwd',
   );
-  assert.ok(warningCall, 'Expected a warning about unresolved agent cwd');
 });
 
 test('queue uses contentOverride when provided', async () => {
-  const deps = createMockDeps();
+  const { deps } = createMocks();
   const { enqueue } = createQueue(deps);
   enqueue(makeMessage({ content: 'original text' }), { contentOverride: 'transcribed text' });
   await settle();
@@ -287,17 +272,14 @@ test('queue uses contentOverride when provided', async () => {
 });
 
 test('queue skips attachment downloads when attachmentsOverride is empty', async () => {
-  const deps = createMockDeps();
+  const { deps } = createMocks();
   const { enqueue } = createQueue(deps);
   enqueue(
     makeMessage({
       content: 'voice text',
-      attachments: {
-        size: 1,
-        values: () => [{ url: 'https://cdn.example.com/voice.ogg', name: 'voice.ogg', size: 100 }],
-      },
+      attachments: [{ url: 'https://cdn.example.com/voice.ogg', name: 'voice.ogg', size: 100 }],
     }),
-    { attachmentsOverride: { size: 0, values: () => [] } as any },
+    { attachmentsOverride: [] },
   );
   await settle();
 
@@ -306,8 +288,8 @@ test('queue skips attachment downloads when attachmentsOverride is empty', async
   assert.equal(deps._mocks.send.mock.calls[0].arguments[1], 'voice text');
 });
 
-test('queue downloads only the attachmentsOverride collection (drops voice in mixed messages)', async () => {
-  const deps = createMockDeps();
+test('queue downloads only the attachmentsOverride list (drops voice in mixed messages)', async () => {
+  const { deps } = createMocks();
   const downloadedFile = {
     originalName: 'photo.png',
     savedPath: '/home/agent/.maestro/discord-files/photo.png',
@@ -318,25 +300,24 @@ test('queue downloads only the attachmentsOverride collection (drops voice in mi
   }));
   deps._mocks.format.mock.mockImplementation(() => `[Attached: ${downloadedFile.savedPath}]`);
 
-  const image = { url: 'https://cdn.example.com/photo.png', name: 'photo.png', size: 100 };
-  const overrideAttachments = { size: 1, values: () => [image] } as any;
+  const image: IncomingAttachment = {
+    url: 'https://cdn.example.com/photo.png',
+    name: 'photo.png',
+    size: 100,
+  };
+  const overrideAttachments: IncomingAttachment[] = [image];
 
   const { enqueue } = createQueue(deps);
   enqueue(
     makeMessage({
       content: 'see photo',
-      // The original message still carries both the voice file and the image…
-      attachments: {
-        size: 2,
-        values: () => [
-          { url: 'https://cdn.example.com/voice.ogg', name: 'voice.ogg', size: 100 },
-          image,
-        ],
-      },
+      attachments: [
+        { url: 'https://cdn.example.com/voice.ogg', name: 'voice.ogg', size: 100 },
+        image,
+      ],
     }),
     {
       contentOverride: 'see photo\n\nhello from voice',
-      // …but only the non-voice subset is forwarded for download.
       attachmentsOverride: overrideAttachments,
     },
   );
@@ -346,11 +327,45 @@ test('queue downloads only the attachmentsOverride collection (drops voice in mi
   assert.equal(
     deps._mocks.download.mock.calls[0].arguments[0],
     overrideAttachments,
-    'queue should pass the override (image only), not the original mixed attachments, to downloadAttachments',
+    'queue should pass the override (image only), not the original mixed attachments',
   );
   assert.equal(deps._mocks.send.mock.callCount(), 1);
   assert.equal(
     deps._mocks.send.mock.calls[0].arguments[1],
     `see photo\n\nhello from voice\n\n[Attached: ${downloadedFile.savedPath}]`,
   );
+});
+
+test('queue persists session id from the first response', async () => {
+  const { deps } = createMocks({ sessionId: null });
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage());
+  await settle();
+
+  assert.equal(deps._mocks.persistSession.mock.callCount(), 1);
+  assert.equal(deps._mocks.persistSession.mock.calls[0].arguments[0], 'session-1');
+});
+
+test('queue drops messages whose conversation cannot be resolved', async () => {
+  const { deps, provider } = createMocks();
+  provider.resolveConversation = () => null;
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage());
+  await settle();
+
+  assert.equal(deps._mocks.send.mock.callCount(), 0);
+});
+
+test('queue logs and skips when the named provider is not registered', async () => {
+  const { deps } = createMocks();
+  deps.getProvider = () => undefined;
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage({ provider: 'ghost' }));
+  await settle();
+
+  assert.equal(deps._mocks.send.mock.callCount(), 0);
+  assert.equal(deps._mocks.loggerError.mock.callCount(), 1);
+  assert.equal(deps._mocks.loggerError.mock.calls[0].arguments[0], 'queue:no-provider');
 });

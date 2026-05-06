@@ -1,56 +1,59 @@
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'http';
-
-type ServerDeps = import('../server').ServerDeps;
+import type { ApiDeps } from '../core/api';
+import type { BridgeProvider } from '../core/types';
 
 const mod: {
-  createServerHandler?: typeof import('../server').createServerHandler;
-  parseBody?: typeof import('../server').parseBody;
+  createServerHandler?: typeof import('../core/api').createServerHandler;
+  parseBody?: typeof import('../core/api').parseBody;
 } = {};
 
 before(async () => {
   process.env.DISCORD_BOT_TOKEN = 'test-token';
   process.env.DISCORD_CLIENT_ID = 'test-client';
   process.env.DISCORD_GUILD_ID = 'test-guild';
-  const imported = await import('../server');
+  const imported = await import('../core/api');
   mod.createServerHandler = imported.createServerHandler;
   mod.parseBody = imported.parseBody;
 });
 
-function makeClient(overrides: Record<string, unknown> = {}) {
-  return {
-    isReady: () => true,
-    channels: {
-      fetch: async (id: string) => ({
-        id,
-        isSendable: () => true,
-        send: async () => ({}),
-        members: { filter: () => ({ size: 0, map: () => [] }) },
-      }),
-    },
-    guilds: { fetch: async () => ({}) },
-    ...overrides,
-  } as any;
+interface MockProviderOpts {
+  ready?: boolean;
+  agentName?: string;
+  channelId?: string;
+  /** if set, throw when findOrCreateAgentChannel is called */
+  findThrows?: Error;
+  /** capture sent messages */
+  sentMessages?: string[];
 }
 
-function makeDeps(overrides: Partial<ServerDeps> = {}): ServerDeps {
+function makeProvider(name: string, opts: MockProviderOpts = {}): BridgeProvider {
+  const sent = opts.sentMessages ?? [];
   return {
-    channelDb: {
-      getByAgentId: () => ({
-        channel_id: 'ch-1',
-        guild_id: 'g-1',
-        agent_id: 'a-1',
-        agent_name: 'Test',
-        session_id: null,
-        read_only: 0,
-        created_at: 0,
-      }),
-      register: () => undefined,
+    name,
+    isReady: () => opts.ready !== false,
+    async start() {},
+    async stop() {},
+    resolveConversation: () => null,
+    send: async (_target, msg) => {
+      sent.push(msg.mention ? `<@MENTION> ${msg.text}` : msg.text);
     },
-    maestro: { listAgents: async () => [] },
+    findOrCreateAgentChannel: async (agentId) => {
+      if (opts.findThrows) throw opts.findThrows;
+      return {
+        channelId: opts.channelId ?? 'ch-1',
+        agentId,
+        agentName: opts.agentName ?? 'Test',
+      };
+    },
+  };
+}
+
+function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
+  return {
+    providers: new Map([['discord', makeProvider('discord')]]),
     splitMessage: (s: string) => [s],
-    config: { guildId: 'g-1', apiPort: 0, mentionUserId: '' },
     logger: { error: async () => undefined },
     ...overrides,
   };
@@ -93,8 +96,8 @@ function request(
   });
 }
 
-function startTestServer(client: any, deps: ServerDeps): Promise<http.Server> {
-  const handler = mod.createServerHandler!(client, deps);
+function startTestServer(deps: ApiDeps): Promise<http.Server> {
+  const handler = mod.createServerHandler!(deps);
   const server = http.createServer(handler);
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve(server));
@@ -103,21 +106,26 @@ function startTestServer(client: any, deps: ServerDeps): Promise<http.Server> {
 
 // --- Health endpoint ---
 
-test('GET /api/health returns 200 when client is ready', async () => {
-  const server = await startTestServer(makeClient(), makeDeps());
+test('GET /api/health returns 200 when at least one provider is ready', async () => {
+  const server = await startTestServer(makeDeps());
   try {
     const res = await request(server, { method: 'GET', path: '/api/health' });
     assert.equal(res.status, 200);
     assert.equal(res.body.success, true);
     assert.equal(res.body.status, 'ok');
     assert.equal(typeof res.body.uptime, 'number');
+    assert.deepEqual(res.body.providers, { discord: true });
   } finally {
     server.close();
   }
 });
 
-test('GET /api/health returns 503 when client is not ready', async () => {
-  const server = await startTestServer(makeClient({ isReady: () => false }), makeDeps());
+test('GET /api/health returns 503 when no providers are ready', async () => {
+  const server = await startTestServer(
+    makeDeps({
+      providers: new Map([['discord', makeProvider('discord', { ready: false })]]),
+    }),
+  );
   try {
     const res = await request(server, { method: 'GET', path: '/api/health' });
     assert.equal(res.status, 503);
@@ -129,7 +137,7 @@ test('GET /api/health returns 503 when client is not ready', async () => {
 });
 
 test('POST /api/health returns 405', async () => {
-  const server = await startTestServer(makeClient(), makeDeps());
+  const server = await startTestServer(makeDeps());
   try {
     const res = await request(server, { method: 'POST', path: '/api/health', body: {} });
     assert.equal(res.status, 405);
@@ -141,7 +149,7 @@ test('POST /api/health returns 405', async () => {
 // --- Unknown route ---
 
 test('unknown route returns 404', async () => {
-  const server = await startTestServer(makeClient(), makeDeps());
+  const server = await startTestServer(makeDeps());
   try {
     const res = await request(server, { method: 'GET', path: '/api/unknown' });
     assert.equal(res.status, 404);
@@ -153,7 +161,7 @@ test('unknown route returns 404', async () => {
 // --- Send endpoint ---
 
 test('GET /api/send returns 405', async () => {
-  const server = await startTestServer(makeClient(), makeDeps());
+  const server = await startTestServer(makeDeps());
   try {
     const res = await request(server, { method: 'GET', path: '/api/send' });
     assert.equal(res.status, 405);
@@ -162,8 +170,12 @@ test('GET /api/send returns 405', async () => {
   }
 });
 
-test('POST /api/send returns 503 when client is not ready', async () => {
-  const server = await startTestServer(makeClient({ isReady: () => false }), makeDeps());
+test('POST /api/send returns 503 when provider is not ready', async () => {
+  const server = await startTestServer(
+    makeDeps({
+      providers: new Map([['discord', makeProvider('discord', { ready: false })]]),
+    }),
+  );
   try {
     const res = await request(server, {
       method: 'POST',
@@ -171,14 +183,14 @@ test('POST /api/send returns 503 when client is not ready', async () => {
       body: { agentId: 'a-1', message: 'hi' },
     });
     assert.equal(res.status, 503);
-    assert.equal(res.body.error, 'Bot is not connected to Discord');
+    assert.match(res.body.error, /not connected/);
   } finally {
     server.close();
   }
 });
 
 test('POST /api/send returns 400 for missing fields', async () => {
-  const server = await startTestServer(makeClient(), makeDeps());
+  const server = await startTestServer(makeDeps());
   try {
     const res = await request(server, {
       method: 'POST',
@@ -192,19 +204,13 @@ test('POST /api/send returns 400 for missing fields', async () => {
   }
 });
 
-test('POST /api/send returns 200 on success', async () => {
-  const sentMessages: string[] = [];
-  const client = makeClient({
-    channels: {
-      fetch: async () => ({
-        isSendable: () => true,
-        send: async (msg: string) => {
-          sentMessages.push(msg);
-        },
-      }),
-    },
-  });
-  const server = await startTestServer(client, makeDeps());
+test('POST /api/send returns 200 on success and routes to default discord provider', async () => {
+  const sent: string[] = [];
+  const server = await startTestServer(
+    makeDeps({
+      providers: new Map([['discord', makeProvider('discord', { sentMessages: sent })]]),
+    }),
+  );
   try {
     const res = await request(server, {
       method: 'POST',
@@ -214,26 +220,21 @@ test('POST /api/send returns 200 on success', async () => {
     assert.equal(res.status, 200);
     assert.equal(res.body.success, true);
     assert.equal(res.body.channelId, 'ch-1');
-    assert.deepEqual(sentMessages, ['hello']);
+    assert.deepEqual(sent, ['hello']);
   } finally {
     server.close();
   }
 });
 
-test('POST /api/send prepends mention when mention=true and mentionUserId is set', async () => {
-  const sentMessages: string[] = [];
-  const client = makeClient({
-    channels: {
-      fetch: async () => ({
-        isSendable: () => true,
-        send: async (msg: string) => {
-          sentMessages.push(msg);
-        },
-      }),
-    },
-  });
-  const deps = makeDeps({ config: { guildId: 'g-1', apiPort: 0, mentionUserId: '999' } });
-  const server = await startTestServer(client, deps);
+test('POST /api/send forwards mention=true to the provider on the first part only', async () => {
+  const sent: string[] = [];
+  const server = await startTestServer(
+    makeDeps({
+      providers: new Map([['discord', makeProvider('discord', { sentMessages: sent })]]),
+      // Force a multi-part split so we can verify mention only applies to part 0.
+      splitMessage: () => ['part-0', 'part-1'],
+    }),
+  );
   try {
     const res = await request(server, {
       method: 'POST',
@@ -241,47 +242,63 @@ test('POST /api/send prepends mention when mention=true and mentionUserId is set
       body: { agentId: 'a-1', message: 'done', mention: true },
     });
     assert.equal(res.status, 200);
-    assert.deepEqual(sentMessages, ['<@999> done']);
+    assert.deepEqual(sent, ['<@MENTION> part-0', 'part-1']);
   } finally {
     server.close();
   }
 });
 
-test('POST /api/send does not mention when mentionUserId is empty', async () => {
-  const sentMessages: string[] = [];
-  const client = makeClient({
-    channels: {
-      fetch: async () => ({
-        isSendable: () => true,
-        send: async (msg: string) => {
-          sentMessages.push(msg);
-        },
-      }),
-    },
-  });
-  const server = await startTestServer(client, makeDeps());
+test('POST /api/send routes to the named provider when supplied', async () => {
+  const discordSent: string[] = [];
+  const slackSent: string[] = [];
+  const server = await startTestServer(
+    makeDeps({
+      providers: new Map([
+        ['discord', makeProvider('discord', { sentMessages: discordSent })],
+        ['slack', makeProvider('slack', { sentMessages: slackSent })],
+      ]),
+    }),
+  );
   try {
     const res = await request(server, {
       method: 'POST',
       path: '/api/send',
-      body: { agentId: 'a-1', message: 'done', mention: true },
+      body: { agentId: 'a-1', message: 'hello slack', provider: 'slack' },
     });
     assert.equal(res.status, 200);
-    assert.deepEqual(sentMessages, ['done']);
+    assert.deepEqual(slackSent, ['hello slack']);
+    assert.deepEqual(discordSent, []);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send returns 400 for an unknown provider', async () => {
+  const server = await startTestServer(makeDeps());
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hi', provider: 'matrix' },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /Unknown or disabled provider/);
   } finally {
     server.close();
   }
 });
 
 test('POST /api/send returns 404 for unknown agent', async () => {
-  const deps = makeDeps({
-    channelDb: {
-      getByAgentId: () => undefined,
-      register: () => undefined,
-    },
-    maestro: { listAgents: async () => [{ id: 'other', name: 'Other', toolType: 'x', cwd: '/' }] },
-  });
-  const server = await startTestServer(makeClient(), deps);
+  const server = await startTestServer(
+    makeDeps({
+      providers: new Map([
+        [
+          'discord',
+          makeProvider('discord', { findThrows: new Error('Agent not found: missing') }),
+        ],
+      ]),
+    }),
+  );
   try {
     const res = await request(server, {
       method: 'POST',
@@ -296,7 +313,7 @@ test('POST /api/send returns 404 for unknown agent', async () => {
 });
 
 test('POST /api/send returns 415 for wrong content type', async () => {
-  const server = await startTestServer(makeClient(), makeDeps());
+  const server = await startTestServer(makeDeps());
   try {
     const addr = server.address() as { port: number };
     const res = await new Promise<{ status: number; body: any }>((resolve, reject) => {

@@ -1,5 +1,5 @@
 import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
-import { maestro } from '../services/maestro';
+import { maestro } from '../../../core/maestro';
 
 export const data = new SlashCommandBuilder()
   .setName('health')

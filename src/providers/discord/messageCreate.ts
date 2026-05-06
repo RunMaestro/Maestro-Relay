@@ -1,23 +1,26 @@
 import { Message, TextChannel, ThreadAutoArchiveDuration } from 'discord.js';
 import { escapeMarkdown } from '@discordjs/formatters';
-import { channelDb, threadDb } from '../db';
-import { enqueue } from '../services/queue';
+import type {
+  EnqueueOptions,
+  IncomingAttachment,
+  IncomingMessage,
+} from '../../core/types';
 import {
-  isVoiceAttachment,
-  isVoiceMessage,
-  transcribeVoiceAttachment,
   isTranscriberAvailable,
-} from '../services/transcription';
-import { splitMessage } from '../utils/splitMessage';
+  transcribeVoiceAttachment,
+} from '../../core/transcription';
+import { splitMessage } from '../../core/splitMessage';
+import { channelDb } from './channelsDb';
+import { threadDb } from './threadsDb';
+import { discordAttachmentToIncoming, isVoiceAttachment, isVoiceMessage } from './voice';
 
-type MessageCreateDeps = {
+type Enqueue = (msg: IncomingMessage, options?: EnqueueOptions) => void;
+
+export type MessageCreateDeps = {
   channelDb: Pick<typeof channelDb, 'get'>;
   threadDb: Pick<typeof threadDb, 'get' | 'register'>;
   getBotUserId: (message: Message) => string | undefined;
-  enqueue: (
-    message: Message,
-    options?: { contentOverride?: string; attachmentsOverride?: Message['attachments'] },
-  ) => void;
+  enqueue: Enqueue;
   isVoiceMessage: typeof isVoiceMessage;
   isVoiceAttachment: typeof isVoiceAttachment;
   transcribeVoiceAttachment: typeof transcribeVoiceAttachment;
@@ -26,22 +29,34 @@ type MessageCreateDeps = {
   logger?: Pick<Console, 'warn' | 'error'>;
 };
 
+function toIncoming(message: Message, attachmentSource?: IncomingAttachment[]): IncomingMessage {
+  const attachments =
+    attachmentSource ?? [...message.attachments.values()].map(discordAttachmentToIncoming);
+  return {
+    provider: 'discord',
+    messageId: message.id,
+    channelId: message.channel.id,
+    authorId: message.author.id,
+    authorName:
+      message.member?.displayName ?? message.author.username ?? message.author.id,
+    content: message.content,
+    attachments,
+    isThread: message.channel.isThread(),
+    raw: message,
+  };
+}
+
 export function createMessageCreateHandler(deps: MessageCreateDeps) {
   return async function handleMessageCreate(message: Message): Promise<void> {
-    // Ignore bots (including self) and DMs
     if (message.author.bot) return;
     if (!message.guild) return;
 
-    // Ignore empty messages (no text and no attachments)
     if (!message.content.trim() && message.attachments.size === 0) return;
 
     const botUserId = deps.getBotUserId(message);
     if (!botUserId) {
-      if (deps.logger?.warn) {
-        deps.logger.warn('messageCreate: bot user ID missing, skipping message handling');
-      } else {
-        console.warn('messageCreate: bot user ID missing, skipping message handling');
-      }
+      const warn = deps.logger?.warn ?? console.warn;
+      warn('messageCreate: bot user ID missing, skipping message handling');
       return;
     }
 
@@ -52,7 +67,6 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
         return;
       }
 
-      // Detect both direct user mentions (@bot) and role mentions (@BotRole)
       const mentionedByUser = message.mentions.users.has(botUserId);
       const botRoleId = message.guild?.members?.me?.roles.botRole?.id;
       const mentionedByRole = !!(botRoleId && message.mentions.roles?.has(botRoleId));
@@ -86,15 +100,11 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
         );
         await thread.send(`This thread is bound to <@${message.author.id}>.`);
 
-        // Forward the triggering message to the agent via the new thread
-        // Strip the bot mention prefix so the agent gets clean content
         const mentionPattern = botRoleId
           ? new RegExp(`<@!?${botUserId}>|<@&${botRoleId}>`, 'g')
           : new RegExp(`<@!?${botUserId}>`, 'g');
         const cleanContent = message.content.replace(mentionPattern, '').trim();
         if (cleanContent || message.attachments.size > 0) {
-          // Re-upload attachments so the thread message has real discord.js
-          // Attachment objects (sending bare URLs produces attachments.size===0).
           const files = [...message.attachments.values()].map((a) => ({
             attachment: a.url,
             name: a.name,
@@ -103,7 +113,7 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
             content: cleanContent || undefined,
             files: files.length > 0 ? files : undefined,
           });
-          deps.enqueue(threadMessage);
+          deps.enqueue(toIncoming(threadMessage));
         }
       } catch (err) {
         const log = deps.logger?.error ?? console.error;
@@ -111,7 +121,7 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
         try {
           await message.reply('❌ Failed to create a thread for this mention.');
         } catch {
-          // Reply may also fail if permissions are missing
+          /* reply may fail */
         }
       }
       return;
@@ -123,11 +133,8 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
     const ownerUserId = threadInfo.owner_user_id?.trim();
     if (ownerUserId && ownerUserId !== message.author.id) return;
 
-    // Only treat the message as a voice message if Discord has tagged it with
-    // the IsVoiceMessage flag — a bare .ogg file upload should flow through
-    // the normal attachment path, not be transcribed.
     if (!deps.isVoiceMessage(message)) {
-      deps.enqueue(message);
+      deps.enqueue(toIncoming(message));
       return;
     }
 
@@ -135,20 +142,21 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
       deps.isVoiceAttachment(attachment),
     );
     if (voiceAttachments.length === 0) {
-      deps.enqueue(message);
+      deps.enqueue(toIncoming(message));
       return;
     }
 
     if (!deps.isTranscriberAvailable()) {
       try {
         await message.reply({
-          content: '⚠️ Voice transcription is currently unavailable (missing ffmpeg, whisper-cli, or model file). Message forwarded without transcription.',
+          content:
+            '⚠️ Voice transcription is currently unavailable (missing ffmpeg, whisper-cli, or model file). Message forwarded without transcription.',
           allowedMentions: { parse: [] },
         });
       } catch {
-        // Reply may fail if permissions are missing
+        /* reply may fail */
       }
-      deps.enqueue(message);
+      deps.enqueue(toIncoming(message));
       return;
     }
 
@@ -156,13 +164,15 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
     try {
       reaction = await message.react('🎧');
     } catch {
-      // Reaction may fail if message was deleted or bot lacks perms; continue anyway
+      /* reaction failure is non-fatal */
     }
 
     try {
       const transcriptions: string[] = [];
       for (const attachment of voiceAttachments) {
-        const transcription = await deps.transcribeVoiceAttachment(attachment);
+        const transcription = await deps.transcribeVoiceAttachment(
+          discordAttachmentToIncoming(attachment),
+        );
         transcriptions.push(
           voiceAttachments.length === 1
             ? transcription
@@ -179,55 +189,47 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
       const failedReplies = replyResults.filter((result) => result.status === 'rejected');
       if (failedReplies.length > 0) {
         const logWarn = deps.logger?.warn ?? console.warn;
-        logWarn(`messageCreate: failed to send ${failedReplies.length} transcription reply part(s)`);
+        logWarn(
+          `messageCreate: failed to send ${failedReplies.length} transcription reply part(s)`,
+        );
       }
 
       try {
         await reaction?.users.remove(botUserId);
       } catch {
-        // Ignore if already removed or no permission
+        /* ignore cleanup */
       }
 
-      const contentOverride = [message.content.trim(), transcriptionText].filter(Boolean).join('\n\n');
-      const attachmentsOverride = message.attachments.filter(
-        (attachment) => !deps.isVoiceAttachment(attachment),
-      );
-      deps.enqueue(message, {
+      const contentOverride = [message.content.trim(), transcriptionText]
+        .filter(Boolean)
+        .join('\n\n');
+      const nonVoice = [...message.attachments.values()]
+        .filter((attachment) => !deps.isVoiceAttachment(attachment))
+        .map(discordAttachmentToIncoming);
+      deps.enqueue(toIncoming(message), {
         contentOverride,
-        attachmentsOverride,
+        attachmentsOverride: nonVoice,
       });
     } catch (err) {
       try {
         await reaction?.users.remove(botUserId);
       } catch {
-        // Ignore if already removed or no permission
+        /* ignore cleanup */
       }
 
       const log = deps.logger?.error ?? console.error;
       log('messageCreate: failed to transcribe voice message:', err);
       try {
         await message.reply({
-          content: '❌ Failed to transcribe this voice message. Message forwarded without transcription.',
+          content:
+            '❌ Failed to transcribe this voice message. Message forwarded without transcription.',
           allowedMentions: { parse: [] },
         });
       } catch (replyErr) {
         const logErr = deps.logger?.error ?? console.error;
         logErr('messageCreate: failed to send transcription error reply:', replyErr);
       }
-      deps.enqueue(message);
+      deps.enqueue(toIncoming(message));
     }
   };
 }
-
-export const handleMessageCreate = createMessageCreateHandler({
-  channelDb,
-  threadDb,
-  getBotUserId: (message) => message.client.user?.id,
-  enqueue,
-  isVoiceMessage,
-  isVoiceAttachment,
-  transcribeVoiceAttachment,
-  isTranscriberAvailable,
-  splitMessage,
-  logger: console,
-});
