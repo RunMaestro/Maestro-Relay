@@ -56,6 +56,13 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1${2:+ — $2}"
 }
 
+# Real try-open of /dev/tty. `[ -r /dev/tty ]` returns true in some
+# non-interactive contexts (e.g. `bash -c "$(curl ...)"`) where the
+# subsequent `</dev/tty` redirect then fails noisily.
+can_read_tty() {
+  { : </dev/tty; } 2>/dev/null
+}
+
 detect_os() {
   case "$(uname -s)" in
     Linux)  echo linux ;;
@@ -201,7 +208,7 @@ prompt_var() {
   [ -n "$default" ] && prompt="${prompt} [${default}]"
   prompt="${prompt}: "
   local value=""
-  if [ -r /dev/tty ]; then
+  if can_read_tty; then
     read -r -p "$prompt" value </dev/tty || true
   fi
   [ -z "$value" ] && value="$default"
@@ -218,7 +225,7 @@ write_config() {
   fi
 
   local interactive=0
-  [ -r /dev/tty ] && interactive=1
+  can_read_tty && interactive=1
   local have_required=0
   if [ -n "${DISCORD_BOT_TOKEN:-}" ] \
      && [ -n "${DISCORD_CLIENT_ID:-}" ] \
@@ -320,7 +327,7 @@ expand_tilde() {
 
 prompt_yes_no() {
   local prompt="$1" default="${2:-Y}" ans=""
-  [ -r /dev/tty ] || { printf '%s' "$default"; return; }
+  can_read_tty || { printf '%s' "$default"; return; }
   read -r -p "$prompt" ans </dev/tty || ans=""
   [ -z "$ans" ] && ans="$default"
   case "$ans" in
@@ -344,7 +351,7 @@ setup_voice_choose_model() {
     fi
   fi
 
-  if [ -r /dev/tty ]; then
+  if can_read_tty; then
     if [ "$(prompt_yes_no '  Already have a whisper model downloaded? [y/N] ' N)" = "Y" ]; then
       local input m
       while :; do
@@ -415,7 +422,7 @@ setup_voice() {
     enable=1
   elif [ "$voice_env" = "0" ]; then
     enable=0
-  elif [ -r /dev/tty ]; then
+  elif can_read_tty; then
     info "Configure voice transcription"
     if [ "$(prompt_yes_no '  Enable voice transcription? [Y/n] ' Y)" = "Y" ]; then
       enable=1
