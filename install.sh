@@ -147,7 +147,6 @@ install_release() {
   local tag="$1" tarball="$2"
   local staging
   staging="$(mktemp -d)"
-  trap 'rm -rf "$staging"' RETURN
   tar -xzf "$tarball" -C "$staging"
   local extracted
   extracted="$(find "$staging" -mindepth 1 -maxdepth 1 -type d | head -n1)"
@@ -181,6 +180,7 @@ install_release() {
     info "Migrated existing .env → $CONFIG_DIR/.env"
   fi
 
+  rm -rf "$staging"
   ok "Extracted release to $INSTALL_DIR"
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "maestro-relay",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Maestro Relay — connect chat platforms (Discord today, Slack/Teams next) to Maestro AI agents via maestro-cli.",
   "main": "dist/index.js",
   "bin": {
