@@ -223,7 +223,12 @@ async function handleReadonly(
     return;
   }
 
-  const readOnly = mode.toLowerCase() === 'on';
+  const normalized = mode.toLowerCase();
+  if (normalized !== 'on' && normalized !== 'off') {
+    await say('Usage: `/agents readonly <agent-id> <on|off>`');
+    return;
+  }
+  const readOnly = normalized === 'on';
   channelDb.setReadOnly(channelId, readOnly);
   const status = readOnly ? 'read-only' : 'read-write';
   await say(`Agent *${existing.agent_name}* is now in ${status} mode for this channel.`);

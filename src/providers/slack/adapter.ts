@@ -1,12 +1,5 @@
 import { App, ExpressReceiver, SocketModeReceiver } from '@slack/bolt';
 import { WebClient } from '@slack/web-api';
-
-const UNICODE_TO_SLACK: Record<string, string> = {
-  '⏳': 'hourglass_flowing_sand',
-  '🎧': 'headphones',
-  '✅': 'white_check_mark',
-  '❌': 'x',
-};
 import type {
   AgentChannelInfo,
   BridgeProvider,
@@ -28,8 +21,19 @@ import * as health from './commands/health';
 import * as agents from './commands/agents';
 import * as session from './commands/session';
 
+const UNICODE_TO_SLACK: Record<string, string> = {
+  '⏳': 'hourglass_flowing_sand',
+  '🎧': 'headphones',
+  '✅': 'white_check_mark',
+  '❌': 'x',
+};
+
+export function toSlackEmojiName(emoji: string): string {
+  return UNICODE_TO_SLACK[emoji] ?? emoji;
+}
+
 /** Matches a Slack message timestamp: digits.digits */
-function isThreadTs(id: string): boolean {
+export function isThreadTs(id: string): boolean {
   return /^\d+\.\d+$/.test(id);
 }
 
@@ -221,7 +225,7 @@ export class SlackProvider implements BridgeProvider {
       timestamp = target.messageId;
     }
 
-    const name = UNICODE_TO_SLACK[emoji] ?? emoji;
+    const name = toSlackEmojiName(emoji);
     await this.client.reactions.add({ channel, timestamp, name });
 
     return {
@@ -276,7 +280,11 @@ export class SlackProvider implements BridgeProvider {
         if (found?.id) {
           channelId = found.id;
           if (found.is_archived) {
-            await this.client.conversations.unarchive({ channel: channelId });
+            try {
+              await this.client.conversations.unarchive({ channel: channelId });
+            } catch {
+              channelId = undefined;
+            }
           }
         }
       } catch {

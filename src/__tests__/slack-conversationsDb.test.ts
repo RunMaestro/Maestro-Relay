@@ -1,9 +1,8 @@
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
+import { createConversationDb } from '../providers/slack/conversationsDb';
 
-// Build an isolated in-memory DB with the slack_agent_conversations table
-// and a minimal agent_channels stub so the shared `db` import isn't needed.
 function makeDb() {
   const db = new Database(':memory:');
   db.exec(`
@@ -19,39 +18,8 @@ function makeDb() {
   return db;
 }
 
-// Inline DAO matching conversationsDb.ts so we test logic without the
-// shared singleton DB.
-function makeConversationDb(db: ReturnType<typeof Database>) {
-  return {
-    register(threadTs: string, channelId: string, agentId: string, ownerUserId: string | null) {
-      db.prepare(
-        `INSERT OR IGNORE INTO slack_agent_conversations (thread_ts, channel_id, agent_id, owner_user_id)
-         VALUES (?, ?, ?, ?)`,
-      ).run(threadTs, channelId, agentId, ownerUserId);
-    },
-    get(threadTs: string) {
-      return db
-        .prepare('SELECT * FROM slack_agent_conversations WHERE thread_ts = ?')
-        .get(threadTs) as { thread_ts: string; channel_id: string; agent_id: string; owner_user_id: string | null; session_id: string | null } | undefined;
-    },
-    updateSession(threadTs: string, sessionId: string | null) {
-      db.prepare(
-        'UPDATE slack_agent_conversations SET session_id = ? WHERE thread_ts = ?',
-      ).run(sessionId, threadTs);
-    },
-    remove(threadTs: string) {
-      db.prepare('DELETE FROM slack_agent_conversations WHERE thread_ts = ?').run(threadTs);
-    },
-    listByChannel(channelId: string) {
-      return db
-        .prepare('SELECT * FROM slack_agent_conversations WHERE channel_id = ? ORDER BY created_at DESC')
-        .all(channelId) as { thread_ts: string }[];
-    },
-  };
-}
-
-let db: ReturnType<typeof Database>;
-let conversationDb: ReturnType<typeof makeConversationDb>;
+let db: InstanceType<typeof Database>;
+let conversationDb: ReturnType<typeof createConversationDb>;
 
 afterEach(() => {
   db?.close();
@@ -59,7 +27,7 @@ afterEach(() => {
 
 function setup() {
   db = makeDb();
-  conversationDb = makeConversationDb(db);
+  conversationDb = createConversationDb(db);
 }
 
 test('register and get round-trip', () => {
