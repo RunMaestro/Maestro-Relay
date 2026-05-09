@@ -40,6 +40,7 @@ export const slackConfig = {
     return process.env.SLACK_BOT_PUBLIC_URL || '';
   },
   get port() {
-    return parseInt(process.env.SLACK_PORT || '3000', 10);
+    const parsed = parseInt(process.env.SLACK_PORT ?? '', 10);
+    return Number.isNaN(parsed) ? 3000 : parsed;
   },
 };

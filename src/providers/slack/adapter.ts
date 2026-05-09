@@ -1,4 +1,5 @@
 import { App, ExpressReceiver, SocketModeReceiver } from '@slack/bolt';
+import { WebClient } from '@slack/web-api';
 
 const UNICODE_TO_SLACK: Record<string, string> = {
   '⏳': 'hourglass_flowing_sand',
@@ -6,7 +7,6 @@ const UNICODE_TO_SLACK: Record<string, string> = {
   '✅': 'white_check_mark',
   '❌': 'x',
 };
-import { WebClient } from '@slack/web-api';
 import type {
   AgentChannelInfo,
   BridgeProvider,
@@ -70,8 +70,14 @@ export class SlackProvider implements BridgeProvider {
     app.event('app_mention', async ({ event, say }) => {
       const eventData = event as unknown as Record<string, unknown>;
       const text = String(eventData['text'] ?? '');
-      const user = String(eventData['user'] ?? '');
+      const rawUser = eventData['user'];
       const channel = String(eventData['channel'] ?? '');
+
+      if (!rawUser || typeof rawUser !== 'string') {
+        await say('Could not identify the user. Please try again.');
+        return;
+      }
+      const user = rawUser;
 
       const allowed = slackConfig.allowedUserIds;
       if (allowed.length > 0 && !allowed.includes(user)) {
@@ -220,7 +226,8 @@ export class SlackProvider implements BridgeProvider {
 
     return {
       remove: async () => {
-        await this.client!.reactions.remove({ channel, timestamp, name });
+        if (!this.client) return;
+        await this.client.reactions.remove({ channel, timestamp, name });
       },
     };
   }

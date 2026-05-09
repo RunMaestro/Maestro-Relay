@@ -1,4 +1,4 @@
-import type { SlackCommandMiddlewareArgs } from '@slack/bolt';
+import type { SlackCommandMiddlewareArgs, SayFn } from '@slack/bolt';
 import { WebClient } from '@slack/web-api';
 import { slackConfig } from '../config';
 import { channelDb } from '../channelsDb';
@@ -32,9 +32,8 @@ export async function handle({
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleNew(
-  say: any,
+  say: SayFn,
   channelId: string,
   sessionName: string | undefined,
   userId?: string,

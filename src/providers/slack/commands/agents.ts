@@ -1,4 +1,4 @@
-import type { SlackCommandMiddlewareArgs } from '@slack/bolt';
+import type { SlackCommandMiddlewareArgs, SayFn, KnownBlock } from '@slack/bolt';
 import { WebClient } from '@slack/web-api';
 import { slackConfig } from '../config';
 import { channelDb } from '../channelsDb';
@@ -23,18 +23,18 @@ export async function handle({
 
     switch (subcommand?.toLowerCase()) {
       case 'new':
-        await handleNew(say as any, command.channel_id, args[0], command.user_id);
+        await handleNew(say, command.channel_id, args[0], command.user_id);
         break;
       case 'disconnect':
-        await handleDisconnect(say as any, command.channel_id, args[0]);
+        await handleDisconnect(say, command.channel_id, args[0]);
         break;
       case 'readonly':
-        await handleReadonly(say as any, command.channel_id, args[0], args[1]);
+        await handleReadonly(say, command.channel_id, args[0], args[1]);
         break;
       case 'list':
       case '':
       case undefined:
-        await handleList(say as any);
+        await handleList(say);
         break;
       default:
         await say(
@@ -42,12 +42,12 @@ export async function handle({
         );
     }
   } catch (err) {
+    console.error('[slack/agents] command failed:', err);
     await say('Failed to execute agents command.');
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function handleList(say: any): Promise<void> {
+async function handleList(say: SayFn): Promise<void> {
   const agents = await maestro.listAgents();
 
   if (agents.length === 0) {
@@ -55,7 +55,7 @@ async function handleList(say: any): Promise<void> {
     return;
   }
 
-  const blocks: object[] = [
+  const blocks: KnownBlock[] = [
     {
       type: 'section',
       text: { type: 'mrkdwn', text: '*Available Maestro Agents:*' },
@@ -81,9 +81,8 @@ async function handleList(say: any): Promise<void> {
   await say({ blocks });
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleNew(
-  say: any,
+  say: SayFn,
   channelId: string,
   agentId: string | undefined,
   userId?: string,
@@ -125,8 +124,9 @@ async function handleNew(
       newChannelId = existing.id;
       isArchived = existing.is_archived ?? false;
     }
-  } catch {
-    // ignore list error — will create below
+  } catch (err) {
+    console.error('[slack/agents] conversations.list failed:', err);
+    // ignore — will create below
   }
 
   if (!newChannelId) {
@@ -170,9 +170,8 @@ async function handleNew(
   await say(`Created channel <#${newChannelId}> for *${agent.name}* (\`${agent.id}\`)`);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleDisconnect(
-  say: any,
+  say: SayFn,
   channelId: string,
   agentId: string | undefined,
 ): Promise<void> {
@@ -201,9 +200,8 @@ async function handleDisconnect(
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function handleReadonly(
-  say: any,
+  say: SayFn,
   channelId: string,
   agentId: string | undefined,
   mode: string | undefined,

@@ -17,7 +17,7 @@ export const conversationDb = {
     ownerUserId: string | null,
   ): void {
     db.prepare(
-      `INSERT INTO slack_agent_conversations (thread_ts, channel_id, agent_id, owner_user_id)
+      `INSERT OR IGNORE INTO slack_agent_conversations (thread_ts, channel_id, agent_id, owner_user_id)
        VALUES (?, ?, ?, ?)`,
     ).run(threadTs, channelId, agentId, ownerUserId);
   },
