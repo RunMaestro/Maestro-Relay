@@ -10,7 +10,17 @@ import type {
   OutgoingMessage,
   ReactionHandle,
 } from '../../core/types';
+import {
+  isTranscriberAvailable,
+  transcribeVoiceAttachment,
+} from '../../core/transcription';
 import { telegramConfig } from './config';
+import { createMessageHandler } from './messageHandler';
+import {
+  attachmentsFromMessage,
+  downloadVoice,
+  isVoiceMessage,
+} from './voice';
 
 export class TelegramProvider implements BridgeProvider {
   readonly name = 'telegram';
@@ -32,9 +42,20 @@ export class TelegramProvider implements BridgeProvider {
       `[telegram] connected as @${bot.botInfo.username} (bound to agent ${agentId}, chat ${chatId})`,
     );
 
-    bot.on('message', async () => {
-      // TG-03 fills this in.
+    const handler = createMessageHandler({
+      bot,
+      boundChatId: chatId,
+      boundAgentId: agentId,
+      allowedUserIds: telegramConfig.allowedUserIds,
+      enqueue: (msg) => ctx.enqueue(msg),
+      isVoiceMessage,
+      downloadVoice,
+      attachmentsFromMessage,
+      transcribeVoiceAttachment,
+      isTranscriberAvailable,
+      logger: console,
     });
+    bot.on('message', handler);
 
     // Long-polling runs forever; do not await.
     void bot.start({
