@@ -34,6 +34,7 @@ export class TelegramProvider implements BridgeProvider {
   private bot: Bot | null = null;
   private ctx: KernelContext | null = null;
   private ready = false;
+  private chatMode: 'forum' | 'dm' = 'dm';
 
   async start(ctx: KernelContext): Promise<void> {
     this.ctx = ctx;
@@ -48,6 +49,16 @@ export class TelegramProvider implements BridgeProvider {
     console.log(
       `[telegram] connected as @${bot.botInfo.username} (bound to agent ${agentId}, chat ${chatId})`,
     );
+
+    const chat = await bot.api.getChat(chatId);
+    this.chatMode =
+      chat.type === 'supergroup' && chat.is_forum ? 'forum' : 'dm';
+    console.log(`[telegram] chat mode: ${this.chatMode}`);
+    if (this.chatMode === 'dm') {
+      console.log(
+        '[telegram] tip: enable forum topics on a supergroup for topic-per-session UX',
+      );
+    }
 
     const handler = createMessageHandler({
       bot,
