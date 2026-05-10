@@ -16,6 +16,8 @@ import {
   transcribeVoiceAttachment,
 } from '../../core/transcription';
 import { splitMessage } from '../../core/splitMessage';
+import { channelDb as coreChannelDb } from '../../core/db';
+import { maestro } from '../../core/maestro';
 import { telegramConfig } from './config';
 import { createMessageHandler } from './messageHandler';
 import {
@@ -57,6 +59,23 @@ export class TelegramProvider implements BridgeProvider {
     if (this.chatMode === 'dm') {
       console.log(
         '[telegram] tip: enable forum topics on a supergroup for topic-per-session UX',
+      );
+    }
+
+    if (!coreChannelDb.get('telegram', chatId)) {
+      let agentName = agentId;
+      try {
+        const agents = await maestro.listAgents();
+        const match = agents.find((a) => a.id === agentId);
+        if (match?.name) agentName = match.name;
+      } catch (err) {
+        console.warn(
+          `[telegram] could not resolve agent name from maestro-cli; falling back to agent id (${(err as Error).message})`,
+        );
+      }
+      coreChannelDb.register('telegram', chatId, agentId, agentName);
+      console.log(
+        `[telegram] registered bound channel ${chatId} → agent ${agentName} (${agentId})`,
       );
     }
 
