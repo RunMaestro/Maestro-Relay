@@ -450,9 +450,20 @@ process.stdin.on("end", () => {
 }
 
 config_complete() {
-  local file="$1" key value
+  local file="$1" key value enabled
   [ -f "$file" ] || return 1
-  for key in DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID; do
+  enabled="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*$/\1/p' "$file" | head -n1)"
+  [ -n "$enabled" ] || enabled="discord"
+  local -a required_keys=()
+  case ",$enabled," in
+    *,telegram,*)
+      required_keys=(TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_AGENT_ID)
+      ;;
+    *)
+      required_keys=(DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID)
+      ;;
+  esac
+  for key in "${required_keys[@]}"; do
     value="$(sed -nE "s/^${key}=([^#[:space:]]+).*/\1/p" "$file" | head -n1)"
     [ -n "$value" ] || return 1
     case "$value" in
