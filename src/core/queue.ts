@@ -184,8 +184,6 @@ export function createQueue(deps: QueueDeps) {
 
       if (result.response) {
         if (!result.success) {
-          // Agent produced a response but session ended with an error (e.g. a hook failure).
-          // Log it but don't surface the raw error to the user.
           void deps.logger.error(
             'queue:agent-soft-failure',
             `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${result.error}`,
@@ -196,19 +194,17 @@ export function createQueue(deps: QueueDeps) {
           await provider.send(target, { text: part });
         }
       } else {
-        const rawReason = result.error ?? 'The agent could not complete this request.';
-        // Strip verbose hook scripts from user-visible errors.
-        const reason = /hook\b.*\bfailed/i.test(rawReason)
-          ? 'The agent session ended with a hook error. Check logs for details.'
-          : rawReason;
         const hint = conv.readOnly
           ? '\n-# The agent is in **read-only** mode and cannot modify files.'
           : '';
+        const rawError = result.error ?? '(no error detail)';
         void deps.logger.error(
           'queue:agent-failure',
-          `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} reason=${rawReason}`,
+          `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${rawError}`,
         );
-        await provider.send(target, { text: `⚠️ ${reason}${hint}` });
+        await provider.send(target, {
+          text: `⚠️ The agent could not complete this request.${hint}\n-# 🔧 ${rawError}`,
+        });
       }
 
       const cost = (result.usage?.totalCostUsd ?? 0).toFixed(4);
