@@ -15,6 +15,7 @@ export function runMigrations(db: Database.Database): void {
   renameAgentThreadsTable(db);
   ensureDiscordThreadsTable(db);
   ensureOwnerUserIdColumn(db);
+  ensureSlackConversationsTable(db);
 }
 
 export function ensureOwnerUserIdColumn(database: Database.Database): void {
@@ -111,6 +112,19 @@ function ensureDiscordThreadsTable(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS discord_agent_threads (
       thread_id     TEXT PRIMARY KEY,
+      channel_id    TEXT NOT NULL,
+      agent_id      TEXT NOT NULL,
+      owner_user_id TEXT,
+      session_id    TEXT,
+      created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+}
+
+function ensureSlackConversationsTable(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS slack_agent_conversations (
+      thread_ts     TEXT PRIMARY KEY,
       channel_id    TEXT NOT NULL,
       agent_id      TEXT NOT NULL,
       owner_user_id TEXT,

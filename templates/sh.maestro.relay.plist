@@ -10,7 +10,7 @@
   <array>
     <string>/bin/bash</string>
     <string>-c</string>
-    <string>set -a; . "@CONFIG_DIR@/.env"; set +a; exec "@NODE_BIN@" "@INSTALL_DIR@/dist/index.js"</string>
+    <string>set -a; . "@CONFIG_DIR@/.env"; set +a; export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$PATH"; exec "@NODE_BIN@" "@INSTALL_DIR@/dist/index.js"</string>
   </array>
   <key>RunAtLoad</key>
   <true/>

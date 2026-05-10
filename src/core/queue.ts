@@ -112,8 +112,11 @@ export function createQueue(deps: QueueDeps) {
     if (provider.react) {
       try {
         reaction = await provider.react(messageTarget, '⏳');
-      } catch {
-        // best-effort indicator; ignore failures
+      } catch (err) {
+        void deps.logger.error(
+          'queue:react',
+          `provider=${message.provider} channel=${message.channelId} error=${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
 
@@ -179,21 +182,29 @@ export function createQueue(deps: QueueDeps) {
         // ignore cleanup failure
       }
 
-      if (!result.success || !result.response) {
-        const reason = result.error ?? 'The agent could not complete this request.';
-        const hint = conv.readOnly
-          ? '\n-# The agent is in **read-only** mode and cannot modify files.'
-          : '';
-        void deps.logger.error(
-          'queue:agent-failure',
-          `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} reason=${reason}`,
-        );
-        await provider.send(target, { text: `⚠️ ${reason}${hint}` });
-      } else {
+      if (result.response) {
+        if (!result.success) {
+          void deps.logger.error(
+            'queue:agent-soft-failure',
+            `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${result.error}`,
+          );
+        }
         const parts = split(result.response);
         for (const part of parts) {
           await provider.send(target, { text: part });
         }
+      } else {
+        const hint = conv.readOnly
+          ? '\n-# The agent is in **read-only** mode and cannot modify files.'
+          : '';
+        const rawError = result.error ?? '(no error detail)';
+        void deps.logger.error(
+          'queue:agent-failure',
+          `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${rawError}`,
+        );
+        await provider.send(target, {
+          text: `⚠️ The agent could not complete this request.${hint}\n-# 🔧 ${rawError}`,
+        });
       }
 
       const cost = (result.usage?.totalCostUsd ?? 0).toFixed(4);
