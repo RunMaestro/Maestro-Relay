@@ -476,27 +476,15 @@ config_complete() {
 deploy_commands() {
   local env_file="$CONFIG_DIR/.env"
   if ! config_complete "$env_file"; then
-    warn "Skipping slash command deployment — config at $env_file is incomplete or contains template values."
+    warn "Skipping command deployment — config at $env_file is incomplete or contains template values."
     warn "Edit it and run 'maestro-relay-ctl deploy' when ready."
     return
   fi
-  local enabled_providers
-  enabled_providers="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*$/\1/p' "$env_file" | head -n1)"
-  if [ -z "$enabled_providers" ]; then
-    enabled_providers="discord"
-  fi
-  case ",$enabled_providers," in
-    *,discord,*) ;;
-    *)
-      info "Skipping Discord slash-command deployment (ENABLED_PROVIDERS=$enabled_providers)"
-      return
-      ;;
-  esac
-  info "Deploying slash commands to Discord"
-  if (cd "$INSTALL_DIR" && node dist/providers/discord/deploy.js); then
-    ok "Slash commands deployed"
+  info "Deploying chat commands"
+  if (cd "$INSTALL_DIR" && npm run deploy-commands --silent); then
+    ok "Commands deployed"
   else
-    warn "Slash command deployment failed. Edit $env_file and re-run 'maestro-relay-ctl deploy'."
+    warn "Command deployment failed. Edit $env_file and re-run 'maestro-relay-ctl deploy'."
   fi
 }
 

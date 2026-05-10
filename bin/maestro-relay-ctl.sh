@@ -68,7 +68,7 @@ Commands:
   restart     Restart the relay service
   status      Show service status
   logs        Tail service logs (Ctrl+C to stop)
-  deploy      Deploy slash commands to Discord
+  deploy      Deploy chat commands for enabled providers (Discord slash commands, Telegram bot commands)
   update      Reinstall the latest release (preserves config)
   uninstall   Remove the relay, service files, and CLI symlinks
   version     Print installed version
@@ -146,13 +146,7 @@ cmd_deploy() {
   require_install
   local env_file="$INSTALL_DIR/.env"
   [ -f "$env_file" ] || die "Config missing: $env_file"
-  local enabled_providers
-  enabled_providers="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*$/\1/p' "$env_file" | head -n1)"
-  [ -z "$enabled_providers" ] && enabled_providers="discord"
-  case ",$enabled_providers," in
-    *,discord,*) (cd "$INSTALL_DIR" && node dist/providers/discord/deploy.js) ;;
-    *) die "Discord is not enabled in ENABLED_PROVIDERS=$enabled_providers" ;;
-  esac
+  (cd "$INSTALL_DIR" && npm run deploy-commands --silent)
 }
 
 cmd_update() {
