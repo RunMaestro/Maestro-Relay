@@ -3,7 +3,8 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/RunMaestro/Maestro-Relay/main/install.sh | bash
 # Re-run to upgrade to the latest release. Existing config is preserved.
-# Optional: MAESTRO_RELAY_MODULE=discord (currently the only supported module).
+# Optional: MAESTRO_RELAY_MODULE=discord|telegram (default: discord).
+#   Run `MAESTRO_RELAY_MODULE=telegram bash install.sh` to install the Telegram bridge.
 #
 # Legacy MAESTRO_BRIDGE_* / MAESTRO_DISCORD_* env vars are accepted as fallback so v0.0.x
 # installs upgrading via `maestro-discord-ctl update` keep working.
