@@ -20,6 +20,7 @@ import { channelDb as coreChannelDb } from '../../core/db';
 import { maestro } from '../../core/maestro';
 import { telegramConfig } from './config';
 import { createMessageHandler } from './messageHandler';
+import { topicDb } from './topicsDb';
 import {
   attachmentsFromMessage,
   downloadVoice,
@@ -113,8 +114,30 @@ export class TelegramProvider implements BridgeProvider {
     return this.ready;
   }
 
-  resolveConversation(_message: IncomingMessage): ConversationRecord | null {
-    throw new Error('not implemented in TG-02');
+  resolveConversation(message: IncomingMessage): ConversationRecord | null {
+    const { chatId, threadId } = parseChannelId(message.channelId);
+    if (chatId !== telegramConfig.chatId) return null;
+
+    if (this.chatMode === 'forum') {
+      if (threadId === undefined) return null;
+      const row = topicDb.get(chatId, threadId);
+      if (!row) return null;
+      return {
+        agentId: row.agent_id,
+        sessionId: row.session_id,
+        readOnly: false,
+        persistSession: (sid) => topicDb.updateSession(chatId, threadId, sid),
+      };
+    }
+
+    const row = coreChannelDb.get('telegram', chatId);
+    if (!row) return null;
+    return {
+      agentId: row.agent_id,
+      sessionId: row.session_id,
+      readOnly: row.read_only === 1,
+      persistSession: (sid) => coreChannelDb.updateSession('telegram', chatId, sid),
+    };
   }
 
   async send(target: ChannelTarget, msg: OutgoingMessage): Promise<void> {
