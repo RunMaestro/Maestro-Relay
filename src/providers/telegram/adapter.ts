@@ -85,6 +85,8 @@ export class TelegramProvider implements BridgeProvider {
       bot,
       boundChatId: chatId,
       boundAgentId: agentId,
+      chatMode: this.chatMode,
+      resolveAgentName: async () => (await this.resolveAgentName(agentId)) ?? agentId,
       allowedUserIds: telegramConfig.allowedUserIds,
       enqueue: (msg) => ctx.enqueue(msg),
       isVoiceMessage,
