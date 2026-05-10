@@ -307,6 +307,8 @@ config_complete() {
   [ -f "$file" ] || return 1
   local enabled_module
   enabled_module="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*/\1/p' "$file" | head -n1)"
+  enabled_module="${enabled_module#\"}"; enabled_module="${enabled_module%\"}"
+  enabled_module="${enabled_module#\'}"; enabled_module="${enabled_module%\'}"
   local required_keys
   if [ "$enabled_module" = "slack" ]; then
     required_keys="SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_TEAM_ID SLACK_APP_ID"

@@ -203,7 +203,7 @@ export function createQueue(deps: QueueDeps) {
           `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${rawError}`,
         );
         await provider.send(target, {
-          text: `⚠️ The agent could not complete this request.${hint}\n-# 🔧 ${rawError}`,
+          text: `⚠️ The agent could not complete this request.${hint}`,
         });
       }
 
@@ -227,7 +227,7 @@ export function createQueue(deps: QueueDeps) {
         `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${errMsg}`,
       );
       await provider.send(target, {
-        text: `❌ Failed to get response from agent:\n\`\`\`\n${errMsg}\n\`\`\``,
+        text: '❌ Failed to get response from agent. Check relay logs for details.',
       });
     }
 
