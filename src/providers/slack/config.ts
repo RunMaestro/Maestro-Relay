@@ -41,6 +41,7 @@ export const slackConfig = {
   },
   get port() {
     const parsed = parseInt(process.env.SLACK_PORT ?? '', 10);
-    return Number.isNaN(parsed) ? 3000 : parsed;
+    if (Number.isNaN(parsed) || parsed < 1 || parsed > 65535) return 3000;
+    return parsed;
   },
 };

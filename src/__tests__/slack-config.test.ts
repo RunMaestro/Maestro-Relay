@@ -36,6 +36,27 @@ test('port falls back to 3000 for empty string', () => {
   assert.equal(slackConfig.port, 3000);
 });
 
+test('port rejects values below 1', () => {
+  process.env.SLACK_PORT = '0';
+  assert.equal(slackConfig.port, 3000);
+  process.env.SLACK_PORT = '-1';
+  assert.equal(slackConfig.port, 3000);
+});
+
+test('port rejects values above 65535', () => {
+  process.env.SLACK_PORT = '65536';
+  assert.equal(slackConfig.port, 3000);
+  process.env.SLACK_PORT = '70000';
+  assert.equal(slackConfig.port, 3000);
+});
+
+test('port accepts boundary values 1 and 65535', () => {
+  process.env.SLACK_PORT = '1';
+  assert.equal(slackConfig.port, 1);
+  process.env.SLACK_PORT = '65535';
+  assert.equal(slackConfig.port, 65535);
+});
+
 test('allowedUserIds returns empty array when unset', () => {
   delete process.env.SLACK_ALLOWED_USER_IDS;
   assert.deepEqual(slackConfig.allowedUserIds, []);
