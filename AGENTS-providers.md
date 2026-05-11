@@ -1,8 +1,8 @@
 # Provider development guide
 
-This document is the deep-dive companion to [`AGENTS.md`](AGENTS.md) (and [`docs/architecture.md`](docs/architecture.md)) for adding a new chat-platform provider to Maestro Relay. Everything below is what you'd need to know to ship a Slack, Teams, Matrix, etc. adapter without touching the kernel.
+This document is the deep-dive companion to [`AGENTS.md`](AGENTS.md) (and [`docs/architecture.md`](docs/architecture.md)) for adding a new chat-platform provider to Maestro Relay. Discord and Slack are already built-in (see [`docs/discord.md`](docs/discord.md) and [`docs/slack.md`](docs/slack.md)); everything below is what you'd need to know to ship a Teams, Matrix, etc. adapter without touching the kernel.
 
-If you're adding behavior to the existing Discord provider rather than building a new one, work in `src/providers/discord/` and consult [`docs/discord.md`](docs/discord.md) instead.
+If you're adding behavior to an existing provider rather than building a new one, work in `src/providers/discord/` or `src/providers/slack/` and consult the matching `docs/<name>.md` instead.
 
 ## The kernel/provider boundary
 
@@ -107,12 +107,13 @@ Things to keep out of `src/core/`: SDK imports (`discord.js`, `@slack/bolt`, etc
 
 ### 1. Register the adapter
 
-In `src/core/providers.ts`, add a `case` to `loadProvider`:
+In `src/core/providers.ts`, add a `case` to `loadProvider` (alongside the existing `discord` and `slack` cases):
 
 ```ts
-case 'slack':
-  const { SlackProvider } = await import('../providers/slack/adapter.js');
-  return new SlackProvider();
+case 'teams': {
+  const { TeamsProvider } = await import('../providers/teams/adapter');
+  return new TeamsProvider();
+}
 ```
 
 This is the only kernel file the provider should touch.
@@ -122,10 +123,10 @@ This is the only kernel file the provider should touch.
 Add a section to `.env.example`:
 
 ```env
-# --- Slack provider (loaded only if 'slack' is in ENABLED_PROVIDERS) ---
-SLACK_BOT_TOKEN=your_xoxb_token_here
-SLACK_APP_TOKEN=your_xapp_token_here
-SLACK_SIGNING_SECRET=your_signing_secret_here
+# --- Teams provider (loaded only if 'teams' is in ENABLED_PROVIDERS) ---
+TEAMS_BOT_TOKEN=your_token_here
+TEAMS_APP_ID=your_app_id_here
+TEAMS_TENANT_ID=your_tenant_id_here
 ```
 
 Validate creds in `start(ctx)`, throwing a clear error if missing. Don't validate at module load — a disabled provider must not fail the bridge on missing env.

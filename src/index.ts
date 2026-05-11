@@ -1,4 +1,4 @@
-import './core/db'; // ensure DB is initialized + migrated on startup
+import { db } from './core/db'; // initializes + migrates DB on startup
 import { config } from './core/config';
 import { logger } from './core/logger';
 import { maestro } from './core/maestro';
@@ -48,6 +48,12 @@ async function main() {
       } catch (err) {
         console.error(`[bridge] error stopping provider "${name}":`, err);
       }
+    }
+    try {
+      db.exec('PRAGMA wal_checkpoint(RESTART);');
+      db.close();
+    } catch (err) {
+      console.error('[bridge] db shutdown error:', err);
     }
     process.exit(0);
   };

@@ -2,13 +2,13 @@
 
 [![Made with Maestro](https://raw.githubusercontent.com/RunMaestro/Maestro/main/docs/assets/made-with-maestro.svg)](https://github.com/RunMaestro/Maestro)
 
-**Maestro Relay** connects chat platforms to [Maestro](https://runmaestro.ai) AI agents through `maestro-cli`. Discord ships in the box; Slack, Teams, and others can be added by dropping in a provider adapter — the kernel is provider-agnostic.
+**Maestro Relay** connects chat platforms to [Maestro](https://runmaestro.ai) AI agents through `maestro-cli`. Discord and Slack ship in the box; Teams, Matrix, and others can be added by dropping in a provider adapter — the kernel is provider-agnostic.
 
 > **Migrating from `discord-maestro`?** Same codebase, new name. The legacy `maestro-discord` binary is preserved as an alias and all `DISCORD_*` env vars work unchanged. See "Migration" below.
 
 ## Features
 
-- Provider-pluggable kernel — Discord today, Slack/Teams next
+- Provider-pluggable kernel — Discord and Slack today, Teams/Matrix next
 - Creates dedicated channels for Maestro agents
 - Per-user session threads (`/session new` or by mentioning the bot)
 - Per-conversation FIFO queue with typing/reaction indicators
@@ -18,7 +18,7 @@
 ## Prerequisites
 
 - Node.js 22+
-- A Discord application + bot token (if running the Discord provider)
+- A bot token for at least one supported provider (Discord or Slack)
 - [Maestro CLI](https://docs.runmaestro.ai/cli) on your `PATH`
 
 ## Install (production one-liner)
@@ -49,7 +49,7 @@ The legacy aliases `maestro-bridge-ctl` and `maestro-discord-ctl` still work for
 | systemd user / launchd agent  | Auto-start unit                          |
 
 Override any of these with `MAESTRO_RELAY_HOME`, `XDG_CONFIG_HOME`, or `MAESTRO_RELAY_BIN_DIR`. Pin a specific version with `MAESTRO_RELAY_VERSION=v1.0.0`.
-Choose a provider module at install time via `MAESTRO_RELAY_MODULE` (currently only `discord` is supported).
+Choose a provider module at install time via `MAESTRO_RELAY_MODULE` (`discord` or `slack`).
 
 ## Install (development from source)
 
@@ -70,11 +70,11 @@ cp .env.example .env
 Set core values in `.env`:
 
 ```
-ENABLED_PROVIDERS=discord    # comma-separated; default 'discord'
+ENABLED_PROVIDERS=discord    # comma-separated; default 'discord'. Use 'slack' or 'discord,slack' for multi-provider deployments
 API_PORT=3457                # optional, default 3457
 ```
 
-Then fill in the provider-specific keys. The Discord provider needs `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_GUILD_ID` — see [docs/discord.md](docs/discord.md) for bot setup, the full env-var reference, and slash-command deployment. For optional voice transcription, see [docs/voice.md](docs/voice.md).
+Then fill in the provider-specific keys. The Discord provider needs `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_GUILD_ID` — see [docs/discord.md](docs/discord.md) for bot setup, the full env-var reference, and slash-command deployment. The Slack provider needs `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_TEAM_ID`, and `SLACK_APP_ID` — see [docs/slack.md](docs/slack.md). For optional voice transcription (Discord), see [docs/voice.md](docs/voice.md).
 
 3. Deploy slash commands (Discord):
 
@@ -118,9 +118,10 @@ npm run build && node --test --experimental-test-coverage dist/__tests__/**/*.te
 | Provider | Docs | Status |
 | -------- | ---- | ------ |
 | Discord  | [docs/discord.md](docs/discord.md) — bot setup, env vars, slash commands, runtime behavior | Built-in |
-| Slack / Teams / Matrix | [AGENTS-providers.md](AGENTS-providers.md) — provider development guide | Add your own |
+| Slack    | [docs/slack.md](docs/slack.md) — app setup, env vars, slash commands, runtime behavior | Built-in |
+| Teams / Matrix / … | [AGENTS-providers.md](AGENTS-providers.md) — provider development guide | Add your own |
 
-Optional voice transcription (whisper.cpp): [docs/voice.md](docs/voice.md).
+Optional voice transcription (whisper.cpp, Discord-only today): [docs/voice.md](docs/voice.md).
 
 ## How it works
 

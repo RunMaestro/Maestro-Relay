@@ -145,7 +145,17 @@ cmd_logs() {
 config_complete() {
   local file="$1" key value
   [ -f "$file" ] || return 1
-  for key in DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID; do
+  local enabled_module
+  enabled_module="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*/\1/p' "$file" | head -n1)"
+  enabled_module="${enabled_module#\"}"; enabled_module="${enabled_module%\"}"
+  enabled_module="${enabled_module#\'}"; enabled_module="${enabled_module%\'}"
+  local required_keys
+  if [ "$enabled_module" = "slack" ]; then
+    required_keys="SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_TEAM_ID SLACK_APP_ID"
+  else
+    required_keys="DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID"
+  fi
+  for key in $required_keys; do
     value="$(sed -nE "s/^${key}=([^#[:space:]]+).*/\1/p" "$file" | head -n1)"
     [ -n "$value" ] || return 1
     case "$value" in

@@ -1,6 +1,6 @@
 # Agent Guide
 
-This repo is **Maestro Relay** — a chat-platform-to-Maestro bridge built around a provider-agnostic kernel. Discord is the first provider; Slack/Teams plug in alongside it without touching the kernel. `CLAUDE.md` is a symlink to this file.
+This repo is **Maestro Relay** — a chat-platform-to-Maestro bridge built around a provider-agnostic kernel. Discord and Slack ship in the box; Teams/Matrix plug in alongside them without touching the kernel. `CLAUDE.md` is a symlink to this file.
 
 ## Development workflow
 
@@ -29,6 +29,10 @@ This repo is **Maestro Relay** — a chat-platform-to-Maestro bridge built aroun
 ### Discord provider
 
 Lives under `src/providers/discord/` (`adapter.ts`, `messageCreate.ts`, `voice.ts`, `commands/`, `deploy.ts`, `channelsDb.ts`, `threadsDb.ts`, `embed.ts`, `config.ts`). For Discord-specific runtime behavior, env vars, slash commands, and bot setup see [docs/discord.md](docs/discord.md). Voice transcription is documented in [docs/voice.md](docs/voice.md).
+
+### Slack provider
+
+Lives under `src/providers/slack/` (`adapter.ts`, `messageCreate.ts`, `commands/`, `channelsDb.ts`, `conversationsDb.ts`, `config.ts`). Uses `@slack/bolt` (Socket Mode in dev, ExpressReceiver in production). Thread registry (`slack_agent_conversations`) is keyed on `thread_ts`. For Slack-specific runtime behavior, env vars, slash commands, and app setup see [docs/slack.md](docs/slack.md).
 
 ### CLI
 
@@ -59,7 +63,7 @@ TL;DR:
 
 ## Installer module switch
 
-- `install.sh` supports `MAESTRO_RELAY_MODULE` (fallback `MAESTRO_BRIDGE_MODULE`), currently accepting only `discord`.
+- `install.sh` supports `MAESTRO_RELAY_MODULE` (fallback `MAESTRO_BRIDGE_MODULE`), currently accepting `discord` and `slack`.
 - Keep installer module selection aligned with runtime `ENABLED_PROVIDERS` and CLI `--provider` support.
 - When adding a provider, update installer validation/prompting and `maestro-relay-ctl deploy` routing so deploy behavior is module-aware.
 
@@ -73,7 +77,7 @@ TL;DR:
 
 ## Expectations for changes
 
-- Follow existing patterns in `src/core/` and `src/providers/discord/` before introducing new abstractions.
-- Provider-specific code (Discord types, slash commands, threads) lives in `src/providers/discord/` — keep `src/core/` free of `discord.js` imports.
+- Follow existing patterns in `src/core/` and `src/providers/{discord,slack}/` before introducing new abstractions.
+- Provider-specific code (Discord types, Slack Bolt handlers, slash commands, threads) lives under `src/providers/<name>/` — keep `src/core/` free of `discord.js` and `@slack/bolt` imports.
 - Keep changes minimal and focused.
 - Update docs when behavior or setup changes.
