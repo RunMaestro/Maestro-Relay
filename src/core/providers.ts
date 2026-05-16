@@ -26,6 +26,10 @@ async function loadProvider(name: string): Promise<BridgeProvider | null> {
       const { SlackProvider } = await import('../providers/slack/adapter');
       return new SlackProvider();
     }
+    case 'telegram': {
+      const { TelegramProvider } = await import('../providers/telegram/adapter');
+      return new TelegramProvider();
+    }
     default:
       console.warn(`[providers] Unknown provider "${name}" — ignoring.`);
       return null;

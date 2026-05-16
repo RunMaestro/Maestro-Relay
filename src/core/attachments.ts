@@ -51,7 +51,24 @@ export async function downloadAttachments(
     const savedPath = path.join(targetDir, filename);
 
     try {
-      const response = await fetch(attachment.url);
+      // Resolve the URL lazily if the provider supplied a resolver. This is
+      // how Telegram avoids stale getFile URLs (~1h expiry) when the queue
+      // backlog stretches across long agent runs.
+      let downloadUrl: string;
+      try {
+        downloadUrl = attachment.resolveUrl
+          ? await attachment.resolveUrl()
+          : attachment.url;
+      } catch (err) {
+        console.warn(
+          `[attachments] Failed to resolve URL for "${attachment.name}":`,
+          err,
+        );
+        failed.push(attachment.name);
+        continue;
+      }
+
+      const response = await fetch(downloadUrl);
       if (!response.ok) {
         console.warn(
           `[attachments] Failed to download "${attachment.name}": HTTP ${response.status}`,

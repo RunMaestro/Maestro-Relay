@@ -12,7 +12,7 @@
     "dev": "tsx src/index.ts",
     "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",
-    "deploy-commands": "tsx src/providers/discord/deploy.ts",
+    "deploy-commands": "node dist/scripts/deploy-commands.js",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
     "maestro-relay": "tsx src/cli/maestro-relay.ts",
     "maestro-bridge": "tsx src/cli/maestro-relay.ts",
@@ -25,7 +25,8 @@
     "@slack/bolt": "^4.6.0",
     "better-sqlite3": "^12.8.0",
     "discord.js": "^14.0.0",
-    "dotenv": "^16.0.0"
+    "dotenv": "^16.0.0",
+    "grammy": "^1.42.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

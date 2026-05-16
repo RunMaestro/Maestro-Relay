@@ -20,10 +20,21 @@ export interface MessageTarget extends ChannelTarget {
 }
 
 export interface IncomingAttachment {
+  /**
+   * Direct download URL. For platforms that mint short-lived URLs (e.g.
+   * Telegram's getFile, which expires after ~1 hour), prefer `resolveUrl`
+   * so the URL is fetched just-in-time at download.
+   */
   url: string;
   name: string;
   size: number;
   contentType?: string;
+  /**
+   * Optional lazy URL resolver. When present, `downloadAttachments` calls
+   * this just before fetching to avoid using a stale pre-resolved URL. Use
+   * this for providers whose download URLs are time-limited.
+   */
+  resolveUrl?: () => Promise<string>;
 }
 
 export interface IncomingMessage {

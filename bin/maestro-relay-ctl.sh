@@ -68,7 +68,7 @@ Commands:
   restart     Restart the relay service
   status      Show service status
   logs        Tail service logs (Ctrl+C to stop)
-  deploy      Deploy slash commands to Discord
+  deploy      Deploy chat commands for enabled providers (Discord slash commands, Telegram bot commands)
   update      Reinstall the latest release (preserves config)
   uninstall   Remove the relay, service files, and CLI symlinks
   version     Print installed version
@@ -143,18 +143,33 @@ cmd_logs() {
 }
 
 config_complete() {
-  local file="$1" key value
+  local file="$1" key value enabled_providers provider
   [ -f "$file" ] || return 1
-  local enabled_module
-  enabled_module="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*/\1/p' "$file" | head -n1)"
-  enabled_module="${enabled_module#\"}"; enabled_module="${enabled_module%\"}"
-  enabled_module="${enabled_module#\'}"; enabled_module="${enabled_module%\'}"
-  local required_keys
-  if [ "$enabled_module" = "slack" ]; then
-    required_keys="SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_TEAM_ID SLACK_APP_ID"
-  else
-    required_keys="DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID"
-  fi
+  enabled_providers="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*/\1/p' "$file" | head -n1)"
+  enabled_providers="${enabled_providers#\"}"; enabled_providers="${enabled_providers%\"}"
+  enabled_providers="${enabled_providers#\'}"; enabled_providers="${enabled_providers%\'}"
+  [ -n "$enabled_providers" ] || enabled_providers="discord"
+  # Validate every enabled provider's required env vars (split CSV), not just
+  # the first match — ENABLED_PROVIDERS=discord,telegram must pass only when
+  # both credential sets are present.
+  local IFS=','
+  local required_keys=""
+  for provider in $enabled_providers; do
+    provider="${provider// /}"
+    case "$provider" in
+      telegram)
+        required_keys="$required_keys TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_AGENT_ID"
+        ;;
+      slack)
+        required_keys="$required_keys SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_TEAM_ID SLACK_APP_ID"
+        ;;
+      discord|'')
+        required_keys="$required_keys DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID"
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  unset IFS
   for key in $required_keys; do
     value="$(sed -nE "s/^${key}=([^#[:space:]]+).*/\1/p" "$file" | head -n1)"
     [ -n "$value" ] || return 1
@@ -172,15 +187,7 @@ cmd_deploy() {
   if ! config_complete "$env_file"; then
     die "Config at $env_file is incomplete or contains template values. Edit it before running deploy."
   fi
-  local enabled_providers
-  enabled_providers="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*$/\1/p' "$env_file" | head -n1)"
-  enabled_providers="${enabled_providers#\"}"; enabled_providers="${enabled_providers%\"}"
-  enabled_providers="${enabled_providers#\'}"; enabled_providers="${enabled_providers%\'}"
-  [ -z "$enabled_providers" ] && enabled_providers="discord"
-  case ",$enabled_providers," in
-    *,discord,*) (cd "$INSTALL_DIR" && node dist/providers/discord/deploy.js) ;;
-    *) die "Discord is not enabled in ENABLED_PROVIDERS=$enabled_providers" ;;
-  esac
+  (cd "$INSTALL_DIR" && npm run deploy-commands --silent)
 }
 
 cmd_update() {
