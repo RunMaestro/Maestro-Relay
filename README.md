@@ -46,6 +46,7 @@ The legacy aliases `maestro-bridge-ctl` and `maestro-discord-ctl` still work for
 | `~/.local/share/maestro-relay/` | Installed bot (built JS + dependencies) |
 | `~/.config/maestro-relay/.env`  | Configuration (preserved across updates) |
 | `~/.local/bin/maestro-relay-ctl` | Service control wrapper             |
+| `~/.local/bin/maestro-relay`  | Agent → chat CLI (`send`, `notify`, `status`; aliased as `maestro-bridge` and `maestro-discord`) |
 | systemd user / launchd agent  | Auto-start unit                          |
 
 Override any of these with `MAESTRO_RELAY_HOME`, `XDG_CONFIG_HOME`, or `MAESTRO_RELAY_BIN_DIR`. Pin a specific version with `MAESTRO_RELAY_VERSION=v1.0.0`.

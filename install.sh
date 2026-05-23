@@ -504,6 +504,23 @@ install_ctl() {
   esac
 }
 
+install_cli() {
+  # The user-facing CLI (`maestro-relay send …`) is the entrypoint agents call
+  # to push messages back into chat. `npm install -g` would publish the
+  # package.json `bin` entries, but tarball installs don't run that — so wire
+  # the shim ourselves. dist/cli/maestro-relay.js already declares
+  # `#!/usr/bin/env node`, so a symlink + exec bit is enough.
+  mkdir -p "$BIN_DIR"
+  local cli_js="$INSTALL_DIR/dist/cli/maestro-relay.js"
+  [ -f "$cli_js" ] || die "CLI entrypoint missing at $cli_js"
+  chmod +x "$cli_js"
+  ln -sf "$cli_js" "$BIN_DIR/maestro-relay"
+  ln -sf "$cli_js" "$BIN_DIR/maestro-bridge"
+  # Backwards-compat alias matching the legacy maestro-discord binary.
+  ln -sf "$cli_js" "$BIN_DIR/maestro-discord"
+  ok "Installed maestro-relay → $BIN_DIR/maestro-relay (aliases: maestro-bridge, maestro-discord)"
+}
+
 install_service_linux() {
   command -v systemctl >/dev/null 2>&1 || { warn "systemctl not found — skipping service install."; return; }
   local unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
@@ -589,6 +606,7 @@ main() {
   install_deps
   trap - ERR
   install_ctl
+  install_cli
   setup_voice
   write_config
   deploy_commands
