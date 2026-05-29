@@ -37,8 +37,6 @@ maestro-relay-ctl update    # upgrade to latest release (preserves config)
 maestro-relay-ctl uninstall # remove install + service files
 ```
 
-The legacy aliases `maestro-bridge-ctl` and `maestro-discord-ctl` still work for back-compat.
-
 ## Quick start
 
 | Path                          | Purpose                                  |

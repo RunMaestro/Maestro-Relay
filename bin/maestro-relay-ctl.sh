@@ -57,7 +57,6 @@ detect_os() {
 usage() {
   cat <<'EOF'
 maestro-relay-ctl — control the Maestro Relay service.
-(Aliases: maestro-bridge-ctl and maestro-discord-ctl, preserved for back-compat.)
 
 Usage:
   maestro-relay-ctl <command>

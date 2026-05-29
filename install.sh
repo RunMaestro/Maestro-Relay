@@ -6,7 +6,7 @@
 # Optional: MAESTRO_RELAY_MODULE=discord (currently the only supported module).
 #
 # Legacy MAESTRO_BRIDGE_* / MAESTRO_DISCORD_* env vars are accepted as fallback so v0.0.x
-# installs upgrading via `maestro-discord-ctl update` keep working.
+# installs upgrading via the legacy control wrapper keep working.
 
 set -Eeuo pipefail
 
@@ -493,11 +493,14 @@ install_ctl() {
   [ -f "$ctl" ] || die "Control script missing at $ctl"
   chmod +x "$ctl"
   ln -sf "$ctl" "$BIN_DIR/maestro-relay-ctl"
-  ln -sf "$ctl" "$BIN_DIR/maestro-bridge-ctl"
-  # Backwards-compat alias for users with `maestro-discord-ctl` in muscle memory
-  # or in scripts. Both point at the same wrapper.
-  ln -sf "$ctl" "$BIN_DIR/maestro-discord-ctl"
-  ok "Installed maestro-relay-ctl → $BIN_DIR/maestro-relay-ctl (aliases: maestro-bridge-ctl, maestro-discord-ctl)"
+  # Clean up legacy *-ctl aliases left over from earlier installs.
+  for legacy in maestro-bridge-ctl maestro-discord-ctl; do
+    if [ -L "$BIN_DIR/$legacy" ] || [ -e "$BIN_DIR/$legacy" ]; then
+      rm -f "$BIN_DIR/$legacy"
+      info "Removed legacy control alias $BIN_DIR/$legacy"
+    fi
+  done
+  ok "Installed maestro-relay-ctl → $BIN_DIR/maestro-relay-ctl"
   case ":$PATH:" in
     *":$BIN_DIR:"*) : ;;
     *) warn "$BIN_DIR is not on your PATH. Add it to your shell profile." ;;
