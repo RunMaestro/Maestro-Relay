@@ -57,7 +57,6 @@ detect_os() {
 usage() {
   cat <<'EOF'
 maestro-relay-ctl — control the Maestro Relay service.
-(Aliases: maestro-bridge-ctl and maestro-discord-ctl, preserved for back-compat.)
 
 Usage:
   maestro-relay-ctl <command>
@@ -232,8 +231,12 @@ cmd_uninstall() {
   esac
   rm -rf "$INSTALL_DIR"
   rm -f "$BIN_DIR/maestro-relay-ctl"
+  rm -f "$BIN_DIR/maestro-relay"
+  # Scrub legacy aliases from earlier installs (pre-rename).
   rm -f "$BIN_DIR/maestro-bridge-ctl"
   rm -f "$BIN_DIR/maestro-discord-ctl"
+  rm -f "$BIN_DIR/maestro-bridge"
+  rm -f "$BIN_DIR/maestro-discord"
   info "Uninstalled. Config preserved at $CONFIG_DIR (delete manually if desired)."
 }
 

@@ -40,8 +40,6 @@ Lives under `src/providers/slack/` (`adapter.ts`, `messageCreate.ts`, `commands/
 - `src/cli/lib.ts` — shared HTTP client for `/api/send`
 - `src/cli/verbs/` — individual verb implementations
 
-The `maestro-discord` binary is registered as an alias of `maestro-relay` for back-compat.
-
 ### Entry point
 
 - `src/index.ts` — kernel orchestrator: builds providers, starts each with kernel ctx, starts the HTTP API, wires graceful shutdown

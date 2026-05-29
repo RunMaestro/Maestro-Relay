@@ -6,7 +6,7 @@
 # Optional: MAESTRO_RELAY_MODULE=discord (currently the only supported module).
 #
 # Legacy MAESTRO_BRIDGE_* / MAESTRO_DISCORD_* env vars are accepted as fallback so v0.0.x
-# installs upgrading via `maestro-discord-ctl update` keep working.
+# installs upgrading via the legacy control wrapper keep working.
 
 set -Eeuo pipefail
 
@@ -493,15 +493,39 @@ install_ctl() {
   [ -f "$ctl" ] || die "Control script missing at $ctl"
   chmod +x "$ctl"
   ln -sf "$ctl" "$BIN_DIR/maestro-relay-ctl"
-  ln -sf "$ctl" "$BIN_DIR/maestro-bridge-ctl"
-  # Backwards-compat alias for users with `maestro-discord-ctl` in muscle memory
-  # or in scripts. Both point at the same wrapper.
-  ln -sf "$ctl" "$BIN_DIR/maestro-discord-ctl"
-  ok "Installed maestro-relay-ctl → $BIN_DIR/maestro-relay-ctl (aliases: maestro-bridge-ctl, maestro-discord-ctl)"
+  # Clean up legacy *-ctl aliases left over from earlier installs.
+  for legacy in maestro-bridge-ctl maestro-discord-ctl; do
+    if [ -L "$BIN_DIR/$legacy" ] || [ -e "$BIN_DIR/$legacy" ]; then
+      rm -f "$BIN_DIR/$legacy"
+      info "Removed legacy control alias $BIN_DIR/$legacy"
+    fi
+  done
+  ok "Installed maestro-relay-ctl → $BIN_DIR/maestro-relay-ctl"
   case ":$PATH:" in
     *":$BIN_DIR:"*) : ;;
     *) warn "$BIN_DIR is not on your PATH. Add it to your shell profile." ;;
   esac
+}
+
+install_cli() {
+  # The user-facing CLI (`maestro-relay send …`) is the entrypoint agents call
+  # to push messages back into chat. `npm install -g` would publish the
+  # package.json `bin` entry, but tarball installs don't run that — so wire
+  # the shim ourselves. dist/cli/maestro-relay.js already declares
+  # `#!/usr/bin/env node`, so a symlink + exec bit is enough.
+  mkdir -p "$BIN_DIR"
+  local cli_js="$INSTALL_DIR/dist/cli/maestro-relay.js"
+  [ -f "$cli_js" ] || die "CLI entrypoint missing at $cli_js"
+  chmod +x "$cli_js"
+  ln -sf "$cli_js" "$BIN_DIR/maestro-relay"
+  # Clean up legacy CLI aliases left over from earlier installs.
+  for legacy in maestro-bridge maestro-discord; do
+    if [ -L "$BIN_DIR/$legacy" ] || [ -e "$BIN_DIR/$legacy" ]; then
+      rm -f "$BIN_DIR/$legacy"
+      info "Removed legacy CLI alias $BIN_DIR/$legacy"
+    fi
+  done
+  ok "Installed maestro-relay → $BIN_DIR/maestro-relay"
 }
 
 install_service_linux() {
@@ -589,6 +613,7 @@ main() {
   install_deps
   trap - ERR
   install_ctl
+  install_cli
   setup_voice
   write_config
   deploy_commands
