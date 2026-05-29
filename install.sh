@@ -510,7 +510,7 @@ install_ctl() {
 install_cli() {
   # The user-facing CLI (`maestro-relay send …`) is the entrypoint agents call
   # to push messages back into chat. `npm install -g` would publish the
-  # package.json `bin` entries, but tarball installs don't run that — so wire
+  # package.json `bin` entry, but tarball installs don't run that — so wire
   # the shim ourselves. dist/cli/maestro-relay.js already declares
   # `#!/usr/bin/env node`, so a symlink + exec bit is enough.
   mkdir -p "$BIN_DIR"
@@ -518,10 +518,14 @@ install_cli() {
   [ -f "$cli_js" ] || die "CLI entrypoint missing at $cli_js"
   chmod +x "$cli_js"
   ln -sf "$cli_js" "$BIN_DIR/maestro-relay"
-  ln -sf "$cli_js" "$BIN_DIR/maestro-bridge"
-  # Backwards-compat alias matching the legacy maestro-discord binary.
-  ln -sf "$cli_js" "$BIN_DIR/maestro-discord"
-  ok "Installed maestro-relay → $BIN_DIR/maestro-relay (aliases: maestro-bridge, maestro-discord)"
+  # Clean up legacy CLI aliases left over from earlier installs.
+  for legacy in maestro-bridge maestro-discord; do
+    if [ -L "$BIN_DIR/$legacy" ] || [ -e "$BIN_DIR/$legacy" ]; then
+      rm -f "$BIN_DIR/$legacy"
+      info "Removed legacy CLI alias $BIN_DIR/$legacy"
+    fi
+  done
+  ok "Installed maestro-relay → $BIN_DIR/maestro-relay"
 }
 
 install_service_linux() {
