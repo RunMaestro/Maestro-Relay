@@ -44,6 +44,48 @@ export interface SendResult {
   };
 }
 
+export interface DispatchResult {
+  success: boolean;
+  agentId?: string;
+  /** Tab id the prompt was delivered to. Identical to `tabId` — the CLI emits
+   *  both keys so polling consumers can use either. */
+  sessionId?: string | null;
+  tabId?: string | null;
+  error?: string;
+  code?: string;
+}
+
+export interface DesktopSessionEntry {
+  tabId: string;
+  sessionId: string;
+  agentId: string;
+  agentName: string;
+  toolType: string;
+  name: string | null;
+  agentSessionId: string | null;
+  state: 'idle' | 'busy';
+  createdAt: number;
+  starred: boolean;
+}
+
+export interface SessionHistoryMessage {
+  id: string;
+  role: string;
+  source: string;
+  content: string;
+  /** ISO-8601 — round-trip directly into `sessionShow({ since })`. */
+  timestamp: string;
+}
+
+export interface SessionHistory {
+  success: true;
+  tabId: string;
+  sessionId: string;
+  agentId: string;
+  agentSessionId: string | null;
+  messages: SessionHistoryMessage[];
+}
+
 export interface MaestroPlaybook {
   id: string;
   name: string;
@@ -271,12 +313,23 @@ export const maestro = {
   async send(
     agentId: string,
     message: string,
-    sessionId?: string,
-    readOnly?: boolean,
+    opts: {
+      sessionId?: string;
+      readOnly?: boolean;
+      openTab?: boolean;
+      /**
+       * Opt out of the Maestro system prompt that `maestro-cli send` appends by
+       * default (agent identity, git branch, history file, conductor profile).
+       * Leave undefined/false to match the CLI default.
+       */
+      noSystemPrompt?: boolean;
+    } = {},
   ): Promise<SendResult> {
     const args = ['send'];
-    if (sessionId) args.push('-s', sessionId);
-    if (readOnly) args.push('-r');
+    if (opts.sessionId) args.push('-s', opts.sessionId);
+    if (opts.readOnly) args.push('-r');
+    if (opts.openTab) args.push('-t');
+    if (opts.noSystemPrompt) args.push('--no-system-prompt');
     args.push(agentId, '--', message);
     try {
       const raw = await runSpawn(args);
@@ -295,6 +348,84 @@ export const maestro = {
       }
       throw err;
     }
+  },
+
+  /**
+   * Hand a prompt off to the Maestro desktop app and return the tab/session id
+   * the prompt was delivered to. Pair with `sessionShow` to poll the
+   * conversation without owning a persistent channel.
+   */
+  async dispatch(
+    agentId: string,
+    message: string,
+    opts: { newTab?: boolean; tabId?: string; force?: boolean } = {},
+  ): Promise<DispatchResult> {
+    if (opts.newTab && opts.tabId) {
+      throw new Error('dispatch: --new-tab cannot be combined with --tab');
+    }
+    const args = ['dispatch'];
+    if (opts.newTab) args.push('--new-tab');
+    if (opts.tabId) args.push('-t', opts.tabId);
+    if (opts.force) args.push('-f');
+    args.push(agentId, '--', message);
+    try {
+      const raw = await runSpawn(args);
+      return JSON.parse(raw) as DispatchResult;
+    } catch (err: unknown) {
+      // CLI exits non-zero on error but still emits a JSON error shape on stdout.
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const stdoutMatch = errMsg.match(/stdout: ({[\s\S]*})/);
+      if (stdoutMatch) {
+        try {
+          return JSON.parse(stdoutMatch[1]) as DispatchResult;
+        } catch {
+          /* fall through */
+        }
+      }
+      throw err;
+    }
+  },
+
+  /** List every open AI tab across every agent in the running Maestro desktop. */
+  async sessionList(): Promise<DesktopSessionEntry[]> {
+    const raw = await run(['session', 'list', '--json']);
+    const parsed = JSON.parse(raw) as {
+      success?: boolean;
+      sessions?: DesktopSessionEntry[];
+      error?: string;
+      code?: string;
+    };
+    if (parsed.success === false) {
+      throw new Error(
+        `session list failed: ${parsed.error ?? 'unknown'} (${parsed.code ?? 'UNKNOWN'})`,
+      );
+    }
+    return parsed.sessions ?? [];
+  },
+
+  /**
+   * Fetch conversation history for a desktop tab. `since` accepts ISO-8601 or
+   * epoch ms/sec (auto-detected by magnitude), so a previous response's
+   * `messages[].timestamp` round-trips directly.
+   */
+  async sessionShow(
+    tabId: string,
+    opts: { since?: string | number; tail?: number } = {},
+  ): Promise<SessionHistory> {
+    const args = ['session', 'show', tabId, '--json'];
+    if (opts.since != null) args.push('--since', String(opts.since));
+    if (opts.tail != null) args.push('--tail', String(opts.tail));
+    const raw = await run(args);
+    const parsed = JSON.parse(raw) as
+      | SessionHistory
+      | { success: false; error?: string; code?: string };
+    if (parsed.success === false) {
+      const err = parsed as { error?: string; code?: string };
+      throw new Error(
+        `session show failed: ${err.error ?? 'unknown'} (${err.code ?? 'UNKNOWN'})`,
+      );
+    }
+    return parsed;
   },
 
   /** List all playbooks, optionally filtered by agent */
