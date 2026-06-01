@@ -534,10 +534,14 @@ install_service_linux() {
   mkdir -p "$unit_dir"
   local template="$INSTALL_DIR/templates/maestro-relay.service"
   [ -f "$template" ] || { warn "Service template missing at $template"; return; }
+  local node_bin; node_bin="$(command -v node)"
+  local node_dir; node_dir="$(dirname "$node_bin")"
   sed \
     -e "s|@INSTALL_DIR@|$INSTALL_DIR|g" \
     -e "s|@CONFIG_DIR@|$CONFIG_DIR|g" \
-    -e "s|@NODE_BIN@|$(command -v node)|g" \
+    -e "s|@NODE_BIN@|$node_bin|g" \
+    -e "s|@NODE_DIR@|$node_dir|g" \
+    -e "s|@HOME@|$HOME|g" \
     "$template" > "$unit_dir/maestro-relay.service"
   # Disable+remove a legacy maestro-discord unit if present so we don't leave
   # two competing user services running on upgrade.
@@ -563,10 +567,14 @@ install_service_macos() {
   mkdir -p "$INSTALL_DIR/logs"
   local template="$INSTALL_DIR/templates/sh.maestro.relay.plist"
   [ -f "$template" ] || { warn "Plist template missing at $template"; return; }
+  local node_bin; node_bin="$(command -v node)"
+  local node_dir; node_dir="$(dirname "$node_bin")"
   sed \
     -e "s|@INSTALL_DIR@|$INSTALL_DIR|g" \
     -e "s|@CONFIG_DIR@|$CONFIG_DIR|g" \
-    -e "s|@NODE_BIN@|$(command -v node)|g" \
+    -e "s|@NODE_BIN@|$node_bin|g" \
+    -e "s|@NODE_DIR@|$node_dir|g" \
+    -e "s|@HOME@|$HOME|g" \
     "$template" > "$plist_dir/sh.maestro.relay.plist"
   # Unload+remove a legacy launchd plist if present.
   if [ -f "$plist_dir/sh.maestro.discord.plist" ]; then
