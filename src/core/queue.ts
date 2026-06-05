@@ -21,8 +21,12 @@ export type QueueDeps = {
     send: (
       agentId: string,
       message: string,
-      sessionId?: string,
-      readOnly?: boolean,
+      opts?: {
+        sessionId?: string;
+        readOnly?: boolean;
+        openTab?: boolean;
+        noSystemPrompt?: boolean;
+      },
     ) => Promise<{
       success: boolean;
       response: string | null;
@@ -163,12 +167,10 @@ export function createQueue(deps: QueueDeps) {
       const fullMessage = [options?.contentOverride ?? message.content, attachmentRefs]
         .filter(Boolean)
         .join('\n\n');
-      const result = await deps.maestro.send(
-        conv.agentId,
-        fullMessage,
-        conv.sessionId ?? undefined,
-        conv.readOnly,
-      );
+      const result = await deps.maestro.send(conv.agentId, fullMessage, {
+        sessionId: conv.sessionId ?? undefined,
+        readOnly: conv.readOnly,
+      });
 
       if (!conv.sessionId && result.sessionId) {
         conv.persistSession(result.sessionId);
