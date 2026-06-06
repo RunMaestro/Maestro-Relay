@@ -3,6 +3,7 @@ import type { BridgeProvider } from './types';
 import { config } from './config';
 import { logger } from './logger';
 import { splitMessage as defaultSplit } from './splitMessage';
+import { AgentNotFoundError, RateLimitError } from './errors';
 
 export interface SendRequest {
   agentId: string;
@@ -113,10 +114,10 @@ export function createServerHandler(deps: ApiDeps) {
     try {
       info = await provider.findOrCreateAgentChannel(body.agentId);
     } catch (err) {
-      const msg = (err as Error).message;
-      if (msg.startsWith('Agent not found:')) {
-        sendJson(res, 404, { success: false, error: msg });
+      if (err instanceof AgentNotFoundError) {
+        sendJson(res, 404, { success: false, error: err.message });
       } else {
+        const msg = (err as Error).message;
         await log.error('api/findOrCreateAgentChannel', msg);
         sendJson(res, 500, { success: false, error: msg });
       }
@@ -137,20 +138,15 @@ export function createServerHandler(deps: ApiDeps) {
           break;
         } catch (err) {
           lastError = err as Error;
-          const discordErr = err as { status?: number; retryAfter?: number };
-          const isRateLimited = discordErr.status === 429 || discordErr.retryAfter != null;
-          if (isRateLimited) {
-            const delay = discordErr.retryAfter ?? 1000;
-            await new Promise((r) => setTimeout(r, delay));
+          if (err instanceof RateLimitError) {
+            await new Promise((r) => setTimeout(r, err.retryAfterMs));
           } else {
             break;
           }
         }
       }
       if (lastError) {
-        const discordErr = lastError as Error & { status?: number; retryAfter?: number };
-        const isRateLimited = discordErr.status === 429 || discordErr.retryAfter != null;
-        if (isRateLimited) {
+        if (lastError instanceof RateLimitError) {
           await log.error('api', 'Rate limited by provider after 3 retries');
           sendJson(res, 429, { success: false, error: 'Rate limited, retry later' });
         } else {
