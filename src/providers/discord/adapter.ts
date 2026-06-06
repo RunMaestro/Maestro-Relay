@@ -296,7 +296,10 @@ export class DiscordProvider implements BridgeProvider {
 export function toRateLimitError(err: unknown): RateLimitError | null {
   if (!err || typeof err !== 'object') return null;
   const e = err as { status?: number; retryAfter?: number; name?: string };
-  if (e.status === 429 || e.retryAfter != null) {
+  // `@discordjs/rest`'s RateLimitError carries a numeric `retryAfter` without a
+  // `status`, so we accept either signal. Requiring `retryAfter` to be a number
+  // avoids promoting unrelated errors that happen to carry a truthy property.
+  if (e.status === 429 || typeof e.retryAfter === 'number') {
     return new RateLimitError(e.retryAfter ?? 1000, `Discord rate limited`);
   }
   return null;

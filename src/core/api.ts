@@ -144,7 +144,11 @@ export function createServerHandler(deps: ApiDeps) {
         } catch (err) {
           lastError = err as Error;
           if (err instanceof RateLimitError) {
-            await new Promise((r) => setTimeout(r, err.retryAfterMs));
+            // Clamp the in-request backoff: never spin with a zero delay, and
+            // never tie up the HTTP connection for more than a few seconds.
+            // Larger backoffs are surfaced to the caller via Retry-After below.
+            const waitMs = Math.min(Math.max(err.retryAfterMs, 100), 5000);
+            await new Promise((r) => setTimeout(r, waitMs));
           } else {
             break;
           }

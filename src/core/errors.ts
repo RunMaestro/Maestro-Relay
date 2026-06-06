@@ -18,6 +18,9 @@ export class RateLimitError extends Error {
 
   constructor(retryAfterMs: number, context?: string) {
     super(context ?? `Rate limited; retry after ${retryAfterMs}ms`);
+    // Restore the prototype chain so `instanceof` works when this class is
+    // subclassed or compiled to older targets / crosses module boundaries.
+    Object.setPrototypeOf(this, new.target.prototype);
     this.name = 'RateLimitError';
     this.retryAfterMs = retryAfterMs;
   }
@@ -32,6 +35,7 @@ export class AgentNotFoundError extends Error {
 
   constructor(agentId: string) {
     super(`Agent not found: ${agentId}`);
+    Object.setPrototypeOf(this, new.target.prototype);
     this.name = 'AgentNotFoundError';
     this.agentId = agentId;
   }
