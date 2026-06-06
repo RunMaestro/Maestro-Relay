@@ -50,8 +50,13 @@ export function parseBody(req: http.IncomingMessage): Promise<SendRequest> {
   });
 }
 
-function sendJson(res: http.ServerResponse, status: number, data: object) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+function sendJson(
+  res: http.ServerResponse,
+  status: number,
+  data: object,
+  headers?: Record<string, string | number>,
+) {
+  res.writeHead(status, { 'Content-Type': 'application/json', ...(headers ?? {}) });
   res.end(JSON.stringify(data));
 }
 
@@ -148,7 +153,16 @@ export function createServerHandler(deps: ApiDeps) {
       if (lastError) {
         if (lastError instanceof RateLimitError) {
           await log.error('api', 'Rate limited by provider after 3 retries');
-          sendJson(res, 429, { success: false, error: 'Rate limited, retry later' });
+          // Round up to whole seconds; clamp to a minimum of 1 so we never
+          // advertise a zero-second backoff that the kernel already waited
+          // through and still hit the limit.
+          const retryAfterSec = Math.max(1, Math.ceil(lastError.retryAfterMs / 1000));
+          sendJson(
+            res,
+            429,
+            { success: false, error: 'Rate limited, retry later' },
+            { 'Retry-After': retryAfterSec },
+          );
         } else {
           await log.error('api', lastError.message);
           sendJson(res, 500, { success: false, error: lastError.message });
