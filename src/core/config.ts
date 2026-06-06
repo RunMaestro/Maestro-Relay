@@ -42,4 +42,12 @@ export const config = {
   get whisperLanguage() {
     return process.env.WHISPER_LANGUAGE || 'auto';
   },
+  /**
+   * Minimum log level for console output. One of `debug`, `info`, `warn`,
+   * `error`. Defaults to `info`. The `error` method always writes to
+   * the log file regardless of level.
+   */
+  get logLevel(): string {
+    return (process.env.LOG_LEVEL || 'info').toLowerCase();
+  },
 };

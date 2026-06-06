@@ -16,7 +16,7 @@ export type ApiDeps = {
   /** Map provider-name → BridgeProvider instance. */
   providers: Map<string, BridgeProvider>;
   splitMessage?: (text: string) => string[];
-  logger?: { error(...args: unknown[]): unknown };
+  logger?: import('./types').KernelLogger;
 };
 
 const MAX_BODY_SIZE = 1_048_576; // 1 MB
@@ -207,16 +207,17 @@ export function startServer(providers: Map<string, BridgeProvider>): http.Server
   const server = http.createServer(handler);
 
   server.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`API server failed to start: port ${config.apiPort} is already in use`);
-    } else {
-      console.error('API server error:', err.message);
-    }
+    void logger.error(
+      'api/startup',
+      err.code === 'EADDRINUSE'
+        ? `API server failed to start: port ${config.apiPort} is already in use`
+        : `API server error: ${err.message}`,
+    );
     process.exit(1);
   });
 
   server.listen(config.apiPort, '127.0.0.1', () => {
-    console.log(`API server listening on http://127.0.0.1:${config.apiPort}`);
+    logger.info('api/startup', `API server listening on http://127.0.0.1:${config.apiPort}`);
   });
 
   return server;

@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { logger } from './logger';
 
 const execFileAsync = promisify(execFile);
 
@@ -212,7 +213,7 @@ async function run(args: string[], opts: RunOptions = {}): Promise<string> {
     if (e.stdout?.trim()) parts.push(`stdout: ${e.stdout.trim()}`);
     if (parts.length === 0) parts.push(e.message || String(err));
     const detail = parts.join(' | ');
-    console.error(`[maestro-cli ${args[0]}] ${detail}`);
+    void logger.error(`maestro-cli/${args[0]}`, detail);
     throw new Error(`maestro-cli ${args[0]} failed: ${detail}`, { cause: err });
   }
 }
@@ -232,7 +233,7 @@ function runSpawn(args: string[]): Promise<string> {
     child.stderr.on('data', (data: Buffer) => stderrChunks.push(data));
 
     child.on('error', (err) => {
-      console.error(`[maestro-cli ${args[0]}] spawn error: ${err.message}`);
+      void logger.error(`maestro-cli/${args[0]}`, `spawn error: ${err.message}`);
       reject(new Error(`maestro-cli ${args[0]} failed: spawn error: ${err.message}`));
     });
 
@@ -248,7 +249,7 @@ function runSpawn(args: string[]): Promise<string> {
         if (stderr) parts.push(`stderr: ${stderr}`);
         if (stdout) parts.push(`stdout: ${stdout}`);
         const detail = parts.join(' | ');
-        console.error(`[maestro-cli ${args[0]}] ${detail}`);
+        void logger.error(`maestro-cli/${args[0]}`, detail);
         reject(new Error(`maestro-cli ${args[0]} failed: ${detail}`));
       }
     });

@@ -54,7 +54,12 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
   return {
     providers: new Map([['discord', makeProvider('discord')]]),
     splitMessage: (s: string) => [s],
-    logger: { error: async () => undefined },
+    logger: {
+      error: async () => undefined,
+      warn: () => undefined,
+      info: () => undefined,
+      debug: () => undefined,
+    },
     ...overrides,
   };
 }
