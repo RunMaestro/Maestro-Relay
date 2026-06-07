@@ -42,7 +42,7 @@ function shouldEmit(level: LogLevel): boolean {
 
 function emit(level: LogLevel, context: string, detail: string, sink: (line: string) => void) {
   if (!shouldEmit(level)) return;
-  sink(formatLine(level.toUpperCase(), context, detail));
+  sink(formatEntry(level.toUpperCase(), context, detail).trimEnd());
 }
 
 export const logger = {
@@ -68,7 +68,7 @@ export const logger = {
     emit('warn', context, detail, (line) => console.warn(line));
   },
   async error(context: string, detail: string): Promise<void> {
-    if (shouldEmit('error')) console.error(formatLine('ERROR', context, detail));
+    if (shouldEmit('error')) console.error(formatEntry('ERROR', context, detail).trimEnd());
     try {
       await ensureDir();
       await appendFile(LOG_FILE, formatEntry('ERROR', context, detail));

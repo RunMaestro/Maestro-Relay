@@ -69,7 +69,7 @@ test('level-gated methods do not emit when disabled', async () => {
     assert.equal(debugCalls.length, 0, 'debug should be suppressed at warn level');
     assert.equal(infoCalls.length, 0, 'info should be suppressed at warn level');
     assert.equal(warnCalls.length, 1, 'warn should pass at warn level');
-    assert.match(warnCalls[0], /\[WARN\] \[test\/ctx\] warn-detail/);
+    assert.match(warnCalls[0], /^\[\d{4}-\d{2}-\d{2}T[^\]]+\] WARN \[test\/ctx\] warn-detail$/);
   } finally {
     console.debug = origDebug;
     console.info = origInfo;
@@ -86,7 +86,7 @@ test('debug emits when level is debug', async () => {
     logger.setLevel('debug');
     logger.debug('test/ctx', 'detail');
     assert.equal(calls.length, 1);
-    assert.match(calls[0], /\[DEBUG\] \[test\/ctx\] detail/);
+    assert.match(calls[0], /^\[\d{4}-\d{2}-\d{2}T[^\]]+\] DEBUG \[test\/ctx\] detail$/);
   } finally {
     console.debug = orig;
   }
@@ -103,7 +103,7 @@ test('error always emits at any level that includes error', async () => {
       calls.length = 0;
       await logger.error('test/ctx', 'err-detail');
       assert.equal(calls.length, 1, `error should fire at level=${level}`);
-      assert.match(calls[0], /\[ERROR\] \[test\/ctx\] err-detail/);
+      assert.match(calls[0], /^\[\d{4}-\d{2}-\d{2}T[^\]]+\] ERROR \[test\/ctx\] err-detail$/);
     }
   } finally {
     console.error = orig;
