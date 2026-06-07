@@ -32,10 +32,6 @@ function formatEntry(level: string, context: string, detail: string): string {
   return `[${ts}] ${level} [${sanitize(context)}] ${sanitize(detail)}\n`;
 }
 
-function formatLine(level: string, context: string, detail: string): string {
-  return `[${level}] [${sanitize(context)}] ${sanitize(detail)}`;
-}
-
 function shouldEmit(level: LogLevel): boolean {
   return LEVELS[level] >= currentLevel;
 }
