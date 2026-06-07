@@ -50,6 +50,12 @@ test('auto-run start rejects channels not connected to an agent', async () => {
   assert.ok(reply.content.includes('not connected to an agent'));
 });
 
+// OS-agnostic relative path for the mocked Auto Run folder. Avoids the
+// Windows pitfall where `path.isAbsolute('/agents/...')` is true and
+// `path.join('/...', x)` prepends `C:\` instead of producing a
+// relative join.
+const MOCK_AUTO_RUN_FOLDER = path.join('agents', 'auto-run-docs');
+
 test('auto-run start resolves a bare filename against the agent Auto Run folder', async () => {
   const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
@@ -64,7 +70,7 @@ test('auto-run start resolves a bare filename against the agent Auto Run folder'
     name: 'TestBot',
     toolType: 'claude',
     cwd: '/proj',
-    autoRunFolderPath: '/agents/auto-run-docs',
+    autoRunFolderPath: MOCK_AUTO_RUN_FOLDER,
   }));
 
   const startMock = mock.method(maestro, 'startAutoRun', async () => '');
@@ -74,7 +80,10 @@ test('auto-run start resolves a bare filename against the agent Auto Run folder'
 
   assert.equal(startMock.mock.callCount(), 1);
   const opts = startMock.mock.calls[0].arguments[0] as { docs: string[] };
-  assert.deepEqual(opts.docs, [path.join('/agents/auto-run-docs', 'plan.md')]);
+  // Compute the expected value via the same OS-agnostic helper the
+  // production code uses internally — guarantees the assertion holds
+  // regardless of which platform's `path.resolve` semantics apply.
+  assert.deepEqual(opts.docs, [resolveContainedDocPath(MOCK_AUTO_RUN_FOLDER, 'plan.md')]);
 });
 
 test('auto-run start resolves a relative subpath against the agent Auto Run folder', async () => {
@@ -91,7 +100,7 @@ test('auto-run start resolves a relative subpath against the agent Auto Run fold
     name: 'TestBot',
     toolType: 'claude',
     cwd: '/proj',
-    autoRunFolderPath: '/agents/auto-run-docs',
+    autoRunFolderPath: MOCK_AUTO_RUN_FOLDER,
   }));
 
   const startMock = mock.method(maestro, 'startAutoRun', async () => '');
@@ -101,7 +110,7 @@ test('auto-run start resolves a relative subpath against the agent Auto Run fold
 
   assert.equal(startMock.mock.callCount(), 1);
   const opts = startMock.mock.calls[0].arguments[0] as { docs: string[] };
-  assert.deepEqual(opts.docs, [path.join('/agents/auto-run-docs', 'subdir/doc.md')]);
+  assert.deepEqual(opts.docs, [resolveContainedDocPath(MOCK_AUTO_RUN_FOLDER, 'subdir/doc.md')]);
 });
 
 test('auto-run start accepts an absolute path that lives inside the agent folder', async () => {
@@ -118,11 +127,14 @@ test('auto-run start accepts an absolute path that lives inside the agent folder
     name: 'TestBot',
     toolType: 'claude',
     cwd: '/proj',
-    autoRunFolderPath: '/agents/auto-run-docs',
+    autoRunFolderPath: MOCK_AUTO_RUN_FOLDER,
   }));
   const startMock = mock.method(maestro, 'startAutoRun', async () => '');
 
-  const inside = '/agents/auto-run-docs/subdir/doc.md';
+  // Build the absolute doc path the same way production does — via
+  // `path.resolve` against the (relative) folder — so the input
+  // round-trips identically on Linux and Windows.
+  const inside = path.join(path.resolve(MOCK_AUTO_RUN_FOLDER), 'subdir', 'doc.md');
   const i = makeInteraction({ doc: inside });
   await execute(i as unknown as Parameters<typeof execute>[0]);
 
@@ -145,11 +157,15 @@ test('auto-run start rejects an absolute path outside the agent folder', async (
     name: 'TestBot',
     toolType: 'claude',
     cwd: '/proj',
-    autoRunFolderPath: '/agents/auto-run-docs',
+    autoRunFolderPath: MOCK_AUTO_RUN_FOLDER,
   }));
   const startMock = mock.method(maestro, 'startAutoRun', async () => '');
 
-  const i = makeInteraction({ doc: '/etc/passwd' });
+  // Build an absolute path that's guaranteed not to live under the
+  // resolved mock folder on any platform. `os.tmpdir()` is portable
+  // and resolvable via path.resolve on both OSes.
+  const outside = path.resolve(os.tmpdir(), 'evil.txt');
+  const i = makeInteraction({ doc: outside });
   await execute(i as unknown as Parameters<typeof execute>[0]);
 
   assert.equal(startMock.mock.callCount(), 0);
@@ -172,7 +188,7 @@ test('auto-run start rejects relative paths that escape the folder via traversal
     name: 'TestBot',
     toolType: 'claude',
     cwd: '/proj',
-    autoRunFolderPath: '/agents/auto-run-docs',
+    autoRunFolderPath: MOCK_AUTO_RUN_FOLDER,
   }));
   const startMock = mock.method(maestro, 'startAutoRun', async () => '');
 
@@ -284,7 +300,7 @@ test('auto-run start surfaces errors from startAutoRun', async () => {
     name: 'TestBot',
     toolType: 'claude',
     cwd: '/proj',
-    autoRunFolderPath: '/agents/auto-run-docs',
+    autoRunFolderPath: MOCK_AUTO_RUN_FOLDER,
   }));
   mock.method(maestro, 'startAutoRun', async () => {
     throw new Error('boom');
