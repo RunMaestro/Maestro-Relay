@@ -3,6 +3,7 @@ import type { BridgeProvider } from './types';
 import { config } from './config';
 import { logger } from './logger';
 import { splitMessage as defaultSplit } from './splitMessage';
+import { AgentNotFoundError, RateLimitError } from './errors';
 
 export interface SendRequest {
   agentId: string;
@@ -49,8 +50,13 @@ export function parseBody(req: http.IncomingMessage): Promise<SendRequest> {
   });
 }
 
-function sendJson(res: http.ServerResponse, status: number, data: object) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+function sendJson(
+  res: http.ServerResponse,
+  status: number,
+  data: object,
+  headers?: Record<string, string | number>,
+) {
+  res.writeHead(status, { 'Content-Type': 'application/json', ...(headers ?? {}) });
   res.end(JSON.stringify(data));
 }
 
@@ -113,10 +119,10 @@ export function createServerHandler(deps: ApiDeps) {
     try {
       info = await provider.findOrCreateAgentChannel(body.agentId);
     } catch (err) {
-      const msg = (err as Error).message;
-      if (msg.startsWith('Agent not found:')) {
-        sendJson(res, 404, { success: false, error: msg });
+      if (err instanceof AgentNotFoundError) {
+        sendJson(res, 404, { success: false, error: err.message });
       } else {
+        const msg = (err as Error).message;
         await log.error('api/findOrCreateAgentChannel', msg);
         sendJson(res, 500, { success: false, error: msg });
       }
@@ -137,22 +143,30 @@ export function createServerHandler(deps: ApiDeps) {
           break;
         } catch (err) {
           lastError = err as Error;
-          const discordErr = err as { status?: number; retryAfter?: number };
-          const isRateLimited = discordErr.status === 429 || discordErr.retryAfter != null;
-          if (isRateLimited) {
-            const delay = discordErr.retryAfter ?? 1000;
-            await new Promise((r) => setTimeout(r, delay));
+          if (err instanceof RateLimitError) {
+            // Clamp the in-request backoff: never spin with a zero delay, and
+            // never tie up the HTTP connection for more than a few seconds.
+            // Larger backoffs are surfaced to the caller via Retry-After below.
+            const waitMs = Math.min(Math.max(err.retryAfterMs, 100), 5000);
+            await new Promise((r) => setTimeout(r, waitMs));
           } else {
             break;
           }
         }
       }
       if (lastError) {
-        const discordErr = lastError as Error & { status?: number; retryAfter?: number };
-        const isRateLimited = discordErr.status === 429 || discordErr.retryAfter != null;
-        if (isRateLimited) {
+        if (lastError instanceof RateLimitError) {
           await log.error('api', 'Rate limited by provider after 3 retries');
-          sendJson(res, 429, { success: false, error: 'Rate limited, retry later' });
+          // Round up to whole seconds; clamp to a minimum of 1 so we never
+          // advertise a zero-second backoff that the kernel already waited
+          // through and still hit the limit.
+          const retryAfterSec = Math.max(1, Math.ceil(lastError.retryAfterMs / 1000));
+          sendJson(
+            res,
+            429,
+            { success: false, error: 'Rate limited, retry later' },
+            { 'Retry-After': retryAfterSec },
+          );
         } else {
           await log.error('api', lastError.message);
           sendJson(res, 500, { success: false, error: lastError.message });

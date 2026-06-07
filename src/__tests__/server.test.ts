@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'http';
 import type { ApiDeps } from '../core/api';
 import type { BridgeProvider } from '../core/types';
+import { AgentNotFoundError, RateLimitError } from '../core/errors';
 
 const mod: {
   createServerHandler?: typeof import('../core/api').createServerHandler;
@@ -62,7 +63,7 @@ function makeDeps(overrides: Partial<ApiDeps> = {}): ApiDeps {
 function request(
   server: http.Server,
   options: { method: string; path: string; body?: object; contentType?: string },
-): Promise<{ status: number; body: any }> {
+): Promise<{ status: number; body: any; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const addr = server.address() as { port: number };
     const payload = options.body ? JSON.stringify(options.body) : undefined;
@@ -82,11 +83,13 @@ function request(
         let data = '';
         res.on('data', (chunk) => (data += chunk));
         res.on('end', () => {
+          let body: unknown;
           try {
-            resolve({ status: res.statusCode!, body: JSON.parse(data) });
+            body = JSON.parse(data);
           } catch {
-            resolve({ status: res.statusCode!, body: data });
+            body = data;
           }
+          resolve({ status: res.statusCode!, body, headers: res.headers });
         });
       },
     );
@@ -294,7 +297,7 @@ test('POST /api/send returns 404 for unknown agent', async () => {
       providers: new Map([
         [
           'discord',
-          makeProvider('discord', { findThrows: new Error('Agent not found: missing') }),
+          makeProvider('discord', { findThrows: new AgentNotFoundError('missing') }),
         ],
       ]),
     }),
@@ -307,6 +310,158 @@ test('POST /api/send returns 404 for unknown agent', async () => {
     });
     assert.equal(res.status, 404);
     assert.match(res.body.error, /Agent not found/);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send retries and surfaces 429 on persistent rate limit', async () => {
+  let calls = 0;
+  const provider: BridgeProvider = {
+    name: 'discord',
+    isReady: () => true,
+    async start() {},
+    async stop() {},
+    resolveConversation: () => null,
+    findOrCreateAgentChannel: async (agentId) => ({
+      channelId: 'ch-1',
+      agentId,
+      agentName: 'Test',
+    }),
+    send: async () => {
+      calls += 1;
+      throw new RateLimitError(1, 'platform rate limited');
+    },
+  };
+  const server = await startTestServer(makeDeps({ providers: new Map([['discord', provider]]) }));
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hi' },
+    });
+    assert.equal(res.status, 429);
+    assert.match(res.body.error, /Rate limited/);
+    assert.equal(res.headers['retry-after'], '1', 'should advertise a Retry-After header');
+    assert.equal(calls, 3, 'should attempt exactly 3 sends before giving up');
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send Retry-After header rounds sub-second backoffs up to 1s', async () => {
+  const provider: BridgeProvider = {
+    name: 'discord',
+    isReady: () => true,
+    async start() {},
+    async stop() {},
+    resolveConversation: () => null,
+    findOrCreateAgentChannel: async (agentId) => ({
+      channelId: 'ch-1',
+      agentId,
+      agentName: 'Test',
+    }),
+    send: async () => {
+      throw new RateLimitError(250, 'sub-second backoff');
+    },
+  };
+  const server = await startTestServer(makeDeps({ providers: new Map([['discord', provider]]) }));
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hi' },
+    });
+    assert.equal(res.status, 429);
+    assert.equal(res.headers['retry-after'], '1');
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send Retry-After header rounds fractional seconds up', async () => {
+  // 1500ms is small enough to keep the test fast (3 × 1.5s = ~4.5s)
+  // but still exercises the round-up branch (Math.ceil(1500 / 1000) = 2).
+  const provider: BridgeProvider = {
+    name: 'discord',
+    isReady: () => true,
+    async start() {},
+    async stop() {},
+    resolveConversation: () => null,
+    findOrCreateAgentChannel: async (agentId) => ({
+      channelId: 'ch-1',
+      agentId,
+      agentName: 'Test',
+    }),
+    send: async () => {
+      throw new RateLimitError(1500, 'fractional backoff');
+    },
+  };
+  const server = await startTestServer(makeDeps({ providers: new Map([['discord', provider]]) }));
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hi' },
+    });
+    assert.equal(res.status, 429);
+    assert.equal(res.headers['retry-after'], '2', '1500ms rounds up to 2s');
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send succeeds on retry after a transient rate limit', async () => {
+  let calls = 0;
+  const sent: string[] = [];
+  const provider: BridgeProvider = {
+    name: 'discord',
+    isReady: () => true,
+    async start() {},
+    async stop() {},
+    resolveConversation: () => null,
+    findOrCreateAgentChannel: async (agentId) => ({
+      channelId: 'ch-1',
+      agentId,
+      agentName: 'Test',
+    }),
+    send: async (_target, msg) => {
+      calls += 1;
+      if (calls === 1) throw new RateLimitError(1, 'transient');
+      sent.push(msg.text);
+    },
+  };
+  const server = await startTestServer(makeDeps({ providers: new Map([['discord', provider]]) }));
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hi' },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(calls, 2);
+    assert.deepEqual(sent, ['hi']);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send returns 500 for non-typed errors from findOrCreateAgentChannel', async () => {
+  const server = await startTestServer(
+    makeDeps({
+      providers: new Map([
+        ['discord', makeProvider('discord', { findThrows: new Error('DB is down') })],
+      ]),
+    }),
+  );
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hi' },
+    });
+    assert.equal(res.status, 500);
+    assert.match(res.body.error, /DB is down/);
   } finally {
     server.close();
   }
