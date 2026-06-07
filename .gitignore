@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 *.db
+logs/
 
 Auto Run Docs/
 models

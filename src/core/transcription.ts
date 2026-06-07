@@ -80,13 +80,14 @@ export async function checkTranscriptionDependencies(): Promise<void> {
   }
 
   if (missing.length > 0) {
-    console.warn(
-      `⚠️ Transcription disabled: missing dependencies: ${missing.join(', ')}. ` +
+    logger.warn(
+      'transcription/deps',
+      `Transcription disabled: missing dependencies: ${missing.join(', ')}. ` +
         'Voice message transcription will be unavailable. See README for setup instructions.',
     );
     transcriberAvailable = false;
   } else {
-    console.info('✅ Voice transcription enabled.');
+    logger.info('transcription/deps', 'Voice transcription enabled.');
     transcriberAvailable = true;
   }
 }

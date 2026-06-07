@@ -1,4 +1,5 @@
 import type { BridgeProvider } from './types';
+import { logger } from './logger';
 
 /**
  * Build the set of provider instances enabled in this deployment.
@@ -27,7 +28,7 @@ async function loadProvider(name: string): Promise<BridgeProvider | null> {
       return new SlackProvider();
     }
     default:
-      console.warn(`[providers] Unknown provider "${name}" — ignoring.`);
+      logger.warn('providers/load', `Unknown provider "${name}" — ignoring.`);
       return null;
   }
 }

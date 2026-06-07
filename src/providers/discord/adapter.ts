@@ -71,7 +71,7 @@ export class DiscordProvider implements BridgeProvider {
     );
 
     client.once('ready', async (c) => {
-      console.log(`[discord] logged in as ${c.user.tag}`);
+      logger.info('discord/ready', `logged in as ${c.user.tag}`);
       await checkTranscriptionDependencies();
     });
 
@@ -90,7 +90,7 @@ export class DiscordProvider implements BridgeProvider {
           try {
             await cmd.autocomplete(interaction);
           } catch (err) {
-            console.error('Autocomplete error:', err);
+            await logger.error('discord/autocomplete', String(err));
           }
         }
         return;
@@ -110,7 +110,7 @@ export class DiscordProvider implements BridgeProvider {
       try {
         await cmd.execute(interaction);
       } catch (err) {
-        console.error('Command error:', err);
+        await logger.error('discord/command', `${interaction.commandName}: ${String(err)}`);
         const msg = { content: '❌ An error occurred.', ephemeral: true };
         if (interaction.replied || interaction.deferred) {
           await interaction.followUp(msg);
@@ -130,7 +130,7 @@ export class DiscordProvider implements BridgeProvider {
       transcribeVoiceAttachment,
       isTranscriberAvailable,
       splitMessage,
-      logger: console,
+      logger: ctx.logger,
     });
     client.on('messageCreate', handleMessageCreate);
 

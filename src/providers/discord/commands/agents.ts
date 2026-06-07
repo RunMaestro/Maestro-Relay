@@ -11,6 +11,7 @@ import { threadDb } from '../threadsDb';
 import { cleanupAgentFiles } from '../../../core/attachments';
 import { clampFieldValue, clampTitle } from '../embed';
 import { discordConfig } from '../config';
+import { logger } from '../../../core/logger';
 
 function missingBotScopeMessage(): string {
   return (
@@ -334,14 +335,18 @@ async function handleDisconnect(interaction: ChatInputCommandInteraction): Promi
       const agentCwd = await maestro.getAgentCwd(agentId);
       if (agentCwd) {
         await cleanupAgentFiles(agentCwd);
-        console.log(`[disconnect] Cleaned up files for agent ${agentId}`);
+        logger.info('discord/disconnect', `Cleaned up files for agent ${agentId}`);
       }
     } catch (err) {
-      console.warn(`[disconnect] Failed to clean up files for agent ${agentId}:`, err);
+      void logger.error(
+        'discord/disconnect',
+        `Failed to clean up files for agent ${agentId}: ${String(err)}`,
+      );
     }
   } else {
-    console.log(
-      `[disconnect] Skipping file cleanup for agent ${agentId} — ${otherChannels.length} other channel(s) and ${otherThreads.length} other thread(s) still active`,
+    logger.info(
+      'discord/disconnect',
+      `Skipping file cleanup for agent ${agentId} - ${otherChannels.length} other channel(s) and ${otherThreads.length} other thread(s) still active`,
     );
   }
 
