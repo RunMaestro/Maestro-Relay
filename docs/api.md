@@ -98,6 +98,6 @@ Returns `503` with `"status":"not_ready"` if no provider is connected.
 | `405`  | Method not allowed                                             |
 | `413`  | Request body exceeds 1 MB                                      |
 | `415`  | Wrong Content-Type (must be `application/json`)                |
-| `429`  | Rate limited by upstream platform after 3 retries              |
+| `429`  | Rate limited by upstream platform after 3 retries (response includes a `Retry-After` header in seconds) |
 | `500`  | Internal server error                                          |
 | `503`  | The named provider is not connected                            |

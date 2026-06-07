@@ -68,6 +68,7 @@ The schema upgrades on first start: legacy `agent_channels` (single-PK `channel_
 | `src/core/maestro.ts`                         | `maestro-cli` wrapper                                  |
 | `src/core/transcription.ts`                   | ffmpeg + whisper pipeline                              |
 | `src/core/attachments.ts`                     | Provider-agnostic attachment download                  |
+| `src/core/errors.ts`                          | Typed errors (`RateLimitError`, `AgentNotFoundError`)  |
 | `src/providers/discord/adapter.ts`            | DiscordProvider implementing BridgeProvider            |
 | `src/providers/discord/messageCreate.ts`      | Discord message → IncomingMessage                      |
 | `src/providers/discord/voice.ts`              | Discord voice-message detection                        |

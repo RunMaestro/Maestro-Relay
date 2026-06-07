@@ -24,6 +24,7 @@ This repo is **Maestro Relay** — a chat-platform-to-Maestro bridge built aroun
 - `src/core/maestro.ts` — `maestro-cli` wrapper
 - `src/core/transcription.ts` — generic ffmpeg + whisper pipeline
 - `src/core/attachments.ts` — provider-agnostic attachment download
+- `src/core/errors.ts` — typed kernel errors (`RateLimitError`, `AgentNotFoundError`) providers throw
 - `src/core/logger.ts`, `src/core/config.ts`, `src/core/splitMessage.ts`
 
 ### Discord provider
