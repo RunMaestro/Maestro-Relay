@@ -25,7 +25,12 @@ export interface Fence {
 export function parseFenceLine(line: string): Fence | null {
   const m = line.match(/^ {0,3}(`{3,}|~{3,})\s*(.*)$/);
   if (!m) return null;
-  return { char: m[1][0] as '`' | '~', len: m[1].length, info: m[2].trim() };
+  const char = m[1][0] as '`' | '~';
+  const info = m[2].trim();
+  // CommonMark: a backtick fence's info string may not contain a backtick
+  // (it would be ambiguous with inline code), so such a line is not a fence.
+  if (char === '`' && info.includes('`')) return null;
+  return { char, len: m[1].length, info };
 }
 
 /** Whether `fence` can close an open block started by `open`. */

@@ -83,6 +83,9 @@ function repairFences(parts: string[]): string[] {
  * re-fencing never pushes a chunk past `maxLength`.
  */
 export function splitMessage(text: string, maxLength: number = DEFAULT_MAX_LENGTH): string[] {
+  // A message that already fits is sent as-is — the fence reserve only matters
+  // once a split is actually required, so don't let it force an unneeded split.
+  if (text.length <= maxLength) return [text];
   const reserve = fenceReserve(text);
   const budget = reserve > 0 ? Math.max(1, maxLength - reserve) : maxLength;
   const parts = rawSplit(text, budget);

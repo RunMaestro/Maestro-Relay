@@ -37,6 +37,21 @@ function isTableRow(line: string): boolean {
   return line.includes('|') && line.trim().length > 0 && parseFenceLine(line) === null;
 }
 
+/** Number of leading spaces (CommonMark: 4+ means the line is indented code, not a table). */
+function leadingSpaces(line: string): number {
+  const m = line.match(/^ */);
+  return m ? m[0].length : 0;
+}
+
+/**
+ * A line that begins a different block-level structure (list item, blockquote,
+ * or ATX heading). GFM ends a table at such a line even when it contains a pipe,
+ * so the body scan must stop here rather than fold it into the table.
+ */
+function isBlockStart(line: string): boolean {
+  return /^ {0,3}([-*+]\s|\d+[.)]\s|>|#{1,6}\s)/.test(line);
+}
+
 /** Split a markdown table row into trimmed cells, honoring `\|` escapes and optional outer pipes. */
 function splitCells(row: string): string[] {
   const s = row.trim();
@@ -133,8 +148,11 @@ function renderTable(headerLine: string, separatorLine: string, bodyLines: strin
     return Array.from({ length: columns }, (_, i) => cells[i] ?? '');
   });
 
+  // Clamp each column to the cap up front: no single column can exceed the
+  // total budget, and this keeps capWidths' per-character loop bounded by the
+  // cap (not by cell length) so a pasted 100k-char cell can't stall the loop.
   let widths = Array.from({ length: columns }, (_, i) =>
-    Math.max(header[i].length, ...body.map((r) => r[i].length), 1),
+    Math.min(Math.max(header[i].length, ...body.map((r) => r[i].length), 1), MAX_TABLE_WIDTH),
   );
   widths = capWidths(widths, MAX_TABLE_WIDTH);
 
@@ -178,6 +196,8 @@ export function renderTables(text: string): string {
     if (
       open === null &&
       isTableRow(line) &&
+      // 4+ leading spaces is an indented code block, not a table (CommonMark).
+      leadingSpaces(line) <= 3 &&
       i + 1 < lines.length &&
       isSeparator(lines[i + 1]) &&
       // A real GFM table's separator has the same column count as its header;
@@ -188,10 +208,11 @@ export function renderTables(text: string): string {
       const separator = lines[i + 1];
       const body: string[] = [];
       let j = i + 2;
-      // Collect every subsequent table row. A row of dashes (e.g. `| --- |`)
-      // is valid table data, so the separator check is NOT a terminator here —
-      // GFM ends a table at the first non-row line (typically a blank line).
-      while (j < lines.length && isTableRow(lines[j])) {
+      // Collect subsequent table rows. A row of dashes (e.g. `| --- |`) is valid
+      // table data, so the separator check is NOT a terminator here. GFM ends a
+      // table at the first non-row line or the start of another block (list,
+      // blockquote, heading) — even one that happens to contain a pipe.
+      while (j < lines.length && isTableRow(lines[j]) && !isBlockStart(lines[j])) {
         body.push(lines[j]);
         j++;
       }

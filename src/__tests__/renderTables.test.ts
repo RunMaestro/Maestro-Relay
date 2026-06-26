@@ -113,6 +113,35 @@ test('renderTables does not convert header/separator column-count mismatches', (
   assert.equal(renderTables(input), input);
 });
 
+test('renderTables does not treat a backtick line with backticks in its info as a fence', () => {
+  // Per CommonMark a backtick fence opener may not have backticks in its info
+  // string, so this line is plain text and must not suppress the table below.
+  const input = ['```js `inline`', 'just prose', '', '| A | B |', '| - | - |', '| 1 | 2 |'].join(
+    '\n',
+  );
+  const out = renderTables(input);
+  assert.ok(out.includes('+---+---+'), 'the following table is still converted');
+});
+
+test('renderTables stops the table at a following list/blockquote even with a pipe', () => {
+  const input = ['| A | B |', '| - | - |', '| 1 | 2 |', '- next | note', '> quote | here'].join(
+    '\n',
+  );
+  const out = renderTables(input);
+
+  // The table ends before the list item; list and quote stay as raw markdown.
+  assert.ok(out.includes('| 1 | 2 |'), 'table body rendered');
+  assert.ok(out.includes('\n- next | note'), 'list item left intact outside the table');
+  assert.ok(out.includes('\n> quote | here'), 'blockquote left intact outside the table');
+  assert.equal(out.split('```').length - 1, 2, 'exactly one fenced block');
+});
+
+test('renderTables does not convert a 4-space-indented (indented-code) table', () => {
+  const input = ['    | A | B |', '    | - | - |', '    | 1 | 2 |'].join('\n');
+  // Indented 4+ spaces is a code block, not a table — leave it verbatim.
+  assert.equal(renderTables(input), input);
+});
+
 test('renderTables still converts a table after an over-indented (non-)fence line', () => {
   // 4+ leading spaces is indented code, not a fence, so it must NOT suppress
   // table detection for the table that follows.

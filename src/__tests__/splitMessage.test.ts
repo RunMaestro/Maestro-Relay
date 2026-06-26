@@ -69,6 +69,14 @@ test('splitMessage treats an inner ``` inside a 4-backtick block as content', ()
   }
 });
 
+test('splitMessage does not split a fenced message that already fits', () => {
+  // Length between (maxLength - reserve) and maxLength must still be one chunk.
+  const body = 'x'.repeat(DEFAULT_MAX_LENGTH - 10);
+  const input = '```\n' + body + '\n```';
+  assert.ok(input.length <= DEFAULT_MAX_LENGTH, 'precondition: fits in one message');
+  assert.deepEqual(splitMessage(input), [input]);
+});
+
 test('splitMessage reserves for fence info strings (language labels)', () => {
   // A re-opened ```typescript line is longer than a bare ``` — the reserve must
   // be sized from the actual fence, not a fixed constant.
@@ -79,8 +87,9 @@ test('splitMessage reserves for fence info strings (language labels)', () => {
   for (const part of parts) {
     assert.ok(part.length <= MAX_LENGTH, `chunk length ${part.length} <= ${MAX_LENGTH}`);
   }
-  // The language label is preserved on every re-opened chunk.
-  assert.ok(parts.slice(1, -1).every((p) => p.startsWith('```typescript')));
+  // The language label is preserved on every re-opened chunk (slice(1) so the
+  // assertion is non-vacuous even for a two-part split).
+  assert.ok(parts.slice(1).every((p) => p.startsWith('```typescript')));
 });
 
 test('splitMessage honors a custom maxLength even when re-fencing', () => {
