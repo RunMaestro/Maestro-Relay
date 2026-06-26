@@ -69,6 +69,20 @@ test('splitMessage treats an inner ``` inside a 4-backtick block as content', ()
   }
 });
 
+test('splitMessage reserves for fence info strings (language labels)', () => {
+  // A re-opened ```typescript line is longer than a bare ``` — the reserve must
+  // be sized from the actual fence, not a fixed constant.
+  const input = '```typescript\n' + 'x'.repeat(5000) + '\n```';
+  const parts = splitMessage(input);
+
+  assert.ok(parts.length > 1, 'split into multiple chunks');
+  for (const part of parts) {
+    assert.ok(part.length <= MAX_LENGTH, `chunk length ${part.length} <= ${MAX_LENGTH}`);
+  }
+  // The language label is preserved on every re-opened chunk.
+  assert.ok(parts.slice(1, -1).every((p) => p.startsWith('```typescript')));
+});
+
 test('splitMessage honors a custom maxLength even when re-fencing', () => {
   const code = 'c'.repeat(120);
   const input = `\`\`\`\n${code}\n\`\`\``;

@@ -17,9 +17,13 @@ export interface Fence {
   info: string;
 }
 
-/** Parse a line as a fenced-code delimiter, or return null if it isn't one. */
+/**
+ * Parse a line as a fenced-code delimiter, or return null if it isn't one.
+ * Per CommonMark a fence may be indented at most three spaces; four or more
+ * makes it an indented-code line, not a fence, so we must not treat it as one.
+ */
 export function parseFenceLine(line: string): Fence | null {
-  const m = line.match(/^\s*(`{3,}|~{3,})\s*(.*)$/);
+  const m = line.match(/^ {0,3}(`{3,}|~{3,})\s*(.*)$/);
   if (!m) return null;
   return { char: m[1][0] as '`' | '~', len: m[1].length, info: m[2].trim() };
 }

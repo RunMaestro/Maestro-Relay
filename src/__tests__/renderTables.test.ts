@@ -113,6 +113,17 @@ test('renderTables does not convert header/separator column-count mismatches', (
   assert.equal(renderTables(input), input);
 });
 
+test('renderTables still converts a table after an over-indented (non-)fence line', () => {
+  // 4+ leading spaces is indented code, not a fence, so it must NOT suppress
+  // table detection for the table that follows.
+  const input = ['    ```', 'indented sample', '', '| A | B |', '| - | - |', '| 1 | 2 |'].join(
+    '\n',
+  );
+  const out = renderTables(input);
+  assert.ok(out.includes('+---+---+'), 'table after indented line is still rendered');
+  assert.ok(out.startsWith('    ```'), 'the indented line is left as-is');
+});
+
 test('renderTables truncates wide cells with an ellipsis under the width cap', () => {
   const long = 'x'.repeat(120);
   const input = ['| Col |', '| --- |', `| ${long} |`].join('\n');

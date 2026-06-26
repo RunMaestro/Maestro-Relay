@@ -9,11 +9,24 @@ import {
 export const DEFAULT_MAX_LENGTH = 1990;
 
 /**
- * Headroom reserved from `maxLength` when the text contains code fences, so the
- * extra fence line that re-fencing prepends/appends to a chunk cannot push it
- * past `maxLength`. Covers a long fence marker plus its newline and info string.
+ * Worst-case headroom that re-fencing can add to a single chunk: a continuation
+ * chunk may be prepended with the re-opened fence line (marker + info + newline)
+ * AND appended with a closing fence line (marker + newline). Sized from the
+ * actual fences in the text so it covers any fence length or language label — a
+ * fixed reserve cannot, since info strings are unbounded. Returns 0 when there
+ * are no fences, leaving fence-free splitting byte-for-byte unchanged.
  */
-const FENCE_RESERVE = 16;
+function fenceReserve(text: string): number {
+  let maxPrepend = 0;
+  let maxAppend = 0;
+  for (const line of text.split('\n')) {
+    const f = parseFenceLine(line);
+    if (!f) continue;
+    maxPrepend = Math.max(maxPrepend, openLine(f).length + 1); // re-opened line + '\n'
+    maxAppend = Math.max(maxAppend, closeLine(f).length + 1); // closing line + '\n'
+  }
+  return maxPrepend + maxAppend;
+}
 
 /**
  * Greedy newline-preserving split (the original behavior). Splits on the last
@@ -62,21 +75,17 @@ function repairFences(parts: string[]): string[] {
   return out;
 }
 
-/** Does the text contain at least one fenced-code delimiter line? */
-function hasFence(text: string): boolean {
-  return text.split('\n').some((line) => parseFenceLine(line) !== null);
-}
-
 /**
  * Split a string into chunks that fit within `maxLength`.
  * Splits on newlines when possible to preserve formatting, and keeps fenced
  * code blocks intact by re-fencing across chunk boundaries. When fences are
- * present a small budget is reserved so re-fencing never exceeds `maxLength`.
+ * present, budget is reserved up front (sized from the actual fences) so
+ * re-fencing never pushes a chunk past `maxLength`.
  */
 export function splitMessage(text: string, maxLength: number = DEFAULT_MAX_LENGTH): string[] {
-  const fenced = hasFence(text);
-  const budget = fenced ? Math.max(1, maxLength - FENCE_RESERVE) : maxLength;
+  const reserve = fenceReserve(text);
+  const budget = reserve > 0 ? Math.max(1, maxLength - reserve) : maxLength;
   const parts = rawSplit(text, budget);
   if (parts.length <= 1) return parts;
-  return fenced ? repairFences(parts) : parts;
+  return reserve > 0 ? repairFences(parts) : parts;
 }
