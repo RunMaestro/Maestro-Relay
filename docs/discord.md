@@ -85,6 +85,7 @@ npm run deploy-commands
 - **Read-only mode** via `/agents readonly on` lets the bridge POST agent updates to the channel (via the HTTP API) without forwarding user messages back. Toggle off with `/agents readonly off`.
 - **Reactions**: `⏳` while a message is queued, `🎧` while a voice message is being transcribed.
 - **Usage stats** are appended below each agent reply (tokens, cost, context %).
+- **Markdown tables** in agent replies are rendered as aligned, fenced ASCII tables so they display correctly (Discord has no native table syntax). See [architecture.md → Output rendering](architecture.md#output-rendering).
 
 ## Security
 
