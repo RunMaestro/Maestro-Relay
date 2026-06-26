@@ -12,6 +12,8 @@
  * imports a chat SDK.
  */
 
+import { parseFenceLine, closesFence, type Fence } from './fences';
+
 /** Max combined content width (sum of column widths) before we truncate cells. */
 export const MAX_TABLE_WIDTH = 56;
 
@@ -19,11 +21,6 @@ export const MAX_TABLE_WIDTH = 56;
 const MIN_COL_WIDTH = 3;
 
 type Align = 'left' | 'right' | 'center';
-
-/** A fenced-code delimiter line: ``` or ~~~ (optionally indented, optional info string). */
-function isFenceDelimiter(line: string): boolean {
-  return /^\s*(```|~~~)/.test(line);
-}
 
 /**
  * A GFM separator row, e.g. `|---|:--:|` or `:-- | --:`.
@@ -37,7 +34,7 @@ function isSeparator(line: string): boolean {
 
 /** A candidate table row: contains a pipe and isn't a fence delimiter. */
 function isTableRow(line: string): boolean {
-  return line.includes('|') && line.trim().length > 0 && !isFenceDelimiter(line);
+  return line.includes('|') && line.trim().length > 0 && parseFenceLine(line) === null;
 }
 
 /** Split a markdown table row into trimmed cells, honoring `\|` escapes and optional outer pipes. */
@@ -160,30 +157,41 @@ export function renderTables(text: string): string {
   if (!text.includes('|')) return text; // fast path: no pipes, no tables
   const lines = text.split('\n');
   const out: string[] = [];
-  let inFence = false;
+  let open: Fence | null = null; // current open code fence, or null
   let i = 0;
 
   while (i < lines.length) {
     const line = lines[i];
 
-    if (isFenceDelimiter(line)) {
-      inFence = !inFence;
+    const fence = parseFenceLine(line);
+    if (fence) {
+      if (open) {
+        if (closesFence(open, fence)) open = null;
+      } else {
+        open = fence;
+      }
       out.push(line);
       i++;
       continue;
     }
 
     if (
-      !inFence &&
+      open === null &&
       isTableRow(line) &&
       i + 1 < lines.length &&
-      isSeparator(lines[i + 1])
+      isSeparator(lines[i + 1]) &&
+      // A real GFM table's separator has the same column count as its header;
+      // requiring this avoids rewriting prose that merely looks table-ish.
+      splitCells(lines[i + 1]).length === splitCells(line).length
     ) {
       const header = line;
       const separator = lines[i + 1];
       const body: string[] = [];
       let j = i + 2;
-      while (j < lines.length && isTableRow(lines[j]) && !isSeparator(lines[j])) {
+      // Collect every subsequent table row. A row of dashes (e.g. `| --- |`)
+      // is valid table data, so the separator check is NOT a terminator here —
+      // GFM ends a table at the first non-row line (typically a blank line).
+      while (j < lines.length && isTableRow(lines[j])) {
         body.push(lines[j]);
         j++;
       }

@@ -89,6 +89,30 @@ test('renderTables converts multiple tables in one message', () => {
   assert.ok(out.includes('between'));
 });
 
+test('renderTables keeps body rows that look like a separator (regression: data loss)', () => {
+  // A dash-only data row must not terminate the table early.
+  const input = ['| A | B |', '| --- | --- |', '| --- | --- |', '| 1 | 2 |'].join('\n');
+  const out = renderTables(input);
+
+  // All three body rows survive inside one fenced table; nothing leaks as raw markdown.
+  assert.equal(out.split('```').length - 1, 2, 'exactly one fenced block');
+  assert.ok(out.includes('| --- | --- |'), 'dash row rendered as data');
+  assert.ok(out.includes('| 1   | 2   |'), 'trailing row survives');
+});
+
+test('renderTables ignores a table-like block inside a longer (4-backtick) fence', () => {
+  const input = ['````', '| A | B |', '| - | - |', '| 1 | 2 |', '```', 'still inside', '````'].join(
+    '\n',
+  );
+  // The inner ``` does not close the ```` block, so the table stays untouched.
+  assert.equal(renderTables(input), input);
+});
+
+test('renderTables does not convert header/separator column-count mismatches', () => {
+  const input = ['a | b | c', '--- | ---', '1 | 2'].join('\n');
+  assert.equal(renderTables(input), input);
+});
+
 test('renderTables truncates wide cells with an ellipsis under the width cap', () => {
   const long = 'x'.repeat(120);
   const input = ['| Col |', '| --- |', `| ${long} |`].join('\n');

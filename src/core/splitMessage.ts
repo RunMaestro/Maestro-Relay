@@ -1,4 +1,19 @@
+import {
+  type Fence,
+  danglingFence,
+  openLine,
+  closeLine,
+  parseFenceLine,
+} from './fences';
+
 export const DEFAULT_MAX_LENGTH = 1990;
+
+/**
+ * Headroom reserved from `maxLength` when the text contains code fences, so the
+ * extra fence line that re-fencing prepends/appends to a chunk cannot push it
+ * past `maxLength`. Covers a long fence marker plus its newline and info string.
+ */
+const FENCE_RESERVE = 16;
 
 /**
  * Greedy newline-preserving split (the original behavior). Splits on the last
@@ -22,35 +37,22 @@ function rawSplit(text: string, maxLength: number): string[] {
   return parts;
 }
 
-/** The open fence marker (``` or ~~~) left dangling at the end of `chunk`, or null if balanced. */
-function danglingFence(chunk: string): string | null {
-  let open: string | null = null;
-  for (const line of chunk.split('\n')) {
-    const m = line.match(/^\s*(`{3,}|~{3,})/);
-    if (!m) continue;
-    const marker = m[1][0].repeat(3); // normalize to a 3-char marker
-    if (open === null) open = marker;
-    else if (open[0] === marker[0]) open = null; // same fence char closes the block
-  }
-  return open;
-}
-
 /**
  * Re-balance code fences across chunk boundaries: when a chunk ends inside a
- * fenced block, close the fence on that chunk and re-open it on the next, so a
- * code block (e.g. a rendered table) never loses its monospace rendering when
- * a long message is split. Adds at most a 4-char fence line per affected chunk,
- * which stays within the 2000-char platform ceiling given DEFAULT_MAX_LENGTH.
+ * fenced block, close the fence on that chunk and re-open it (preserving the
+ * original marker length and info string) on the next, so a code block — e.g. a
+ * rendered table — never loses its monospace rendering when a long message is
+ * split.
  */
 function repairFences(parts: string[]): string[] {
   const out: string[] = [];
-  let carry: string | null = null; // fence to re-open at the start of the next chunk
+  let carry: Fence | null = null; // fence to re-open at the start of the next chunk
 
   for (let part of parts) {
-    if (carry) part = carry + '\n' + part;
+    if (carry) part = openLine(carry) + '\n' + part;
     const open = danglingFence(part);
     if (open) {
-      part = part + '\n' + open; // close the still-open fence
+      part = part + '\n' + closeLine(open);
       carry = open;
     } else {
       carry = null;
@@ -60,13 +62,21 @@ function repairFences(parts: string[]): string[] {
   return out;
 }
 
+/** Does the text contain at least one fenced-code delimiter line? */
+function hasFence(text: string): boolean {
+  return text.split('\n').some((line) => parseFenceLine(line) !== null);
+}
+
 /**
  * Split a string into chunks that fit within `maxLength`.
  * Splits on newlines when possible to preserve formatting, and keeps fenced
- * code blocks intact by re-fencing across chunk boundaries.
+ * code blocks intact by re-fencing across chunk boundaries. When fences are
+ * present a small budget is reserved so re-fencing never exceeds `maxLength`.
  */
 export function splitMessage(text: string, maxLength: number = DEFAULT_MAX_LENGTH): string[] {
-  const parts = rawSplit(text, maxLength);
+  const fenced = hasFence(text);
+  const budget = fenced ? Math.max(1, maxLength - FENCE_RESERVE) : maxLength;
+  const parts = rawSplit(text, budget);
   if (parts.length <= 1) return parts;
-  return repairFences(parts);
+  return fenced ? repairFences(parts) : parts;
 }

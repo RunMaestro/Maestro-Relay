@@ -53,3 +53,30 @@ test('splitMessage leaves fence-free splits unchanged', () => {
   const parts = splitMessage(`${left}\n${right}`);
   assert.deepEqual(parts, [left, right]);
 });
+
+test('splitMessage treats an inner ``` inside a 4-backtick block as content', () => {
+  const before = 'p'.repeat(1500);
+  const inner = 'c'.repeat(800) + '\n```\n' + 'd'.repeat(800); // a literal ``` line inside
+  const input = `${before}\n\`\`\`\`\n${inner}\n\`\`\`\``;
+  const parts = splitMessage(input);
+
+  assert.ok(parts.length >= 2, 'message was split');
+  // Each chunk must have balanced 4-backtick fences; the inner ``` must not be
+  // mistaken for a close/open, which would corrupt the block.
+  for (const part of parts) {
+    const four = part.split('````').length - 1;
+    assert.equal(four % 2, 0, `balanced 4-backtick fences: ${four}`);
+  }
+});
+
+test('splitMessage honors a custom maxLength even when re-fencing', () => {
+  const code = 'c'.repeat(120);
+  const input = `\`\`\`\n${code}\n\`\`\``;
+  const max = 40;
+  const parts = splitMessage(input, max);
+
+  assert.ok(parts.length > 1, 'split into multiple chunks');
+  for (const part of parts) {
+    assert.ok(part.length <= max, `chunk length ${part.length} <= ${max}`);
+  }
+});
