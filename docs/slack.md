@@ -69,6 +69,7 @@ The Slack provider deliberately ships a smaller command surface than Discord —
 - **Reactions**: `⏳` (`hourglass_flowing_sand`) while a message is queued. The Slack API requires emoji *names*, not Unicode characters; the adapter maps `⏳ 🎧 ✅ ❌` to the corresponding Slack names — pass any of them to `provider.react()` and the mapping happens automatically.
 - **Typing indicator**: not exposed by Slack's Web API; `sendTyping` is a no-op on this provider.
 - **Usage stats** are appended below each agent reply (tokens, cost, context %).
+- **Markdown tables** in agent replies are rendered as aligned, fenced ASCII tables so they display correctly (Slack mrkdwn has no native table syntax). See [architecture.md → Output rendering](architecture.md#output-rendering).
 - **Channel naming**: agent channels are named `maestro-<sanitized-agent-name>-<id-prefix>`, where `id-prefix` is the first 8 alphanumeric characters of the agent ID. The agent ID makes the name unique even when two different agents normalize to the same display name. The whole result is capped at 80 characters. Both `/agents new` and the HTTP-API auto-create path (`POST /api/send`) use the same helper. If the channel already exists but is archived, the adapter unarchives it; if unarchive fails, it falls back to creating a fresh channel with a `-<timestamp>` suffix appended to the base name.
 
 ## Storage
