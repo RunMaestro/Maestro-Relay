@@ -29,20 +29,21 @@ import { toRateLimitError } from './errors';
 export { toRateLimitError };
 
 /**
- * Microsoft Teams provider.
+ * Microsoft Teams provider (Phase 1, DM/`personal` scope).
  *
- * Phase 2 (TEAMS-02) stands up the adapter lifecycle only: the Bot
- * Framework `CloudAdapter`, the `restify` server, and the
- * `POST /api/messages` endpoint that the Azure Bot Service posts to.
- * The bot handler is a placeholder and inbound/outbound/command logic
- * is stubbed — TEAMS-03/04/05 fill these in.
+ * Runs the Bot Framework `CloudAdapter` behind a `restify` `POST /api/messages`
+ * endpoint that the Azure Bot Service posts inbound activities to. Inbound turns
+ * are handled by `MaestroTeamsBot` (see `messageCreate.ts`); outbound replies and
+ * proactive `/api/send` pushes go out via `continueConversationAsync`, keyed on a
+ * conversation reference captured from the user's first message. Teams bots cannot
+ * add reactions, so `react` is intentionally not implemented. Channel/`team` scope
+ * is a later phase.
  */
 export class TeamsProvider implements BridgeProvider {
   readonly name = 'teams';
   private adapter: CloudAdapter | null = null;
   private server: restify.Server | null = null;
   private started = false;
-  private pendingChannels = new Map<string, Promise<AgentChannelInfo>>();
 
   async start(ctx: KernelContext): Promise<void> {
     const auth = new ConfigurationBotFrameworkAuthentication(
