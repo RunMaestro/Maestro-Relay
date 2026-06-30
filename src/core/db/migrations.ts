@@ -9,6 +9,7 @@ import type Database from 'better-sqlite3';
  *  3. Add `provider` column + composite PK (provider, channel_id) to agent_channels
  *  4. Rename `agent_threads` → `discord_agent_threads`
  *  5. Add `slack_agent_conversations` thread/timestamp registry
+ *  6. Add `teams_conversation_refs` proactive-messaging reference store
  */
 export function runMigrations(db: Database.Database): void {
   ensureReadOnlyColumn(db);
@@ -17,6 +18,7 @@ export function runMigrations(db: Database.Database): void {
   ensureDiscordThreadsTable(db);
   ensureOwnerUserIdColumn(db);
   ensureSlackConversationsTable(db);
+  ensureTeamsConversationRefsTable(db);
 }
 
 export function ensureOwnerUserIdColumn(database: Database.Database): void {
@@ -131,6 +133,18 @@ function ensureSlackConversationsTable(database: Database.Database): void {
       owner_user_id TEXT,
       session_id    TEXT,
       created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+}
+
+function ensureTeamsConversationRefsTable(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS teams_conversation_refs (
+      conversation_id TEXT PRIMARY KEY,
+      reference_json  TEXT NOT NULL,
+      service_url     TEXT NOT NULL,
+      tenant_id       TEXT,
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
 }
