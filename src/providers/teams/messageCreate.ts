@@ -7,6 +7,7 @@ import type {
 import { conversationRefsDb } from './conversationRefsDb';
 import { channelDb } from './channelsDb';
 import { teamsConfig } from './config';
+import { tryHandleCommand } from './commands';
 
 /**
  * Inbound handling for the Microsoft Teams provider (Phase 1, DM/`personal`
@@ -71,15 +72,6 @@ export function translateActivity(
     isThread: false,
     raw: activity,
   };
-}
-
-// TEAMS-05 replaces this import with the real command dispatcher.
-async function tryHandleCommand(
-  _turnCtx: TurnContext,
-  _text: string,
-  _userId: string,
-): Promise<boolean> {
-  return false;
 }
 
 /**
