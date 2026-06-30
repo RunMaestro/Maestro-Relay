@@ -18,6 +18,7 @@ import type {
 import { AgentNotFoundError } from '../../core/errors';
 import { teamsConfig } from './config';
 import { logger } from '../../core/logger';
+import { MaestroTeamsBot } from './messageCreate';
 
 /**
  * Microsoft Teams provider.
@@ -35,7 +36,7 @@ export class TeamsProvider implements BridgeProvider {
   private started = false;
   private pendingChannels = new Map<string, Promise<AgentChannelInfo>>();
 
-  async start(_ctx: KernelContext): Promise<void> {
+  async start(ctx: KernelContext): Promise<void> {
     const auth = new ConfigurationBotFrameworkAuthentication(
       {},
       new ConfigurationServiceClientCredentialFactory({
@@ -51,8 +52,7 @@ export class TeamsProvider implements BridgeProvider {
       void logger.error('teams/turn', String(err));
     };
 
-    // TEAMS-03 replaces this placeholder with the real MaestroTeamsBot.
-    const bot = { run: async (_c: TurnContext) => {} };
+    const bot = new MaestroTeamsBot(ctx);
 
     const server = restify.createServer();
     server.use(restify.plugins.bodyParser());
