@@ -97,7 +97,8 @@ normalize_module() {
   case "$raw" in
     discord|'') echo "discord" ;;
     slack) echo "slack" ;;
-    *) die "Unsupported module/provider: $raw (supported: discord, slack)" ;;
+    teams) echo "teams" ;;
+    *) die "Unsupported module/provider: $raw (supported: discord, slack, teams)" ;;
   esac
 }
 
@@ -236,6 +237,12 @@ write_config() {
        && [ -n "${SLACK_APP_ID:-}" ]; then
       have_required=1
     fi
+  elif [ "$MODULE" = "teams" ]; then
+    if [ -n "${TEAMS_APP_ID:-}" ] \
+       && [ -n "${TEAMS_APP_PASSWORD:-}" ] \
+       && [ -n "${TEAMS_TENANT_ID:-}" ]; then
+      have_required=1
+    fi
   else
     if [ -n "${DISCORD_BOT_TOKEN:-}" ] \
        && [ -n "${DISCORD_CLIENT_ID:-}" ] \
@@ -256,6 +263,9 @@ write_config() {
     if [ "$MODULE" = "slack" ]; then
       info "Configuring $env_file"
       echo "  Find these values in https://api.slack.com/apps"
+    elif [ "$MODULE" = "teams" ]; then
+      info "Configuring $env_file"
+      echo "  Find these values in https://portal.azure.com (Entra app registration + Azure Bot) — see docs/teams.md"
     else
       info "Configuring $env_file"
       echo "  Find these values in https://discord.com/developers/applications"
@@ -289,6 +299,24 @@ write_config() {
       printf 'SLACK_ALLOWED_USER_IDS=%s\n' "$slack_allowed"
       printf 'SLACK_MENTION_USER_ID=%s\n' "$mention_user"
       printf 'SLACK_PORT=%s\n' "${slack_port:-3000}"
+    elif [ "$MODULE" = "teams" ]; then
+      local app_id app_password app_type tenant_id teams_port public_url teams_allowed mention_user
+      app_id="$(prompt_var TEAMS_APP_ID 'Teams/Entra app (client) ID')"
+      app_password="$(prompt_var TEAMS_APP_PASSWORD 'Teams app client secret')"
+      app_type="$(prompt_var TEAMS_APP_TYPE 'Teams app type (SingleTenant|MultiTenant)' 'SingleTenant')"
+      tenant_id="$(prompt_var TEAMS_TENANT_ID 'Entra tenant ID (required for SingleTenant)')"
+      teams_port="$(prompt_var TEAMS_PORT 'Teams HTTP port for /api/messages (optional, default 3978)')"
+      public_url="$(prompt_var TEAMS_PUBLIC_URL 'Public HTTPS base URL Teams POSTs to (optional)')"
+      teams_allowed="$(prompt_var TEAMS_ALLOWED_USER_IDS 'Allowed Teams AAD object IDs (comma-separated, optional)')"
+      mention_user="$(prompt_var TEAMS_MENTION_USER_ID 'Teams mention user ID (optional)')"
+      printf 'TEAMS_APP_ID=%s\n' "$app_id"
+      printf 'TEAMS_APP_PASSWORD=%s\n' "$app_password"
+      printf 'TEAMS_APP_TYPE=%s\n' "${app_type:-SingleTenant}"
+      printf 'TEAMS_TENANT_ID=%s\n' "$tenant_id"
+      printf 'TEAMS_PORT=%s\n' "${teams_port:-3978}"
+      printf 'TEAMS_PUBLIC_URL=%s\n' "$public_url"
+      printf 'TEAMS_ALLOWED_USER_IDS=%s\n' "$teams_allowed"
+      printf 'TEAMS_MENTION_USER_ID=%s\n' "$mention_user"
     else
       local token client_id guild_id allowed
       token="$(prompt_var DISCORD_BOT_TOKEN 'Discord bot token')"
