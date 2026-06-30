@@ -123,8 +123,22 @@ export class TeamsProvider implements BridgeProvider {
   // Teams bots cannot add reactions, so `react` is intentionally omitted
   // (it's optional in the BridgeProvider contract).
 
-  async sendTyping(_target: ChannelTarget): Promise<void> {
-    // TEAMS-04 fills this in.
+  async sendTyping(target: ChannelTarget): Promise<void> {
+    const stored = conversationRefsDb.get(target.channelId);
+    if (!this.adapter || !stored) return;
+
+    try {
+      await this.adapter.continueConversationAsync(
+        teamsConfig.appId,
+        stored.reference as Partial<ConversationReference>,
+        async (c) => {
+          await c.sendActivity({ type: 'typing' });
+        },
+      );
+    } catch (err) {
+      // Best-effort indicator: never let a typing failure break the turn.
+      void logger.debug('teams/typing', String(err));
+    }
   }
 
   async findOrCreateAgentChannel(agentId: string): Promise<AgentChannelInfo> {
