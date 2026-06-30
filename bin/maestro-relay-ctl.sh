@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Service wrapper for the Maestro Relay.
-# Subcommands: start | stop | restart | status | logs | deploy | update | uninstall | version
+# Subcommands: start | stop | restart | status | logs | deploy | update | channel | uninstall | version
 #
 # Backwards-compat: legacy MAESTRO_BRIDGE_* / MAESTRO_DISCORD_* env vars are accepted as fallback.
 # A legacy install at ~/.local/share/maestro-bridge or ~/.local/share/maestro-discord is auto-detected when
@@ -35,6 +35,8 @@ fi
 
 BIN_DIR="${MAESTRO_RELAY_BIN_DIR:-${MAESTRO_BRIDGE_BIN_DIR:-${MAESTRO_DISCORD_BIN_DIR:-$HOME/.local/bin}}}"
 REPO="${MAESTRO_RELAY_REPO:-${MAESTRO_BRIDGE_REPO:-${MAESTRO_DISCORD_REPO:-RunMaestro/Maestro-Relay}}}"
+# Persisted update-channel preference (stable|rc); see cmd_channel / cmd_update.
+CHANNEL_FILE="$CONFIG_DIR/channel"
 SERVICE_NAME="maestro-relay"
 LAUNCHD_LABEL="sh.maestro.relay"
 LAUNCHD_PLIST="$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist"
@@ -45,6 +47,41 @@ LEGACY_LAUNCHD_PLIST="$HOME/Library/LaunchAgents/${LEGACY_LAUNCHD_LABEL}.plist"
 
 die() { printf '✗ %s\n' "$*" >&2; exit 1; }
 info() { printf '==> %s\n' "$*"; }
+
+validate_channel() {
+  case "$1" in
+    stable|rc) ;;
+    *) die "Invalid channel: $1 (expected 'stable' or 'rc')" ;;
+  esac
+}
+
+# Resolve the active update channel: explicit env override > persisted file >
+# 'stable' default. An unrecognized value (typo, stale file) is normalized to
+# 'stable' with a warning, so the reported channel and the actual behavior never
+# diverge. (resolve_channel runs inside $(...), where a die would only abort the
+# subshell — so it normalizes rather than exits; explicit sets still hard-fail
+# via persist_channel.)
+resolve_channel() {
+  local channel
+  if [ -n "${MAESTRO_RELAY_CHANNEL:-}" ]; then
+    channel="$MAESTRO_RELAY_CHANNEL"
+  elif [ -f "$CHANNEL_FILE" ]; then
+    channel="$(head -n1 "$CHANNEL_FILE" | tr -d '[:space:]')"
+  else
+    channel="stable"
+  fi
+  case "$channel" in
+    stable|rc) ;;
+    *) printf '⚠ Unknown update channel %q; using stable.\n' "$channel" >&2; channel="stable" ;;
+  esac
+  printf '%s' "$channel"
+}
+
+persist_channel() {
+  validate_channel "$1"
+  mkdir -p "$CONFIG_DIR"
+  printf '%s\n' "$1" > "$CHANNEL_FILE"
+}
 
 detect_os() {
   case "$(uname -s)" in
@@ -68,7 +105,8 @@ Commands:
   status      Show service status
   logs        Tail service logs (Ctrl+C to stop)
   deploy      Deploy slash commands to Discord
-  update      Reinstall the latest release (preserves config)
+  update      Reinstall the latest release (preserves config); pass --rc / --stable to pick the channel
+  channel     Show the update channel, or set it: 'channel rc' | 'channel stable'
   uninstall   Remove the relay, service files, and CLI symlinks
   version     Print installed version
 
@@ -76,6 +114,7 @@ Environment:
   MAESTRO_RELAY_HOME    Override install dir  (default: ~/.local/share/maestro-relay)
   XDG_CONFIG_HOME        Config dir parent     (default: ~/.config)
   MAESTRO_RELAY_MODULE   Installer-time module selection (currently: discord)
+  MAESTRO_RELAY_CHANNEL  Update channel: 'stable' (default) or 'rc' (release candidates)
   MAESTRO_BRIDGE_HOME    Accepted as fallback for back-compat
   MAESTRO_DISCORD_HOME   Accepted as fallback for back-compat with v0.0.x
 EOF
@@ -183,18 +222,58 @@ cmd_deploy() {
 }
 
 cmd_update() {
-  info "Re-running installer to pull the latest release"
-  local tag config_parent
-  tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
-  [ -n "$tag" ] || die "Could not resolve latest release tag"
+  local channel="" tag config_parent api
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --rc)     channel="rc" ;;
+      --stable) channel="stable" ;;
+      *) die "Unknown flag for update: $1 (expected --rc or --stable)" ;;
+    esac
+    shift
+  done
+  if [ -n "$channel" ]; then
+    persist_channel "$channel"
+  else
+    channel="$(resolve_channel)"
+  fi
+
+  if [ -n "${MAESTRO_RELAY_VERSION:-}" ]; then
+    # An explicit version pin wins over channel resolution, preserving the
+    # documented `MAESTRO_RELAY_VERSION=vX.Y.Z[-rc.N] … update` path.
+    tag="$MAESTRO_RELAY_VERSION"
+    info "Re-running installer to pull pinned ${tag}"
+  else
+    if [ "$channel" = "rc" ]; then
+      # Newest release including prereleases (the /releases list is newest-first).
+      api="https://api.github.com/repos/${REPO}/releases?per_page=20"
+    else
+      api="https://api.github.com/repos/${REPO}/releases/latest"
+    fi
+    tag="$(curl -fsSL "$api" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+    [ -n "$tag" ] || die "Could not resolve a release tag on the '${channel}' channel"
+    info "Re-running installer to pull ${tag} (channel: ${channel})"
+  fi
+
   config_parent="$(dirname "$CONFIG_DIR")"
   curl -fsSL "https://raw.githubusercontent.com/${REPO}/${tag}/install.sh" \
     | env \
         MAESTRO_RELAY_HOME="$INSTALL_DIR" \
         MAESTRO_RELAY_BIN_DIR="$BIN_DIR" \
         MAESTRO_RELAY_REPO="$REPO" \
+        MAESTRO_RELAY_VERSION="$tag" \
+        MAESTRO_RELAY_CHANNEL="$channel" \
         XDG_CONFIG_HOME="$config_parent" \
         bash
+}
+
+cmd_channel() {
+  local arg="${1:-}"
+  if [ -z "$arg" ]; then
+    info "Update channel: $(resolve_channel)"
+    return
+  fi
+  persist_channel "$arg"
+  info "Update channel set to '$arg'. Run 'maestro-relay-ctl update' to apply."
 }
 
 cmd_uninstall() {
@@ -257,7 +336,8 @@ main() {
     status)    cmd_status ;;
     logs)      cmd_logs ;;
     deploy)    cmd_deploy ;;
-    update)    cmd_update ;;
+    update)    shift; cmd_update "$@" ;;
+    channel)   shift; cmd_channel "$@" ;;
     uninstall) cmd_uninstall ;;
     version)   cmd_version ;;
     -h|--help|help|"") usage ;;

@@ -22,6 +22,10 @@ elif [ ! -d "$CONFIG_DIR" ] && [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/maestro-d
 fi
 BIN_DIR="${MAESTRO_RELAY_BIN_DIR:-${MAESTRO_BRIDGE_BIN_DIR:-${MAESTRO_DISCORD_BIN_DIR:-$HOME/.local/bin}}}"
 VERSION="${MAESTRO_RELAY_VERSION:-${MAESTRO_BRIDGE_VERSION:-${MAESTRO_DISCORD_VERSION:-latest}}}"
+# Release channel: 'stable' (default) installs the latest non-prerelease GitHub
+# release; 'rc' installs the newest release *including* prereleases (release
+# candidates). Ignored when MAESTRO_RELAY_VERSION pins an explicit tag.
+CHANNEL="${MAESTRO_RELAY_CHANNEL:-stable}"
 MODULE="${MAESTRO_RELAY_MODULE:-${MAESTRO_BRIDGE_MODULE:-discord}}"
 NODE_MIN_MAJOR=22
 RELEASE_BACKUP=""
@@ -103,10 +107,17 @@ normalize_module() {
 
 resolve_release() {
   local api_url tag
-  if [ "$VERSION" = "latest" ]; then
-    api_url="https://api.github.com/repos/${REPO}/releases/latest"
-  else
+  if [ "$VERSION" != "latest" ]; then
+    # An explicit tag pin takes precedence over the channel.
     api_url="https://api.github.com/repos/${REPO}/releases/tags/${VERSION}"
+  elif [ "$CHANNEL" = "rc" ]; then
+    # RC channel: newest release *including* prereleases. The /releases list is
+    # returned newest-first, so the first tag_name is the most recently published
+    # release — a release-candidate or stable, whichever is newer.
+    api_url="https://api.github.com/repos/${REPO}/releases?per_page=20"
+  else
+    # Stable channel: GitHub's "latest" endpoint excludes prereleases.
+    api_url="https://api.github.com/repos/${REPO}/releases/latest"
   fi
   tag="$(curl -fsSL "$api_url" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
   [ -n "$tag" ] || die "Could not resolve release tag from ${api_url}"
@@ -603,6 +614,11 @@ main() {
   echo
   echo
 
+  case "$CHANNEL" in
+    stable|rc) ;;
+    *) die "Invalid MAESTRO_RELAY_CHANNEL: '$CHANNEL' (expected 'stable' or 'rc')" ;;
+  esac
+
   require_cmd curl
   require_cmd tar
   require_cmd sed
@@ -624,6 +640,10 @@ main() {
   install_cli
   setup_voice
   write_config
+  # Record the active release channel so `maestro-relay-ctl update` keeps tracking
+  # it (stable or rc) without re-exporting MAESTRO_RELAY_CHANNEL on every update.
+  mkdir -p "$CONFIG_DIR"
+  printf '%s\n' "$CHANNEL" > "$CONFIG_DIR/channel"
   deploy_commands
   install_service
 
