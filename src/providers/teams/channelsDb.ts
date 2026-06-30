@@ -8,6 +8,20 @@ export const channelDb = {
   register(channelId: string, agentId: string, agentName: string): void {
     core.register('teams', channelId, agentId, agentName, null);
   },
+  /**
+   * Bind an unbound conversation, or rebind one that already holds a binding.
+   * Rebinding switches the agent and resets the session (the old session
+   * belongs to the previous agent). A Teams DM holds exactly one binding, so
+   * unlike Slack we cannot avoid this by spawning a fresh channel.
+   */
+  bindOrRebind(channelId: string, agentId: string, agentName: string): 'bound' | 'rebound' {
+    if (!core.get('teams', channelId)) {
+      core.register('teams', channelId, agentId, agentName, null);
+      return 'bound';
+    }
+    core.rebind('teams', channelId, agentId, agentName);
+    return 'rebound';
+  },
   get(channelId: string): AgentChannel | undefined {
     return core.get('teams', channelId);
   },
