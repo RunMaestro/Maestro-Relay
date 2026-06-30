@@ -20,6 +20,7 @@ import { teamsConfig } from './config';
 import { logger } from '../../core/logger';
 import { MaestroTeamsBot } from './messageCreate';
 import { conversationRefsDb } from './conversationRefsDb';
+import { channelDb } from './channelsDb';
 
 /**
  * Microsoft Teams provider.
@@ -83,9 +84,18 @@ export class TeamsProvider implements BridgeProvider {
     return this.started;
   }
 
-  resolveConversation(_message: IncomingMessage): ConversationRecord | null {
-    // TEAMS-05 implements the real lookup.
-    return null;
+  resolveConversation(message: IncomingMessage): ConversationRecord | null {
+    // Phase 1 is flat — a Teams conversation maps 1:1 to a binding with no
+    // thread branch (Slack-style thread registries arrive in a later phase).
+    const channelInfo = channelDb.get(message.channelId);
+    if (!channelInfo) return null;
+    return {
+      agentId: channelInfo.agent_id,
+      sessionId: channelInfo.session_id ?? null,
+      readOnly: !!channelInfo.read_only,
+      persistSession: (sessionId: string) =>
+        channelDb.updateSession(message.channelId, sessionId),
+    };
   }
 
   async send(target: ChannelTarget, msg: OutgoingMessage): Promise<void> {
