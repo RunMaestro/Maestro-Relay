@@ -67,7 +67,7 @@ Commands:
   restart     Restart the relay service
   status      Show service status
   logs        Tail service logs (Ctrl+C to stop)
-  deploy      Deploy slash commands to Discord
+  deploy      Deploy slash commands (Discord) / build the app package (Teams)
   update      Reinstall the latest release (preserves config)
   uninstall   Remove the relay, service files, and CLI symlinks
   version     Print installed version
@@ -151,6 +151,8 @@ config_complete() {
   local required_keys
   if [ "$enabled_module" = "slack" ]; then
     required_keys="SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_TEAM_ID SLACK_APP_ID"
+  elif [ "$enabled_module" = "teams" ]; then
+    required_keys="TEAMS_APP_ID TEAMS_APP_PASSWORD TEAMS_TENANT_ID"
   else
     required_keys="DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID"
   fi
@@ -176,10 +178,18 @@ cmd_deploy() {
   enabled_providers="${enabled_providers#\"}"; enabled_providers="${enabled_providers%\"}"
   enabled_providers="${enabled_providers#\'}"; enabled_providers="${enabled_providers%\'}"
   [ -z "$enabled_providers" ] && enabled_providers="discord"
+  local did_deploy=0
   case ",$enabled_providers," in
-    *,discord,*) (cd "$INSTALL_DIR" && node dist/providers/discord/deploy.js) ;;
-    *) die "Discord is not enabled in ENABLED_PROVIDERS=$enabled_providers" ;;
+    *,discord,*) (cd "$INSTALL_DIR" && node dist/providers/discord/deploy.js); did_deploy=1 ;;
   esac
+  case ",$enabled_providers," in
+    *,teams,*)
+      (cd "$INSTALL_DIR" && node dist/providers/teams/deploy.js)
+      info "Teams app package written to $INSTALL_DIR/appPackage/maestro-relay-teams.zip — a Teams admin must upload it (see docs/teams.md)."
+      did_deploy=1
+      ;;
+  esac
+  [ "$did_deploy" -eq 1 ] || die "No deployable provider enabled in ENABLED_PROVIDERS=$enabled_providers (expected discord and/or teams; slack has no deploy step)."
 }
 
 cmd_update() {
