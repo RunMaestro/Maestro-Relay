@@ -162,14 +162,26 @@ export class TeamsProvider implements BridgeProvider {
     // Lookup-only: Phase 1 cannot proactively spin up a 1:1 Teams chat — the
     // user must have messaged the bot first so a conversation reference (and
     // binding) exists. Graph-based creation is Phase 3.
-    const existing = channelDb.getByAgentId(agentId);
-    if (existing) {
-      return {
-        channelId: existing.channel_id,
-        agentId,
-        agentName: existing.agent_name,
-      };
+    const bindings = channelDb.listByAgentId(agentId);
+    if (bindings.length === 0) {
+      throw new AgentNotFoundError(agentId);
     }
-    throw new AgentNotFoundError(agentId);
+    if (bindings.length > 1) {
+      // The same agent is bound in more than one Teams chat. `/api/send` only
+      // carries an agentId, so picking one would deliver a proactive message to
+      // an arbitrary user's private DM. Refuse rather than misroute — the
+      // operator must keep a single Teams binding per agent for proactive sends.
+      throw new Error(
+        `Agent ${agentId} is bound to ${bindings.length} Teams chats; ` +
+          `proactive /api/send cannot disambiguate the target. ` +
+          `Disconnect all but one binding (agents disconnect).`,
+      );
+    }
+    const existing = bindings[0];
+    return {
+      channelId: existing.channel_id,
+      agentId,
+      agentName: existing.agent_name,
+    };
   }
 }

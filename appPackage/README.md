@@ -1,9 +1,10 @@
 # Microsoft Teams app package
 
 This folder is the source for the Teams app package that an admin uploads (sideloads) into a
-tenant. It declares all three conversation scopes — `personal`, `groupChat`, and `team` — so a
-single upload serves DMs, group chats, and channels without re-packaging. Phase 1 of the Teams
-provider only exercises `personal`/`groupChat`; the `team` scope is declared now for free.
+tenant. Phase 1 requests **only the `personal` (1:1 DM) scope** — group-chat and channel
+(`team`) scopes are deferred until the provider implements the owner/thread isolation those
+shared contexts need (Phase 2), at which point the manifest gains the scopes and the package is
+re-uploaded.
 
 ## Files
 

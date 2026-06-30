@@ -22,7 +22,9 @@ export async function handleAgents(
       await handleList(turnCtx);
       break;
     case 'new':
-      await handleNew(turnCtx, conversationId, rest[0]);
+      // Join the remaining tokens so multi-word agent names shown by
+      // `agents list` (e.g. "My Agent") resolve — not just the first word.
+      await handleNew(turnCtx, conversationId, rest.join(' ').trim() || undefined);
       break;
     case 'current':
       await handleCurrent(turnCtx, conversationId);

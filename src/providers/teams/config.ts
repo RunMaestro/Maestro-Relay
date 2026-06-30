@@ -25,6 +25,12 @@ export const teamsConfig = {
     return process.env.TEAMS_APP_TYPE || 'SingleTenant';
   },
   get tenantId() {
+    // Required for SingleTenant (the default and recommended type). MultiTenant
+    // bots (deprecated by Microsoft) authenticate without a fixed tenant, so the
+    // tenant id is optional there — don't hard-fail provider startup for them.
+    if ((process.env.TEAMS_APP_TYPE || 'SingleTenant') === 'MultiTenant') {
+      return process.env.TEAMS_TENANT_ID || '';
+    }
     return required('TEAMS_TENANT_ID');
   },
   get port() {

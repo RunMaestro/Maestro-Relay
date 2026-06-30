@@ -26,6 +26,12 @@ interface TeamsActivityLike {
     contentUrl?: string;
     name?: string;
     contentType?: string;
+    /**
+     * Teams file-upload attachments (contentType
+     * `application/vnd.microsoft.teams.file.download.info`) carry the binary
+     * fetch URL here; `contentUrl` points at the SharePoint/OneDrive page.
+     */
+    content?: { downloadUrl?: string };
   }>;
 }
 
@@ -40,9 +46,12 @@ export function mapAttachments(
   if (!attachments) return [];
   const out: IncomingAttachment[] = [];
   for (const att of attachments) {
-    if (!att.contentUrl) continue;
+    // Prefer the file-download URL (uploaded files), falling back to the
+    // generic contentUrl for inline/link attachments.
+    const url = att.content?.downloadUrl ?? att.contentUrl;
+    if (!url) continue;
     out.push({
-      url: att.contentUrl,
+      url,
       name: att.name ?? '',
       size: 0,
       contentType: att.contentType,
@@ -85,6 +94,15 @@ export class MaestroTeamsBot extends TeamsActivityHandler {
 
     this.onMessage(async (turnCtx, next) => {
       const activity = turnCtx.activity;
+
+      // Phase 1 is DM/`personal` scope only. Group chats and team channels lack
+      // the owner/thread isolation that shared contexts need, so ignore them
+      // (defense-in-depth — the app manifest also only requests `personal`).
+      const convType = activity.conversation?.conversationType;
+      if (convType && convType !== 'personal') {
+        await next();
+        return;
+      }
 
       // Always refresh the stored conversation reference.
       conversationRefsDb.upsert(

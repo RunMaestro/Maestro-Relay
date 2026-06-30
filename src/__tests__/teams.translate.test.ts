@@ -95,6 +95,26 @@ test('mapAttachments drops entries without a contentUrl and maps valid ones', ()
   ]);
 });
 
+test('mapAttachments prefers content.downloadUrl over contentUrl for uploaded files', () => {
+  const out = mapAttachments([
+    {
+      contentType: 'application/vnd.microsoft.teams.file.download.info',
+      name: 'report.pdf',
+      contentUrl: 'https://sharepoint.example.com/page', // the SharePoint page, NOT the bytes
+      content: { downloadUrl: 'https://download.example.com/report.pdf' },
+    },
+  ]);
+
+  assert.deepEqual(out, [
+    {
+      url: 'https://download.example.com/report.pdf',
+      name: 'report.pdf',
+      size: 0,
+      contentType: 'application/vnd.microsoft.teams.file.download.info',
+    },
+  ]);
+});
+
 test('mapAttachments returns [] for undefined and defaults a missing name to ""', () => {
   assert.deepEqual(mapAttachments(undefined), []);
 

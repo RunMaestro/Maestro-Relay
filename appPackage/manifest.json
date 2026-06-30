@@ -25,12 +25,12 @@
   "bots": [
     {
       "botId": "<TEAMS_APP_ID>",
-      "scopes": ["personal", "groupChat", "team"],
+      "scopes": ["personal"],
       "supportsFiles": true,
       "isNotificationOnly": false,
       "commandLists": [
         {
-          "scopes": ["personal", "groupChat", "team"],
+          "scopes": ["personal"],
           "commands": [
             { "title": "health", "description": "Check relay health" },
             { "title": "agents", "description": "List / bind Maestro agents" },

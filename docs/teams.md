@@ -4,7 +4,7 @@ The Teams provider lets Maestro Relay run inside a Microsoft Teams tenant alongs
 
 The provider only loads if `teams` is in `ENABLED_PROVIDERS`. To run Teams alongside the others: `ENABLED_PROVIDERS=discord,slack,teams`.
 
-> **Phase 1 scope (this release).** Teams ships the DM / `personal`-scope MVP: a one-to-one chat with the bot binds to a single Maestro agent. Group-chat and channel (`team` scope) conversations are declared in the app manifest but are a Phase-2 capability — see [Binding model & commands](#binding-model--commands).
+> **Phase 1 scope (this release).** Teams ships the DM / `personal`-scope MVP: a one-to-one chat with the bot binds to a single Maestro agent. The app manifest requests **only `personal`** scope, and the bot ignores any non-personal (group-chat/channel) conversation, because shared contexts need owner/thread isolation that lands in a later phase — see [Binding model & commands](#binding-model--commands).
 
 > **Account requirement.** This provider targets **Microsoft 365 business/enterprise** tenants. Free/consumer Microsoft accounts (outlook.com/hotmail/live personal accounts) cannot host a single-tenant Azure Bot and are **out of scope**. You need a tenant where you (or an admin) can register an Entra app, create an Azure Bot resource, and upload (sideload) a Teams app package.
 
@@ -156,7 +156,7 @@ A **DM is the unit of binding**: one chat with the bot maps to exactly one agent
 
 A message that is not a recognized command flows through to the bound agent. If the chat is not bound yet, the bot replies with a hint to run `agents list` then `agents new <agent-id>`.
 
-> **Channels are Phase 2.** The app manifest declares `personal`, `groupChat`, and `team` scopes so a single upload covers all three, but Phase 1 only exercises the 1:1 DM (`personal`) flow. Group-chat and channel binding (Slack-style thread/owner registries) arrive in a later phase.
+> **Channels are Phase 2.** Phase 1 ships `personal` scope only — the manifest requests just `personal`, and the inbound handler drops any group-chat/channel turn. Group-chat and channel binding (with Slack-style thread/owner registries) and the matching manifest scopes arrive in a later phase; the app package is simply re-uploaded then.
 
 ## Runtime behavior
 
