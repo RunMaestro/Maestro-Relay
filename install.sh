@@ -614,6 +614,11 @@ main() {
   echo
   echo
 
+  case "$CHANNEL" in
+    stable|rc) ;;
+    *) die "Invalid MAESTRO_RELAY_CHANNEL: '$CHANNEL' (expected 'stable' or 'rc')" ;;
+  esac
+
   require_cmd curl
   require_cmd tar
   require_cmd sed
@@ -635,6 +640,10 @@ main() {
   install_cli
   setup_voice
   write_config
+  # Record the active release channel so `maestro-relay-ctl update` keeps tracking
+  # it (stable or rc) without re-exporting MAESTRO_RELAY_CHANNEL on every update.
+  mkdir -p "$CONFIG_DIR"
+  printf '%s\n' "$CHANNEL" > "$CONFIG_DIR/channel"
   deploy_commands
   install_service
 

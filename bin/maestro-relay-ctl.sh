@@ -48,23 +48,37 @@ LEGACY_LAUNCHD_PLIST="$HOME/Library/LaunchAgents/${LEGACY_LAUNCHD_LABEL}.plist"
 die() { printf '✗ %s\n' "$*" >&2; exit 1; }
 info() { printf '==> %s\n' "$*"; }
 
-# Resolve the active update channel: explicit env override > persisted file >
-# 'stable' default.
-resolve_channel() {
-  if [ -n "${MAESTRO_RELAY_CHANNEL:-}" ]; then
-    printf '%s' "$MAESTRO_RELAY_CHANNEL"
-  elif [ -f "$CHANNEL_FILE" ]; then
-    head -n1 "$CHANNEL_FILE" | tr -d '[:space:]'
-  else
-    printf 'stable'
-  fi
-}
-
-persist_channel() {
+validate_channel() {
   case "$1" in
     stable|rc) ;;
     *) die "Invalid channel: $1 (expected 'stable' or 'rc')" ;;
   esac
+}
+
+# Resolve the active update channel: explicit env override > persisted file >
+# 'stable' default. An unrecognized value (typo, stale file) is normalized to
+# 'stable' with a warning, so the reported channel and the actual behavior never
+# diverge. (resolve_channel runs inside $(...), where a die would only abort the
+# subshell — so it normalizes rather than exits; explicit sets still hard-fail
+# via persist_channel.)
+resolve_channel() {
+  local channel
+  if [ -n "${MAESTRO_RELAY_CHANNEL:-}" ]; then
+    channel="$MAESTRO_RELAY_CHANNEL"
+  elif [ -f "$CHANNEL_FILE" ]; then
+    channel="$(head -n1 "$CHANNEL_FILE" | tr -d '[:space:]')"
+  else
+    channel="stable"
+  fi
+  case "$channel" in
+    stable|rc) ;;
+    *) printf '⚠ Unknown update channel %q; using stable.\n' "$channel" >&2; channel="stable" ;;
+  esac
+  printf '%s' "$channel"
+}
+
+persist_channel() {
+  validate_channel "$1"
   mkdir -p "$CONFIG_DIR"
   printf '%s\n' "$1" > "$CHANNEL_FILE"
 }
@@ -223,16 +237,23 @@ cmd_update() {
     channel="$(resolve_channel)"
   fi
 
-  if [ "$channel" = "rc" ]; then
-    # Newest release including prereleases (the /releases list is newest-first).
-    api="https://api.github.com/repos/${REPO}/releases?per_page=20"
+  if [ -n "${MAESTRO_RELAY_VERSION:-}" ]; then
+    # An explicit version pin wins over channel resolution, preserving the
+    # documented `MAESTRO_RELAY_VERSION=vX.Y.Z[-rc.N] … update` path.
+    tag="$MAESTRO_RELAY_VERSION"
+    info "Re-running installer to pull pinned ${tag}"
   else
-    api="https://api.github.com/repos/${REPO}/releases/latest"
+    if [ "$channel" = "rc" ]; then
+      # Newest release including prereleases (the /releases list is newest-first).
+      api="https://api.github.com/repos/${REPO}/releases?per_page=20"
+    else
+      api="https://api.github.com/repos/${REPO}/releases/latest"
+    fi
+    tag="$(curl -fsSL "$api" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
+    [ -n "$tag" ] || die "Could not resolve a release tag on the '${channel}' channel"
+    info "Re-running installer to pull ${tag} (channel: ${channel})"
   fi
-  tag="$(curl -fsSL "$api" | sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)"
-  [ -n "$tag" ] || die "Could not resolve a release tag on the '${channel}' channel"
 
-  info "Re-running installer to pull ${tag} (channel: ${channel})"
   config_parent="$(dirname "$CONFIG_DIR")"
   curl -fsSL "https://raw.githubusercontent.com/${REPO}/${tag}/install.sh" \
     | env \
