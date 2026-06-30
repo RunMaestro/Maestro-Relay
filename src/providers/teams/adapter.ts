@@ -15,10 +15,11 @@ import type {
   KernelContext,
   OutgoingMessage,
 } from '../../core/types';
-import { AgentNotFoundError } from '../../core/errors';
+import { AgentNotFoundError, RateLimitError } from '../../core/errors';
 import { teamsConfig } from './config';
 import { logger } from '../../core/logger';
 import { MaestroTeamsBot } from './messageCreate';
+import { conversationRefsDb } from './conversationRefsDb';
 
 /**
  * Microsoft Teams provider.
@@ -87,8 +88,36 @@ export class TeamsProvider implements BridgeProvider {
     return null;
   }
 
-  async send(_target: ChannelTarget, _msg: OutgoingMessage): Promise<void> {
-    throw new Error('not implemented until TEAMS-04');
+  async send(target: ChannelTarget, msg: OutgoingMessage): Promise<void> {
+    if (!this.adapter) throw new Error('Teams adapter not initialised');
+
+    const stored = conversationRefsDb.get(target.channelId);
+    if (!stored) {
+      void logger.error('teams/send:no-ref', `conversation=${target.channelId}`);
+      throw new Error(`No conversation reference found for ${target.channelId}`);
+    }
+
+    let text = msg.text;
+    if (msg.mention && teamsConfig.mentionUserId) {
+      // TODO: entity mention — a proper <at> entity needs a matching
+      // `mentions` entity in the activity. A plain prefix is acceptable
+      // for Phase 1.
+      text = `<at>${teamsConfig.mentionUserId}</at> ${text}`;
+    }
+
+    try {
+      await this.adapter.continueConversationAsync(
+        teamsConfig.appId,
+        stored.reference as Partial<ConversationReference>,
+        async (c) => {
+          await c.sendActivity({ text, textFormat: 'markdown' });
+        },
+      );
+    } catch (err) {
+      const rl = toRateLimitError(err);
+      if (rl) throw rl;
+      throw err;
+    }
   }
 
   // Teams bots cannot add reactions, so `react` is intentionally omitted
@@ -103,4 +132,32 @@ export class TeamsProvider implements BridgeProvider {
     // nothing to look up yet, so surface AgentNotFoundError.
     throw new AgentNotFoundError(agentId);
   }
+}
+
+/**
+ * Translate a Bot Framework HTTP 429 into the kernel-level `RateLimitError`.
+ * Teams surfaces throttling as a `statusCode === 429` with a `retry-after`
+ * header (seconds). We convert to ms so the kernel deals in a single unit.
+ *
+ * Returns `null` when the error is not a rate-limit; the caller rethrows the
+ * original error in that case.
+ */
+export function toRateLimitError(err: unknown): RateLimitError | null {
+  if (!err || typeof err !== 'object') return null;
+  const e = err as {
+    statusCode?: number;
+    retryAfter?: number;
+    headers?: Record<string, string | string[] | undefined>;
+  };
+  if (e.statusCode !== 429) return null;
+
+  let secs = typeof e.retryAfter === 'number' ? e.retryAfter : NaN;
+  if (Number.isNaN(secs)) {
+    const header = e.headers?.['retry-after'];
+    const raw = Array.isArray(header) ? header[0] : header;
+    secs = raw != null ? parseInt(String(raw), 10) : NaN;
+  }
+  if (Number.isNaN(secs) || secs < 1) secs = 1;
+
+  return new RateLimitError(secs * 1000, `Teams rate limited; retry after ${secs}s`);
 }
