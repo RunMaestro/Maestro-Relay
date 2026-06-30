@@ -31,6 +31,10 @@ async function loadProvider(name: string): Promise<BridgeProvider | null> {
       const { TeamsProvider } = await import('../providers/teams/adapter');
       return new TeamsProvider();
     }
+    case 'telegram': {
+      const { TelegramProvider } = await import('../providers/telegram/adapter');
+      return new TelegramProvider();
+    }
     default:
       logger.warn('providers/load', `Unknown provider "${name}" — ignoring.`);
       return null;

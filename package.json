@@ -10,7 +10,7 @@
     "dev": "tsx src/index.ts",
     "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",
-    "deploy-commands": "tsx src/providers/discord/deploy.ts",
+    "deploy-commands": "node dist/scripts/deploy-commands.js",
     "deploy-teams": "tsx src/providers/teams/deploy.ts",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
     "maestro-relay": "tsx src/cli/maestro-relay.ts"
@@ -24,6 +24,7 @@
     "botbuilder": "^4.23.3",
     "discord.js": "^14.0.0",
     "dotenv": "^16.0.0",
+    "grammy": "^1.42.0",
     "restify": "^11.1.0"
   },
   "devDependencies": {

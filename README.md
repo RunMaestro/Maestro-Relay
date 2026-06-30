@@ -2,13 +2,13 @@
 
 [![Made with Maestro](https://raw.githubusercontent.com/RunMaestro/Maestro/main/docs/assets/made-with-maestro.svg)](https://github.com/RunMaestro/Maestro)
 
-**Maestro Relay** connects chat platforms to [Maestro](https://runmaestro.ai) AI agents through `maestro-cli`. Discord, Slack, and Microsoft Teams ship in the box; Matrix and others can be added by dropping in a provider adapter — the kernel is provider-agnostic.
+**Maestro Relay** connects chat platforms to [Maestro](https://runmaestro.ai) AI agents through `maestro-cli`. Discord, Slack, Telegram, and Microsoft Teams ship in the box; Matrix and others can be added by dropping in a provider adapter — the kernel is provider-agnostic.
 
 > **Migrating from `discord-maestro`?** Same codebase, new name. All `DISCORD_*` env vars work unchanged; the legacy `maestro-discord` binary has been retired in favour of `maestro-relay`. See "Migration" below.
 
 ## Features
 
-- Provider-pluggable kernel — Discord, Slack, and Teams today, Matrix next
+- Provider-pluggable kernel — Discord, Slack, Telegram, and Teams today, Matrix next
 - Creates dedicated channels for Maestro agents
 - Per-user session threads (`/session new` or by mentioning the bot)
 - Per-conversation FIFO queue with typing/reaction indicators
@@ -18,7 +18,7 @@
 ## Prerequisites
 
 - Node.js 22+
-- A bot token / app credentials for at least one supported provider (Discord, Slack, or Teams)
+- A bot token / app credentials for at least one supported provider (Discord, Slack, Telegram, or Teams)
 - [Maestro CLI](https://docs.runmaestro.ai/cli) on your `PATH`
 
 ## Install (production one-liner)
@@ -48,7 +48,7 @@ maestro-relay-ctl uninstall # remove install + service files
 | systemd user / launchd agent  | Auto-start unit                          |
 
 Override any of these with `MAESTRO_RELAY_HOME`, `XDG_CONFIG_HOME`, or `MAESTRO_RELAY_BIN_DIR`. Pin a specific version with `MAESTRO_RELAY_VERSION=v1.0.0`.
-Choose a provider module at install time via `MAESTRO_RELAY_MODULE` (`discord`, `slack`, or `teams`).
+Choose a provider module at install time via `MAESTRO_RELAY_MODULE` (`discord`, `slack`, `telegram`, or `teams`).
 
 ## Install (development from source)
 
@@ -69,11 +69,11 @@ cp .env.example .env
 Set core values in `.env`:
 
 ```
-ENABLED_PROVIDERS=discord    # comma-separated; default 'discord'. Use e.g. 'slack', 'discord,slack', or 'discord,slack,teams' for multi-provider deployments
+ENABLED_PROVIDERS=discord    # comma-separated; default 'discord'. Use e.g. 'slack', 'telegram', 'discord,slack', or 'discord,slack,teams' for multi-provider deployments
 API_PORT=3457                # optional, default 3457
 ```
 
-Then fill in the provider-specific keys. The Discord provider needs `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_GUILD_ID` — see [docs/discord.md](docs/discord.md) for bot setup, the full env-var reference, and slash-command deployment. The Slack provider needs `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_TEAM_ID`, and `SLACK_APP_ID` — see [docs/slack.md](docs/slack.md). The Teams provider needs `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`, and `TEAMS_TENANT_ID` — see [docs/teams.md](docs/teams.md) for Azure Bot setup, the full env-var reference, and app-package sideloading. For optional voice transcription (Discord), see [docs/voice.md](docs/voice.md).
+Then fill in the provider-specific keys. The Discord provider needs `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_ID`, and `DISCORD_GUILD_ID` — see [docs/discord.md](docs/discord.md) for bot setup, the full env-var reference, and slash-command deployment. The Slack provider needs `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_TEAM_ID`, and `SLACK_APP_ID` — see [docs/slack.md](docs/slack.md). The Telegram provider needs `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and `TELEGRAM_AGENT_ID` — see [docs/telegram-setup.md](docs/telegram-setup.md) for the full BotFather walkthrough. The Teams provider needs `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`, and `TEAMS_TENANT_ID` — see [docs/teams.md](docs/teams.md) for Azure Bot setup, the full env-var reference, and app-package sideloading. For optional voice transcription (Discord), see [docs/voice.md](docs/voice.md).
 
 3. Deploy slash commands (Discord):
 
@@ -118,10 +118,23 @@ npm run build && node --test --experimental-test-coverage dist/__tests__/**/*.te
 | -------- | ---- | ------ |
 | Discord  | [docs/discord.md](docs/discord.md) — bot setup, env vars, slash commands, runtime behavior | Built-in |
 | Slack    | [docs/slack.md](docs/slack.md) — app setup, env vars, slash commands, runtime behavior | Built-in |
+| Telegram | [docs/telegram-setup.md](docs/telegram-setup.md) — BotFather walkthrough, forum-topic-per-session, DM fallback, bot-per-agent binding | Built-in |
 | Teams    | [docs/teams.md](docs/teams.md) — Azure Bot setup, env vars, DM binding/commands, runtime behavior | Built-in (Phase 1: DMs; channels on the roadmap) |
 | Matrix / … | [AGENTS-providers.md](AGENTS-providers.md) — provider development guide | Add your own |
 
 Optional voice transcription (whisper.cpp, Discord-only today): [docs/voice.md](docs/voice.md).
+
+## Telegram
+
+Bot-per-agent model: each Telegram bot represents one Maestro agent. Recommended setup is a forum supergroup where each session becomes its own topic; DM mode is supported for single-session use.
+
+### Quick start
+
+```bash
+MAESTRO_RELAY_MODULE=telegram bash -c "$(curl -fsSL https://raw.githubusercontent.com/RunMaestro/Maestro-Relay/main/install.sh)"
+```
+
+The full newcomer walkthrough — creating a bot via @BotFather, picking a chat, collecting the IDs the installer asks for — lives in [docs/telegram-setup.md](docs/telegram-setup.md).
 
 ## How it works
 

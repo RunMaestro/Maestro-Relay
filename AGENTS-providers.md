@@ -1,8 +1,10 @@
 # Provider development guide
 
-This document is the deep-dive companion to [`AGENTS.md`](AGENTS.md) (and [`docs/architecture.md`](docs/architecture.md)) for adding a new chat-platform provider to Maestro Relay. Discord, Slack, and Teams are already built-in (see [`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md), and [`docs/teams.md`](docs/teams.md)); Teams shipped in Phase 1 with DM/personal scope (group-chat and team channels are on the roadmap). Everything below is what you'd need to know to ship the next adapter (e.g. Matrix) without touching the kernel.
+This document is the deep-dive companion to [`AGENTS.md`](AGENTS.md) (and [`docs/architecture.md`](docs/architecture.md)) for adding a new chat-platform provider to Maestro Relay. Discord, Slack, Telegram, and Teams are already built-in (see [`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md), [`docs/telegram-setup.md`](docs/telegram-setup.md), and [`docs/teams.md`](docs/teams.md)); Teams shipped in Phase 1 with DM/personal scope (group-chat and team channels are on the roadmap). Everything below is what you'd need to know to ship the next adapter (e.g. Matrix) without touching the kernel.
 
-If you're adding behavior to an existing provider rather than building a new one, work in `src/providers/discord/` or `src/providers/slack/` and consult the matching `docs/<name>.md` instead.
+If you're adding behavior to an existing provider rather than building a new one, work in `src/providers/discord/`, `src/providers/slack/`, or `src/providers/telegram/` and consult the matching `docs/<name>.md` instead.
+
+> **Single-agent providers**: Some providers (like Telegram) bind one bot to exactly one agent. In that case, enforce the binding in `findOrCreateAgentChannel` by throwing when the requested `agentId` doesn't match the bound one — this keeps `/api/send` from leaking cross-agent traffic into the wrong chat. Users running the provider standalone set `ENABLED_PROVIDERS=<name>`; users running it alongside Discord/Slack set `ENABLED_PROVIDERS=discord,<name>` (or any subset).
 
 ## The kernel/provider boundary
 

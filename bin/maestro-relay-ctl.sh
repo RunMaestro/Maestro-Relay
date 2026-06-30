@@ -57,6 +57,7 @@ detect_os() {
 usage() {
   cat <<'EOF'
 maestro-relay-ctl — control the Maestro Relay service.
+(Aliases: maestro-bridge-ctl and maestro-discord-ctl, preserved for back-compat.)
 
 Usage:
   maestro-relay-ctl <command>
@@ -67,7 +68,7 @@ Commands:
   restart     Restart the relay service
   status      Show service status
   logs        Tail service logs (Ctrl+C to stop)
-  deploy      Deploy slash commands (Discord) / build the app package (Teams)
+  deploy      Deploy chat commands for enabled providers (Discord slash commands, Telegram bot commands)
   update      Reinstall the latest release (preserves config)
   uninstall   Remove the relay, service files, and CLI symlinks
   version     Print installed version
@@ -142,20 +143,36 @@ cmd_logs() {
 }
 
 config_complete() {
-  local file="$1" key value
+  local file="$1" key value enabled_providers provider
   [ -f "$file" ] || return 1
-  local enabled_module
-  enabled_module="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*/\1/p' "$file" | head -n1)"
-  enabled_module="${enabled_module#\"}"; enabled_module="${enabled_module%\"}"
-  enabled_module="${enabled_module#\'}"; enabled_module="${enabled_module%\'}"
-  local required_keys
-  if [ "$enabled_module" = "slack" ]; then
-    required_keys="SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_TEAM_ID SLACK_APP_ID"
-  elif [ "$enabled_module" = "teams" ]; then
-    required_keys="TEAMS_APP_ID TEAMS_APP_PASSWORD TEAMS_TENANT_ID"
-  else
-    required_keys="DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID"
-  fi
+  enabled_providers="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*/\1/p' "$file" | head -n1)"
+  enabled_providers="${enabled_providers#\"}"; enabled_providers="${enabled_providers%\"}"
+  enabled_providers="${enabled_providers#\'}"; enabled_providers="${enabled_providers%\'}"
+  [ -n "$enabled_providers" ] || enabled_providers="discord"
+  # Validate every enabled provider's required env vars (split CSV), not just
+  # the first match — ENABLED_PROVIDERS=discord,telegram must pass only when
+  # both credential sets are present.
+  local IFS=','
+  local required_keys=""
+  for provider in $enabled_providers; do
+    provider="${provider// /}"
+    case "$provider" in
+      telegram)
+        required_keys="$required_keys TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_AGENT_ID"
+        ;;
+      slack)
+        required_keys="$required_keys SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_TEAM_ID SLACK_APP_ID"
+        ;;
+      teams)
+        required_keys="$required_keys TEAMS_APP_ID TEAMS_APP_PASSWORD TEAMS_TENANT_ID"
+        ;;
+      discord|'')
+        required_keys="$required_keys DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID"
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  unset IFS
   for key in $required_keys; do
     value="$(sed -nE "s/^${key}=([^#[:space:]]+).*/\1/p" "$file" | head -n1)"
     [ -n "$value" ] || return 1
@@ -173,23 +190,7 @@ cmd_deploy() {
   if ! config_complete "$env_file"; then
     die "Config at $env_file is incomplete or contains template values. Edit it before running deploy."
   fi
-  local enabled_providers
-  enabled_providers="$(sed -nE 's/^[[:space:]]*ENABLED_PROVIDERS[[:space:]]*=[[:space:]]*([^#[:space:]]+).*$/\1/p' "$env_file" | head -n1)"
-  enabled_providers="${enabled_providers#\"}"; enabled_providers="${enabled_providers%\"}"
-  enabled_providers="${enabled_providers#\'}"; enabled_providers="${enabled_providers%\'}"
-  [ -z "$enabled_providers" ] && enabled_providers="discord"
-  local did_deploy=0
-  case ",$enabled_providers," in
-    *,discord,*) (cd "$INSTALL_DIR" && node dist/providers/discord/deploy.js); did_deploy=1 ;;
-  esac
-  case ",$enabled_providers," in
-    *,teams,*)
-      (cd "$INSTALL_DIR" && node dist/providers/teams/deploy.js)
-      info "Teams app package written to $INSTALL_DIR/appPackage/maestro-relay-teams.zip — a Teams admin must upload it (see docs/teams.md)."
-      did_deploy=1
-      ;;
-  esac
-  [ "$did_deploy" -eq 1 ] || die "No deployable provider enabled in ENABLED_PROVIDERS=$enabled_providers (expected discord and/or teams; slack has no deploy step)."
+  (cd "$INSTALL_DIR" && npm run deploy-commands --silent)
 }
 
 cmd_update() {
@@ -241,12 +242,8 @@ cmd_uninstall() {
   esac
   rm -rf "$INSTALL_DIR"
   rm -f "$BIN_DIR/maestro-relay-ctl"
-  rm -f "$BIN_DIR/maestro-relay"
-  # Scrub legacy aliases from earlier installs (pre-rename).
   rm -f "$BIN_DIR/maestro-bridge-ctl"
   rm -f "$BIN_DIR/maestro-discord-ctl"
-  rm -f "$BIN_DIR/maestro-bridge"
-  rm -f "$BIN_DIR/maestro-discord"
   info "Uninstalled. Config preserved at $CONFIG_DIR (delete manually if desired)."
 }
 

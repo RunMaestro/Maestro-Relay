@@ -187,6 +187,64 @@ test('downloadAttachments reports all files as failed when mkdir fails', async (
   assert.deepEqual(failed, ['a.txt', 'b.txt']);
 });
 
+test('downloadAttachments calls resolveUrl just-in-time and downloads from its result', async () => {
+  let resolveCalls = 0;
+  let fetchedUrl = '';
+  globalThis.fetch = (url: string | URL | Request) => {
+    fetchedUrl = String(url);
+    return Promise.resolve(okResponse('lazy content'));
+  };
+
+  const { downloaded, failed } = await downloadAttachments(
+    [
+      makeAttachment({
+        name: 'lazy.bin',
+        url: '',
+        size: 100,
+        resolveUrl: async () => {
+          resolveCalls++;
+          return 'https://api.example.com/files/short-lived-token-abc';
+        },
+      }),
+    ],
+    tmpDir,
+  );
+
+  assert.equal(resolveCalls, 1, 'resolveUrl must be called once per attachment');
+  assert.equal(
+    fetchedUrl,
+    'https://api.example.com/files/short-lived-token-abc',
+    'fetch must receive the just-in-time URL, not the empty placeholder',
+  );
+  assert.equal(downloaded.length, 1);
+  assert.deepEqual(failed, []);
+  const content = await readFile(downloaded[0].savedPath, 'utf-8');
+  assert.equal(content, 'lazy content');
+});
+
+test('downloadAttachments reports the file as failed when resolveUrl throws', async () => {
+  globalThis.fetch = () => {
+    throw new Error('fetch must not be called if resolveUrl fails');
+  };
+
+  const { downloaded, failed } = await downloadAttachments(
+    [
+      makeAttachment({
+        name: 'expired.bin',
+        url: '',
+        size: 100,
+        resolveUrl: async () => {
+          throw new Error('upstream getFile failed');
+        },
+      }),
+    ],
+    tmpDir,
+  );
+
+  assert.equal(downloaded.length, 0);
+  assert.deepEqual(failed, ['expired.bin']);
+});
+
 test('downloadAttachments handles partial failures', async () => {
   let callCount = 0;
   globalThis.fetch = () => {
