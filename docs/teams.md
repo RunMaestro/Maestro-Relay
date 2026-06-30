@@ -57,6 +57,87 @@ Teams provider keys read from `.env`:
 
 The Teams adapter loads its config lazily, so a deployment that disables Teams (e.g. `ENABLED_PROVIDERS=discord`) does **not** fail at startup for missing `TEAMS_*` keys.
 
+## Initialize & test an agent (end-to-end)
+
+This is the full path from a fresh checkout to a working agent you can chat with in Teams — and to verifying proactive `/api/send` pushes. It assumes [App setup](#app-setup) is done (you have an Entra app + Azure Bot and the three required credentials).
+
+### 1 — Configure and start the relay
+
+1. Fill `.env`:
+   ```env
+   ENABLED_PROVIDERS=teams            # or discord,slack,teams
+   TEAMS_APP_ID=<entra-app-id>
+   TEAMS_APP_PASSWORD=<client-secret-value>
+   TEAMS_TENANT_ID=<directory-tenant-id>
+   TEAMS_PORT=3978                    # default; the restify /api/messages port
+   # optional: TEAMS_ALLOWED_USER_IDS=<your-aad-object-id>   # lock the bot to yourself while testing
+   ```
+2. Open a public tunnel to `TEAMS_PORT` and point the Azure Bot's **Messaging endpoint** at it:
+   ```bash
+   devtunnel host -p 3978 --allow-anonymous      # or: ngrok http 3978
+   # Azure Bot → Configuration → Messaging endpoint = https://<tunnel-host>/api/messages
+   ```
+3. Build and run:
+   ```bash
+   npm install && npm run build && npm start      # or `npm run dev` for watch mode
+   ```
+   Confirm the logs show the restify listener (`teams/start listening on 3978`) and the kernel API (`API server listening on http://127.0.0.1:3457`).
+4. Health check — the provider should report ready:
+   ```bash
+   curl -s http://127.0.0.1:3457/api/health | jq
+   # → { "success": true, "status": "ok", "providers": { "teams": true }, ... }
+   ```
+5. Build and upload the app package (one-time per tenant), then install the bot:
+   ```bash
+   TEAMS_APP_ID=<entra-app-id> TEAMS_PUBLIC_URL=https://<tunnel-host> npm run deploy-teams
+   # → appPackage/maestro-relay-teams.zip — sideload it (Teams → Apps → Manage your apps → Upload a custom app)
+   ```
+
+### 2 — Bind an agent in a DM
+
+6. In Teams, open a 1:1 chat with **Maestro Relay**. It greets you (`Maestro Relay is connected. Type agents list to begin.`) — this first turn **captures the conversation reference**, which is what later enables proactive pushes.
+7. List agents and bind one (the chat is the unit of binding — one DM ↔ one agent):
+   ```text
+   agents list                 → • My Agent (a1b2c3d4-…)
+   agents new a1b2c3d4         → Bound this chat to My Agent (a1b2c3d4-…). Send a message to start.
+   ```
+   `agents new` accepts the **exact ID, an ID-prefix, or the exact name**.
+8. Send a normal message (anything that isn't a command). You should see a **typing indicator**, then the agent's reply followed by a usage footer (`tokens • $cost • context %`). A new Maestro session is created on this first message and persisted to the binding.
+9. Exercise the rest of the surface:
+   ```text
+   agents current              → This chat is bound to My Agent (a1b2c3d4-…).
+   session new                 → next message starts a fresh Maestro session (same agent)
+   agents new <other-id>       → re-binds THIS chat to a different agent and resets the session
+   agents readonly on|off      → toggle read-only mode
+   agents disconnect           → unbind + delete the stored conversation reference
+   ```
+
+### 3 — Verify a proactive push (`/api/send`)
+
+Agent-initiated messages can only reach a Teams chat **after** it has been bound (step 7) — `findOrCreateAgentChannel` is lookup-only in Phase 1, so an unbound agent returns `404`. With the agent bound, push a message from the relay host:
+
+```bash
+curl -sS -X POST http://127.0.0.1:3457/api/send \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"teams","agentId":"a1b2c3d4-…","message":"✅ proactive test from /api/send"}'
+# → {"success":true,"channelId":"19:…"}
+```
+
+The message should appear in your DM with the bot. (The bundled `maestro-relay` CLI wraps the same endpoint — see [api.md](api.md) for request/response details and the CLI verbs.) A `404 { "error": "Agent not found: …" }` means the agent isn't bound to any Teams chat yet — DM the bot and run `agents new <id>` first.
+
+### Quick failure triage
+
+| Symptom | Likely cause |
+| --- | --- |
+| `/api/health` shows `teams: false` | bad/missing `TEAMS_*` creds, or the restify listener didn't start (port in use) |
+| Bot never replies in the DM | Azure Bot messaging endpoint not pointing at your tunnel, or tunnel down (no inbound activity reaches the relay) |
+| Reply fails with `401` in logs | wrong `TEAMS_APP_ID` / `TEAMS_APP_PASSWORD` (use the secret **value**, not the ID) / tenant mismatch |
+| `agents new` says "Agent not found" | the ID/name doesn't match `maestro-cli list agents` — run `agents list` |
+| `/api/send` returns `404` | the agent isn't bound to a Teams chat — see step 7 |
+| Messages silently ignored | sender's AAD object id isn't in a non-empty `TEAMS_ALLOWED_USER_IDS` |
+
+See [Troubleshooting](#troubleshooting) for the full list.
+
 ## Binding model & commands
 
 Teams has **no slash-command dispatch** — there is no `/agents` registration the way Discord and Slack have. Commands are plain typed text parsed from the message (the bot @mention, if any, is stripped first). The command surface mirrors Slack's, adapted to the DM model.
