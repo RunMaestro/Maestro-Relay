@@ -1,0 +1,45 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.19/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.19",
+  "version": "1.0.0",
+  "id": "<TEAMS_APP_ID>",
+  "developer": {
+    "name": "Maestro",
+    "websiteUrl": "https://maestro.sh",
+    "privacyUrl": "https://maestro.sh/privacy",
+    "termsOfUseUrl": "https://maestro.sh/terms"
+  },
+  "name": {
+    "short": "Maestro Relay",
+    "full": "Maestro Relay"
+  },
+  "description": {
+    "short": "Chat with your Maestro agents",
+    "full": "Maestro Relay bridges Microsoft Teams with your Maestro AI coding agents. Bind a chat to an agent and converse with it directly from Teams."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#6C5CE7",
+  "bots": [
+    {
+      "botId": "<TEAMS_APP_ID>",
+      "scopes": ["personal", "groupChat", "team"],
+      "supportsFiles": true,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["personal", "groupChat", "team"],
+          "commands": [
+            { "title": "health", "description": "Check relay health" },
+            { "title": "agents", "description": "List / bind Maestro agents" },
+            { "title": "session", "description": "Reset the conversation session" }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["<public-host>"]
+}
