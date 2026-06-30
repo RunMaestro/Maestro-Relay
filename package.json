@@ -11,6 +11,7 @@
     "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",
     "deploy-commands": "tsx src/providers/discord/deploy.ts",
+    "deploy-teams": "tsx src/providers/teams/deploy.ts",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
     "maestro-relay": "tsx src/cli/maestro-relay.ts"
   },
