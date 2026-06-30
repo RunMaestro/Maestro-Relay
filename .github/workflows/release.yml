@@ -61,6 +61,10 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          # Tags carrying a prerelease component (e.g. v0.5.0-rc.1) are published
+          # as GitHub prereleases so the stable "latest" endpoint keeps returning
+          # the last stable release. RC-channel installs opt into them explicitly.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             ${{ steps.package.outputs.tarball }}
             ${{ steps.package.outputs.checksum }}
