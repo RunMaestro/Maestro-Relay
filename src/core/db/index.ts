@@ -76,6 +76,12 @@ export const channelDb = {
     ).run(readOnly ? 1 : 0, provider, channelId);
   },
 
+  rebind(provider: string, channelId: string, agentId: string, agentName: string): void {
+    db.prepare(
+      'UPDATE agent_channels SET agent_id = ?, agent_name = ?, session_id = NULL WHERE provider = ? AND channel_id = ?',
+    ).run(agentId, agentName, provider, channelId);
+  },
+
   remove(provider: string, channelId: string): void {
     db.prepare('DELETE FROM agent_channels WHERE provider = ? AND channel_id = ?').run(
       provider,

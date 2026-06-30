@@ -1,22 +1,19 @@
 {
   "name": "maestro-relay",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Maestro Relay — connect chat platforms (Discord today, Slack/Teams next) to Maestro AI agents via maestro-cli.",
   "main": "dist/index.js",
   "bin": {
-    "maestro-relay": "dist/cli/maestro-relay.js",
-    "maestro-bridge": "dist/cli/maestro-relay.js",
-    "maestro-discord": "dist/cli/maestro-relay.js"
+    "maestro-relay": "dist/cli/maestro-relay.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",
     "deploy-commands": "node dist/scripts/deploy-commands.js",
+    "deploy-teams": "tsx src/providers/teams/deploy.ts",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
-    "maestro-relay": "tsx src/cli/maestro-relay.ts",
-    "maestro-bridge": "tsx src/cli/maestro-relay.ts",
-    "maestro-discord": "tsx src/cli/maestro-relay.ts"
+    "maestro-relay": "tsx src/cli/maestro-relay.ts"
   },
   "keywords": [],
   "author": "",
@@ -24,14 +21,17 @@
   "dependencies": {
     "@slack/bolt": "^4.6.0",
     "better-sqlite3": "^12.8.0",
+    "botbuilder": "^4.23.3",
     "discord.js": "^14.0.0",
     "dotenv": "^16.0.0",
-    "grammy": "^1.42.0"
+    "grammy": "^1.42.0",
+    "restify": "^11.1.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
+    "@types/restify": "^8.5.12",
     "eslint": "^10.2.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.8.2",

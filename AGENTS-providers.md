@@ -1,6 +1,6 @@
 # Provider development guide
 
-This document is the deep-dive companion to [`AGENTS.md`](AGENTS.md) (and [`docs/architecture.md`](docs/architecture.md)) for adding a new chat-platform provider to Maestro Relay. Discord, Slack, and Telegram are already built-in (see [`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md), and [`docs/telegram-setup.md`](docs/telegram-setup.md)); everything below is what you'd need to know to ship a Teams, Matrix, etc. adapter without touching the kernel.
+This document is the deep-dive companion to [`AGENTS.md`](AGENTS.md) (and [`docs/architecture.md`](docs/architecture.md)) for adding a new chat-platform provider to Maestro Relay. Discord, Slack, Telegram, and Teams are already built-in (see [`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md), [`docs/telegram-setup.md`](docs/telegram-setup.md), and [`docs/teams.md`](docs/teams.md)); Teams shipped in Phase 1 with DM/personal scope (group-chat and team channels are on the roadmap). Everything below is what you'd need to know to ship the next adapter (e.g. Matrix) without touching the kernel.
 
 If you're adding behavior to an existing provider rather than building a new one, work in `src/providers/discord/`, `src/providers/slack/`, or `src/providers/telegram/` and consult the matching `docs/<name>.md` instead.
 
@@ -47,6 +47,17 @@ Defined in `src/core/types.ts`. Every provider exports a class implementing this
 | `sendTyping?(target)`           | optional | Typing indicator while the agent thinks                                              |
 
 The kernel calls `react` and `sendTyping` if they exist; safe to omit when the platform has no analogue.
+
+### Typed errors providers throw
+
+Providers communicate two distinct failure modes back to the kernel via typed errors from `src/core/errors.ts`. Throwing strings or generic `Error`s bypasses the kernel's retry/HTTP-status logic.
+
+| Error                        | Thrown from                  | Carries          | Kernel reaction                                                                                  |
+| ---------------------------- | ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------ |
+| `RateLimitError`             | `send(target, msg)`          | `retryAfterMs`   | In-request retry up to 3× (clamped 100–5000 ms); on final failure returns `429` with `Retry-After` header (seconds) |
+| `AgentNotFoundError`         | `findOrCreateAgentChannel`   | `agentId`        | Returns `404 { error: "Agent not found: <id>" }` from `POST /api/send`                            |
+
+Platforms report rate limits in different units (Discord: ms, Slack: seconds). Convert to ms in a small `toRateLimitError(err)` helper inside the adapter — see the exported helpers in `src/providers/discord/adapter.ts` and `src/providers/slack/adapter.ts` for the pattern (both exported for unit tests).
 
 ### `KernelContext`
 
@@ -109,12 +120,12 @@ Things to keep out of `src/core/`: SDK imports (`discord.js`, `@slack/bolt`, etc
 
 ### 1. Register the adapter
 
-In `src/core/providers.ts`, add a `case` to `loadProvider` (alongside the existing `discord` and `slack` cases):
+In `src/core/providers.ts`, add a `case` to `loadProvider` (alongside the existing `discord`, `slack`, and `teams` cases):
 
 ```ts
-case 'teams': {
-  const { TeamsProvider } = await import('../providers/teams/adapter');
-  return new TeamsProvider();
+case 'matrix': {
+  const { MatrixProvider } = await import('../providers/matrix/adapter');
+  return new MatrixProvider();
 }
 ```
 
@@ -125,11 +136,13 @@ This is the only kernel file the provider should touch.
 Add a section to `.env.example`:
 
 ```env
-# --- Teams provider (loaded only if 'teams' is in ENABLED_PROVIDERS) ---
-TEAMS_BOT_TOKEN=your_token_here
-TEAMS_APP_ID=your_app_id_here
-TEAMS_TENANT_ID=your_tenant_id_here
+# --- Matrix provider (loaded only if 'matrix' is in ENABLED_PROVIDERS) ---
+MATRIX_HOMESERVER=https://matrix.example.org
+MATRIX_ACCESS_TOKEN=your_token_here
+MATRIX_USER_ID=@bot:example.org
 ```
+
+(See `.env.example` for the live `TEAMS_*` keys the shipped Teams provider uses.)
 
 Validate creds in `start(ctx)`, throwing a clear error if missing. Don't validate at module load — a disabled provider must not fail the bridge on missing env.
 
@@ -141,7 +154,7 @@ The shared `agent_channels` table is keyed on `(provider, channel_id)` — wrap 
 
 ### 4. Installer module switch
 
-`install.sh` exposes `MAESTRO_RELAY_MODULE` for selecting an install-time provider. Today it only accepts `discord`. When adding a provider:
+`install.sh` exposes `MAESTRO_RELAY_MODULE` for selecting an install-time provider. Today it accepts `discord`, `slack`, and `teams`. When adding a provider:
 
 - Update the `normalize_module` allow-list in `install.sh`.
 - Add provider-credential prompts to `write_config` (gated on the selected module).
@@ -157,7 +170,7 @@ Add a `docs/<provider>.md` mirroring `docs/discord.md`'s structure: bot setup, c
 
 - Unit-test the message translation (platform event → `IncomingMessage`) in isolation; don't pull in the platform SDK runtime in tests.
 - The kernel's tests (`src/__tests__/queue.test.ts`, `server.test.ts`, etc.) use `mockProvider.test.ts` as a reference for a minimal `BridgeProvider` implementation — copy that pattern when building a real adapter so the kernel tests stay provider-agnostic.
-- Run the full suite: `npm test` (169 tests at time of writing). All kernel tests should pass with your provider added.
+- Run the full suite: `npm test`. All kernel tests should pass with your provider added.
 
 ## Voice transcription
 

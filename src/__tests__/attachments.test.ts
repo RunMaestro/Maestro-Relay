@@ -77,7 +77,12 @@ test('downloadAttachments saves files with UUID-prefixed names', async () => {
   assert.equal(downloaded.length, 1);
   assert.deepEqual(failed, []);
   assert.equal(downloaded[0].originalName, 'photo.png');
-  assert.ok(downloaded[0].savedPath.includes(DEFAULT_FILES_SUBDIR));
+  // `DEFAULT_FILES_SUBDIR` is the literal string '.maestro/discord-files',
+  // but the joined `savedPath` uses `path.sep`. Normalize to the platform
+  // separator before checking containment so the test passes on Windows
+  // (where path.join produces backslashes) and Unix (forward slashes).
+  const expectedSubdir = DEFAULT_FILES_SUBDIR.split('/').join(path.sep);
+  assert.ok(downloaded[0].savedPath.includes(expectedSubdir));
 
   const basename = path.basename(downloaded[0].savedPath);
   assert.match(basename, /^[0-9a-f-]{36}-photo\.png$/);

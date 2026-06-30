@@ -126,6 +126,9 @@ export type EnqueueOptions = {
 
 export interface KernelLogger {
   error(context: string, detail: string): void | Promise<void>;
+  warn(context: string, detail: string): void;
+  info(context: string, detail: string): void;
+  debug(context: string, detail: string): void;
 }
 
 export interface KernelContext {

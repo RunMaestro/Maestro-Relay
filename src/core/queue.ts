@@ -7,6 +7,7 @@ import type {
   ReactionHandle,
 } from './types';
 import { splitMessage as defaultSplitMessage } from './splitMessage';
+import { renderTables } from './renderTables';
 import { downloadAttachments as defaultDownload, formatAttachmentRefs } from './attachments';
 
 interface QueueEntry {
@@ -21,8 +22,12 @@ export type QueueDeps = {
     send: (
       agentId: string,
       message: string,
-      sessionId?: string,
-      readOnly?: boolean,
+      opts?: {
+        sessionId?: string;
+        readOnly?: boolean;
+        openTab?: boolean;
+        noSystemPrompt?: boolean;
+      },
     ) => Promise<{
       success: boolean;
       response: string | null;
@@ -163,12 +168,10 @@ export function createQueue(deps: QueueDeps) {
       const fullMessage = [options?.contentOverride ?? message.content, attachmentRefs]
         .filter(Boolean)
         .join('\n\n');
-      const result = await deps.maestro.send(
-        conv.agentId,
-        fullMessage,
-        conv.sessionId ?? undefined,
-        conv.readOnly,
-      );
+      const result = await deps.maestro.send(conv.agentId, fullMessage, {
+        sessionId: conv.sessionId ?? undefined,
+        readOnly: conv.readOnly,
+      });
 
       if (!conv.sessionId && result.sessionId) {
         conv.persistSession(result.sessionId);
@@ -189,7 +192,7 @@ export function createQueue(deps: QueueDeps) {
             `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${result.error}`,
           );
         }
-        const parts = split(result.response);
+        const parts = split(renderTables(result.response));
         for (const part of parts) {
           await provider.send(target, { text: part });
         }

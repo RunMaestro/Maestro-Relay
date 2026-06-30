@@ -1,4 +1,5 @@
 import type { BridgeProvider } from './types';
+import { logger } from './logger';
 
 /**
  * Build the set of provider instances enabled in this deployment.
@@ -26,12 +27,16 @@ async function loadProvider(name: string): Promise<BridgeProvider | null> {
       const { SlackProvider } = await import('../providers/slack/adapter');
       return new SlackProvider();
     }
+    case 'teams': {
+      const { TeamsProvider } = await import('../providers/teams/adapter');
+      return new TeamsProvider();
+    }
     case 'telegram': {
       const { TelegramProvider } = await import('../providers/telegram/adapter');
       return new TelegramProvider();
     }
     default:
-      console.warn(`[providers] Unknown provider "${name}" — ignoring.`);
+      logger.warn('providers/load', `Unknown provider "${name}" — ignoring.`);
       return null;
   }
 }

@@ -2,7 +2,14 @@ node_modules/
 dist/
 .env
 *.db
+logs/
 
 Auto Run Docs/
 models
 .maestro/
+
+# generated Teams app package (built by `npm run deploy-teams`)
+appPackage/maestro-relay-teams.zip
+
+# local PR-review worktree (not part of the project)
+.pr52-review/

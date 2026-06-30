@@ -23,6 +23,7 @@ import type {
 import { maestro } from '../../core/maestro';
 import { logger } from '../../core/logger';
 import { checkTranscriptionDependencies } from '../../core/transcription';
+import { AgentNotFoundError, RateLimitError } from '../../core/errors';
 import { discordConfig } from './config';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
@@ -70,7 +71,7 @@ export class DiscordProvider implements BridgeProvider {
     );
 
     client.once('ready', async (c) => {
-      console.log(`[discord] logged in as ${c.user.tag}`);
+      logger.info('discord/ready', `logged in as ${c.user.tag}`);
       await checkTranscriptionDependencies();
     });
 
@@ -89,7 +90,7 @@ export class DiscordProvider implements BridgeProvider {
           try {
             await cmd.autocomplete(interaction);
           } catch (err) {
-            console.error('Autocomplete error:', err);
+            await logger.error('discord/autocomplete', String(err));
           }
         }
         return;
@@ -109,7 +110,7 @@ export class DiscordProvider implements BridgeProvider {
       try {
         await cmd.execute(interaction);
       } catch (err) {
-        console.error('Command error:', err);
+        await logger.error('discord/command', `${interaction.commandName}: ${String(err)}`);
         const msg = { content: '❌ An error occurred.', ephemeral: true };
         if (interaction.replied || interaction.deferred) {
           await interaction.followUp(msg);
@@ -129,7 +130,7 @@ export class DiscordProvider implements BridgeProvider {
       transcribeVoiceAttachment,
       isTranscriberAvailable,
       splitMessage,
-      logger: console,
+      logger: ctx.logger,
     });
     client.on('messageCreate', handleMessageCreate);
 
@@ -178,7 +179,13 @@ export class DiscordProvider implements BridgeProvider {
     if (msg.mention && discordConfig.mentionUserId) {
       text = `<@${discordConfig.mentionUserId}> ${text}`;
     }
-    await channel.send(text);
+    try {
+      await channel.send(text);
+    } catch (err) {
+      const rl = toRateLimitError(err);
+      if (rl) throw rl;
+      throw err;
+    }
   }
 
   async react(target: MessageTarget, emoji: string): Promise<ReactionHandle> {
@@ -221,7 +228,7 @@ export class DiscordProvider implements BridgeProvider {
       if (!this.client) throw new Error('Discord client not initialised');
       const allAgents = await maestro.listAgents();
       const agent = allAgents.find((a) => a.id === agentId);
-      if (!agent) throw new Error(`Agent not found: ${agentId}`);
+      if (!agent) throw new AgentNotFoundError(agentId);
 
       const guild = await this.client.guilds.fetch(discordConfig.guildId);
 
@@ -273,4 +280,27 @@ export class DiscordProvider implements BridgeProvider {
     }
     return fetched;
   }
+}
+
+/**
+ * Translate a discord.js error into the kernel-level `RateLimitError`.
+ *
+ * discord.js surfaces rate limits through two shapes:
+ * - `@discordjs/rest` `RateLimitError` with `status: 429` and `retryAfter` in ms
+ * - `DiscordAPIError` with `status: 429` and no `retryAfter` (the API will
+ *   respect the next `Retry-After` we send)
+ *
+ * Returns `null` when the error is not a rate-limit; the caller rethrows
+ * the original error in that case.
+ */
+export function toRateLimitError(err: unknown): RateLimitError | null {
+  if (!err || typeof err !== 'object') return null;
+  const e = err as { status?: number; retryAfter?: number; name?: string };
+  // `@discordjs/rest`'s RateLimitError carries a numeric `retryAfter` without a
+  // `status`, so we accept either signal. Requiring `retryAfter` to be a number
+  // avoids promoting unrelated errors that happen to carry a truthy property.
+  if (e.status === 429 || typeof e.retryAfter === 'number') {
+    return new RateLimitError(e.retryAfter ?? 1000, `Discord rate limited`);
+  }
+  return null;
 }

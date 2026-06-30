@@ -5,9 +5,10 @@ import path from 'path';
 const PROVIDER_DEPLOY_SCRIPTS: Record<string, string> = {
   discord: path.resolve(__dirname, '..', 'providers', 'discord', 'deploy.js'),
   telegram: path.resolve(__dirname, '..', 'providers', 'telegram', 'deploy.js'),
+  teams: path.resolve(__dirname, '..', 'providers', 'teams', 'deploy.js'),
 };
 
-const KNOWN_PROVIDERS = new Set(['discord', 'slack', 'telegram']);
+const KNOWN_PROVIDERS = new Set(['discord', 'slack', 'telegram', 'teams']);
 
 function parseEnabledProviders(): string[] {
   const raw = process.env.ENABLED_PROVIDERS;

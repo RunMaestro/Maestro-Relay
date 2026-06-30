@@ -163,6 +163,9 @@ config_complete() {
       slack)
         required_keys="$required_keys SLACK_BOT_TOKEN SLACK_SIGNING_SECRET SLACK_TEAM_ID SLACK_APP_ID"
         ;;
+      teams)
+        required_keys="$required_keys TEAMS_APP_ID TEAMS_APP_PASSWORD TEAMS_TENANT_ID"
+        ;;
       discord|'')
         required_keys="$required_keys DISCORD_BOT_TOKEN DISCORD_CLIENT_ID DISCORD_GUILD_ID"
         ;;

@@ -2,8 +2,6 @@
 
 Maestro agents can push messages into chat using the `maestro-relay` CLI (or any HTTP client). The bridge exposes a local HTTP API on `127.0.0.1:API_PORT` (default 3457).
 
-The legacy binary name `maestro-discord` is preserved as an alias of `maestro-relay` and is fully equivalent.
-
 ## Setup
 
 The API server starts automatically with the bridge. Port is configurable via `API_PORT` in `.env`.
@@ -100,6 +98,6 @@ Returns `503` with `"status":"not_ready"` if no provider is connected.
 | `405`  | Method not allowed                                             |
 | `413`  | Request body exceeds 1 MB                                      |
 | `415`  | Wrong Content-Type (must be `application/json`)                |
-| `429`  | Rate limited by upstream platform after 3 retries              |
+| `429`  | Rate limited by upstream platform after 3 retries (response includes a `Retry-After` header in seconds) |
 | `500`  | Internal server error                                          |
 | `503`  | The named provider is not connected                            |

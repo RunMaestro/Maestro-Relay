@@ -10,9 +10,7 @@ Verbs:
   notify    Post a styled toast/flash notification to an agent's channel
   status    Post the agent's current status (cwd, usage, tokens) to its channel
 
-Run 'maestro-relay <verb> --help' for verb-specific options.
-
-Aliases: 'maestro-bridge' and 'maestro-discord' are preserved for backwards compatibility.`;
+Run 'maestro-relay <verb> --help' for verb-specific options.`;
 
 function printRootHelp(): void {
   console.log(ROOT_USAGE);
