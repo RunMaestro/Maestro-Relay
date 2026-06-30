@@ -1,6 +1,6 @@
 # Agent Guide
 
-This repo is **Maestro Relay** — a chat-platform-to-Maestro bridge built around a provider-agnostic kernel. Discord and Slack ship in the box; Teams/Matrix plug in alongside them without touching the kernel. `CLAUDE.md` is a symlink to this file.
+This repo is **Maestro Relay** — a chat-platform-to-Maestro bridge built around a provider-agnostic kernel. Discord, Slack, and Teams ship in the box (Teams is Phase 1 / DM scope — channels are on the roadmap); further providers like Matrix plug in alongside them without touching the kernel. `CLAUDE.md` is a symlink to this file.
 
 ## Development workflow
 
@@ -35,6 +35,10 @@ Lives under `src/providers/discord/` (`adapter.ts`, `messageCreate.ts`, `voice.t
 
 Lives under `src/providers/slack/` (`adapter.ts`, `messageCreate.ts`, `commands/`, `channelsDb.ts`, `conversationsDb.ts`, `config.ts`). Uses `@slack/bolt` (Socket Mode in dev, ExpressReceiver in production). Thread registry (`slack_agent_conversations`) is keyed on `thread_ts`. For Slack-specific runtime behavior, env vars, slash commands, and app setup see [docs/slack.md](docs/slack.md).
 
+### Teams provider
+
+Lives under `src/providers/teams/` (`adapter.ts`, `messageCreate.ts`, `commands/`, `deploy.ts`, `channelsDb.ts`, `conversationRefsDb.ts`, `errors.ts`, `config.ts`). Uses the Bot Framework SDK (`botbuilder`). Shipped in Phase 1 with DM/personal scope: one DM binds to one agent via typed `agents new <id>` (no slash commands), switching agents re-binds and resets the session. Group-chat and team channels are on the roadmap. Proactive `/api/send` requires a captured conversation reference (`teams_conversation_refs` table), so a chat must message the bot once before pushes work. For Teams-specific setup (Entra app, Azure Bot, app-package upload), env vars, command surface, and runtime behavior see [docs/teams.md](docs/teams.md).
+
 ### CLI
 
 - `src/cli/maestro-relay.ts` — verb dispatcher (`send`, `notify`, `status`)
@@ -62,7 +66,7 @@ TL;DR:
 
 ## Installer module switch
 
-- `install.sh` supports `MAESTRO_RELAY_MODULE` (fallback `MAESTRO_BRIDGE_MODULE`), currently accepting `discord` and `slack`.
+- `install.sh` supports `MAESTRO_RELAY_MODULE` (fallback `MAESTRO_BRIDGE_MODULE`), currently accepting `discord`, `slack`, and `teams`.
 - Keep installer module selection aligned with runtime `ENABLED_PROVIDERS` and CLI `--provider` support.
 - When adding a provider, update installer validation/prompting and `maestro-relay-ctl deploy` routing so deploy behavior is module-aware.
 
@@ -76,7 +80,7 @@ TL;DR:
 
 ## Expectations for changes
 
-- Follow existing patterns in `src/core/` and `src/providers/{discord,slack}/` before introducing new abstractions.
+- Follow existing patterns in `src/core/` and `src/providers/{discord,slack,teams}/` before introducing new abstractions.
 - Provider-specific code (Discord types, Slack Bolt handlers, slash commands, threads) lives under `src/providers/<name>/` — keep `src/core/` free of `discord.js` and `@slack/bolt` imports.
 - Keep changes minimal and focused.
 - Update docs when behavior or setup changes.

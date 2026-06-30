@@ -1,6 +1,6 @@
 # Provider development guide
 
-This document is the deep-dive companion to [`AGENTS.md`](AGENTS.md) (and [`docs/architecture.md`](docs/architecture.md)) for adding a new chat-platform provider to Maestro Relay. Discord and Slack are already built-in (see [`docs/discord.md`](docs/discord.md) and [`docs/slack.md`](docs/slack.md)); everything below is what you'd need to know to ship a Teams, Matrix, etc. adapter without touching the kernel.
+This document is the deep-dive companion to [`AGENTS.md`](AGENTS.md) (and [`docs/architecture.md`](docs/architecture.md)) for adding a new chat-platform provider to Maestro Relay. Discord, Slack, and Teams are already built-in (see [`docs/discord.md`](docs/discord.md), [`docs/slack.md`](docs/slack.md), and [`docs/teams.md`](docs/teams.md)); Teams shipped in Phase 1 with DM/personal scope (group-chat and team channels are on the roadmap). Everything below is what you'd need to know to ship the next adapter (e.g. Matrix) without touching the kernel.
 
 If you're adding behavior to an existing provider rather than building a new one, work in `src/providers/discord/` or `src/providers/slack/` and consult the matching `docs/<name>.md` instead.
 
@@ -118,12 +118,12 @@ Things to keep out of `src/core/`: SDK imports (`discord.js`, `@slack/bolt`, etc
 
 ### 1. Register the adapter
 
-In `src/core/providers.ts`, add a `case` to `loadProvider` (alongside the existing `discord` and `slack` cases):
+In `src/core/providers.ts`, add a `case` to `loadProvider` (alongside the existing `discord`, `slack`, and `teams` cases):
 
 ```ts
-case 'teams': {
-  const { TeamsProvider } = await import('../providers/teams/adapter');
-  return new TeamsProvider();
+case 'matrix': {
+  const { MatrixProvider } = await import('../providers/matrix/adapter');
+  return new MatrixProvider();
 }
 ```
 
@@ -134,11 +134,13 @@ This is the only kernel file the provider should touch.
 Add a section to `.env.example`:
 
 ```env
-# --- Teams provider (loaded only if 'teams' is in ENABLED_PROVIDERS) ---
-TEAMS_BOT_TOKEN=your_token_here
-TEAMS_APP_ID=your_app_id_here
-TEAMS_TENANT_ID=your_tenant_id_here
+# --- Matrix provider (loaded only if 'matrix' is in ENABLED_PROVIDERS) ---
+MATRIX_HOMESERVER=https://matrix.example.org
+MATRIX_ACCESS_TOKEN=your_token_here
+MATRIX_USER_ID=@bot:example.org
 ```
+
+(See `.env.example` for the live `TEAMS_*` keys the shipped Teams provider uses.)
 
 Validate creds in `start(ctx)`, throwing a clear error if missing. Don't validate at module load — a disabled provider must not fail the bridge on missing env.
 
@@ -150,7 +152,7 @@ The shared `agent_channels` table is keyed on `(provider, channel_id)` — wrap 
 
 ### 4. Installer module switch
 
-`install.sh` exposes `MAESTRO_RELAY_MODULE` for selecting an install-time provider. Today it only accepts `discord`. When adding a provider:
+`install.sh` exposes `MAESTRO_RELAY_MODULE` for selecting an install-time provider. Today it accepts `discord`, `slack`, and `teams`. When adding a provider:
 
 - Update the `normalize_module` allow-list in `install.sh`.
 - Add provider-credential prompts to `write_config` (gated on the selected module).
