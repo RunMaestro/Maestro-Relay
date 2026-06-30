@@ -50,6 +50,25 @@ maestro-relay-ctl uninstall # remove install + service files
 Override any of these with `MAESTRO_RELAY_HOME`, `XDG_CONFIG_HOME`, or `MAESTRO_RELAY_BIN_DIR`. Pin a specific version with `MAESTRO_RELAY_VERSION=v1.0.0`.
 Choose a provider module at install time via `MAESTRO_RELAY_MODULE` (`discord`, `slack`, `telegram`, or `teams`).
 
+### Release channels (stable vs RC)
+
+The installer and `maestro-relay-ctl update` track the **stable** channel by default — the latest non-prerelease GitHub release. To try release candidates ahead of a stable cut, opt into the **rc** channel:
+
+```bash
+maestro-relay-ctl channel rc      # persist the preference, then:
+maestro-relay-ctl update          # pulls the newest release, prereleases included
+maestro-relay-ctl update --rc     # …or switch + update in one step
+maestro-relay-ctl channel stable  # switch back (or: update --stable)
+```
+
+For a fresh install on the RC channel, set the env var:
+
+```bash
+MAESTRO_RELAY_CHANNEL=rc bash -c "$(curl -fsSL https://raw.githubusercontent.com/RunMaestro/Maestro-Relay/main/install.sh)"
+```
+
+RC builds are published as GitHub **prereleases** (tags like `v0.5.0-rc.1`), so the stable channel never picks them up. Pin an exact build with `MAESTRO_RELAY_VERSION=vX.Y.Z-rc.N`. The persisted channel lives at `~/.config/maestro-relay/channel`.
+
 ## Install (development from source)
 
 1. Clone and install:
