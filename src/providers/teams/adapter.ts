@@ -152,8 +152,17 @@ export class TeamsProvider implements BridgeProvider {
   }
 
   async findOrCreateAgentChannel(agentId: string): Promise<AgentChannelInfo> {
-    // TEAMS-05 adds the real lookup; Phase 1 is lookup-only and there is
-    // nothing to look up yet, so surface AgentNotFoundError.
+    // Lookup-only: Phase 1 cannot proactively spin up a 1:1 Teams chat — the
+    // user must have messaged the bot first so a conversation reference (and
+    // binding) exists. Graph-based creation is Phase 3.
+    const existing = channelDb.getByAgentId(agentId);
+    if (existing) {
+      return {
+        channelId: existing.channel_id,
+        agentId,
+        agentName: existing.agent_name,
+      };
+    }
     throw new AgentNotFoundError(agentId);
   }
 }
