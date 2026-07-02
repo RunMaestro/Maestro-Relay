@@ -288,4 +288,47 @@ export const roomsDb = {
       .prepare('SELECT slot, bot_user_id FROM room_bots ORDER BY slot')
       .all() as Array<{ slot: string; bot_user_id: string }>;
   },
+
+  // ---- reconnect-gap reconciliation cursors ---------------------------------
+
+  /** Every room a given bot slot participates in (drives per-slot catch-up). */
+  getRoomsForSlot(slot: string): RoomRecord[] {
+    return db
+      .prepare(
+        `SELECT r.* FROM rooms r
+           JOIN room_participants p ON p.room_key = r.room_key
+          WHERE p.bot_slot = ?`,
+      )
+      .all(slot) as RoomRecord[];
+  },
+
+  /**
+   * The last message id this slot's client has seen in a channel, or null if it
+   * has no cursor yet. Reconciliation fetches strictly `after` this id.
+   */
+  getRoomBotCursor(slot: string, channelId: string): string | null {
+    const row = db
+      .prepare(
+        'SELECT last_seen_message_id FROM room_bot_cursors WHERE slot = ? AND channel_id = ?',
+      )
+      .get(slot, channelId) as { last_seen_message_id: string } | undefined;
+    return row?.last_seen_message_id ?? null;
+  },
+
+  /**
+   * Advance the `(slot, channel)` cursor to `messageId`, but ONLY forward:
+   * snowflake ids are monotonic in time, so a smaller id (an older message
+   * replayed out of order) never rewinds the low-water mark. Compared as
+   * `BigInt` since snowflakes overflow `Number`.
+   */
+  advanceRoomBotCursor(slot: string, channelId: string, messageId: string): void {
+    const current = this.getRoomBotCursor(slot, channelId);
+    if (current !== null && BigInt(messageId) <= BigInt(current)) return;
+    db.prepare(
+      `INSERT INTO room_bot_cursors (slot, channel_id, last_seen_message_id, updated_at)
+       VALUES (?, ?, ?, unixepoch())
+       ON CONFLICT(slot, channel_id)
+         DO UPDATE SET last_seen_message_id = excluded.last_seen_message_id, updated_at = unixepoch()`,
+    ).run(slot, channelId, messageId);
+  },
 };

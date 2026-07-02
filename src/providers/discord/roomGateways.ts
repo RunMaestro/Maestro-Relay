@@ -46,13 +46,23 @@ export interface SlotClient {
 /** The room-aware `messageCreate` handler bound per client (see `roomMessageCreate.ts`). */
 export type RoomMessageListener = (message: Message) => void | Promise<void>;
 
+/**
+ * Kernel persistence seam for the gateway manager. The two registry writes
+ * (`upsertRoomBot`, `isSlotParticipant`) are required; the reconciliation
+ * reads (`getRoomsForSlot`, `getRoomBotCursor`) are optional on the override so
+ * existing test stubs that never trigger reconciliation stay valid — the real
+ * `roomsDb` default supplies all four.
+ */
+type RoomGatewayDbSeam = Pick<typeof roomsDb, 'upsertRoomBot' | 'isSlotParticipant'> &
+  Partial<Pick<typeof roomsDb, 'getRoomsForSlot' | 'getRoomBotCursor'>>;
+
 export interface RoomGatewayManagerDeps {
   /** Override for tests; defaults to the env-driven pool loader. */
   loadRoomBots?: () => RoomBotIdentity[];
   /** Override for tests; defaults to a real `Client` with the room intents. */
   createClient?: () => Client;
-  /** Kernel persistence seam (the `room_bots` registry); defaults to `roomsDb`. */
-  roomBotsDb?: Pick<typeof roomsDb, 'upsertRoomBot' | 'isSlotParticipant'>;
+  /** Kernel persistence seam (the `room_bots` registry + cursors); defaults to `roomsDb`. */
+  roomBotsDb?: RoomGatewayDbSeam;
   logger?: KernelLogger;
 }
 
@@ -82,7 +92,7 @@ export class RoomGatewayManager {
   private readonly listenerBound = new Set<Client>();
   private readonly loadRoomBots: () => RoomBotIdentity[];
   private readonly createClient: () => Client;
-  private readonly roomBotsDb: Pick<typeof roomsDb, 'upsertRoomBot' | 'isSlotParticipant'>;
+  private readonly roomBotsDb: RoomGatewayDbSeam;
   private readonly log: KernelLogger;
 
   constructor(deps: RoomGatewayManagerDeps = {}) {
@@ -174,7 +184,91 @@ export class RoomGatewayManager {
       }
       if (this.listenerBound.has(client)) continue;
       client.on('messageCreate', listener);
+      this.bindReconciliation(slot, client, listener);
       this.listenerBound.add(client);
+    }
+  }
+
+  /**
+   * Hook the gateway lifecycle for reconnect-gap reconciliation (plan Phase 3
+   * §Reconciliation & stall detection — MUST). The A→B hop is a best-effort
+   * `messageCreate` push: a client mid-reconnect silently misses it. On every
+   * `shardResume` — and on a `shardReady` that follows a `shardReconnecting`
+   * (not the initial ready) — we catch that client up by refetching each room
+   * channel's messages after its last-seen cursor and replaying them through
+   * the SAME listener. This is best-effort-with-catch-up, never exactly-once;
+   * the listener's `message.id` de-dupe makes replay a no-op.
+   */
+  private bindReconciliation(
+    slot: string,
+    client: Client,
+    listener: RoomMessageListener,
+  ): void {
+    const reconnecting = new Set<number>();
+    client.on('shardReconnecting', (shardId: number) => {
+      reconnecting.add(shardId);
+    });
+    client.on('shardResume', (shardId: number) => {
+      reconnecting.delete(shardId);
+      void this.reconcileSlot(slot, client, listener);
+    });
+    client.on('shardReady', (shardId: number) => {
+      // Only catch up when this shard just came back from a reconnect — the
+      // first ready of a fresh login has nothing to reconcile.
+      if (reconnecting.delete(shardId)) {
+        void this.reconcileSlot(slot, client, listener);
+      }
+    });
+  }
+
+  /**
+   * Refetch and replay any room messages this slot's client missed while its
+   * gateway was down. For each room the bot participates in, page forward from
+   * the `(slot, channel)` cursor (`fetch({ after, limit: 100 })`, oldest-first)
+   * and feed every message back through the live listener. A slot with no
+   * cursor yet has no low-water mark, so there is nothing to catch up on.
+   */
+  private async reconcileSlot(
+    slot: string,
+    client: Client,
+    listener: RoomMessageListener,
+  ): Promise<void> {
+    const rooms = this.roomBotsDb.getRoomsForSlot?.(slot) ?? [];
+    for (const room of rooms) {
+      const channelId = room.channel_id;
+      const cursor = this.roomBotsDb.getRoomBotCursor?.(slot, channelId) ?? null;
+      if (cursor === null) continue; // no low-water mark yet — never seen a message here.
+      let after: string = cursor;
+      try {
+        const channel = await client.channels.fetch(channelId);
+        if (!channel || !channel.isTextBased() || !('messages' in channel)) continue;
+        for (;;) {
+          const batch = await channel.messages.fetch({ after, limit: 100 });
+          if (batch.size === 0) break;
+          // discord.js returns newest-first; replay oldest-first so the cursor
+          // and any ordering-sensitive routing advance in chronological order.
+          const ordered = [...batch.values()].sort((a, b) =>
+            BigInt(a.id) < BigInt(b.id) ? -1 : 1,
+          );
+          for (const msg of ordered) {
+            try {
+              await listener(msg);
+            } catch (err) {
+              await this.log.error(
+                'discord/roomGateways',
+                `reconciliation replay failed for message ${msg.id}: ${String(err)}`,
+              );
+            }
+          }
+          after = ordered[ordered.length - 1].id;
+          if (batch.size < 100) break;
+        }
+      } catch (err) {
+        await this.log.error(
+          'discord/roomGateways',
+          `reconciliation fetch failed for slot ${slot} channel ${channelId}: ${String(err)}`,
+        );
+      }
     }
   }
 

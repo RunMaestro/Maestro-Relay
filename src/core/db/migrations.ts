@@ -15,6 +15,8 @@ import type Database from 'better-sqlite3';
  *     `agent_bot_bindings`) — provider-agnostic kernel schema
  *  9. Create `room_bots` registry (slot → resolved bot_user_id; never the token)
  *     populated by the multi-client gateway manager
+ * 10. Create `room_bot_cursors` (slot, channel_id → last_seen_message_id): the
+ *     per-client low-water mark that reconnect-gap reconciliation replays from
  */
 export function runMigrations(db: Database.Database): void {
   ensureReadOnlyColumn(db);
@@ -27,6 +29,7 @@ export function runMigrations(db: Database.Database): void {
   ensureTeamsConversationRefsTable(db);
   ensureRoomsTables(db);
   ensureRoomBotsRegistryTable(db);
+  ensureRoomBotCursorsTable(db);
 }
 
 export function ensureOwnerUserIdColumn(database: Database.Database): void {
@@ -246,6 +249,30 @@ function ensureRoomBotsRegistryTable(database: Database.Database): void {
       slot         TEXT PRIMARY KEY,
       bot_user_id  TEXT NOT NULL,
       updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+}
+
+/**
+ * Reconnect-gap reconciliation cursor (provider-agnostic kernel — no Discord
+ * client library).
+ *
+ * `room_bot_cursors` tracks, per `(slot, channel_id)`, the snowflake id of the
+ * last room message that slot's gateway client processed or intentionally
+ * skipped (`last_seen_message_id`). Because a `messageCreate` gateway push is
+ * best-effort — a client mid-reconnect silently misses it — this low-water mark
+ * is what a client re-fetches *after* on `resume`, replaying any mention it
+ * missed through the same listener path. Stores the snowflake id ONLY, never
+ * message content. Idempotent `IF NOT EXISTS`.
+ */
+function ensureRoomBotCursorsTable(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS room_bot_cursors (
+      slot                 TEXT NOT NULL,
+      channel_id           TEXT NOT NULL,
+      last_seen_message_id TEXT NOT NULL,
+      updated_at           INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (slot, channel_id)
     )
   `);
 }

@@ -30,6 +30,7 @@ import { threadDb } from './threadsDb';
 import { createMessageCreateHandler } from './messageCreate';
 import { createRoomMessageHandler } from './roomMessageCreate';
 import { RoomGatewayManager } from './roomGateways';
+import { TimeoutStallDetector } from './roomStall';
 import {
   isVoiceMessage,
   isVoiceAttachment,
@@ -56,6 +57,7 @@ export class DiscordProvider implements BridgeProvider {
   readonly name = 'discord';
   private client: Client | null = null;
   private roomGateways: RoomGatewayManager | null = null;
+  private roomStall: TimeoutStallDetector | null = null;
   private pendingChannels = new Map<string, Promise<AgentChannelInfo>>();
   private pendingCategory: Promise<CategoryChannel> | null = null;
 
@@ -160,8 +162,27 @@ export class DiscordProvider implements BridgeProvider {
       // through the kernel bus (`ctx.rooms`), so it can only bind once the bus
       // is wired (Phase 4); until then room bots log in but stay quiet.
       if (ctx.rooms) {
+        // Stall detection is the honest best-effort floor for anything
+        // reconnect-gap reconciliation cannot recover: if a routed mention gets
+        // no follow-up, log it and post an `@human` notice into the room.
+        const roomStall = new TimeoutStallDetector({
+          logger: ctx.logger,
+          onStall: async ({ channelId, addressee, timeoutMs }) => {
+            try {
+              const channel = await this.fetchSendable(channelId);
+              await channel.send(
+                `⚠️ @human — no response from @${addressee} in ${Math.round(timeoutMs / 1000)}s.`,
+              );
+            } catch (err) {
+              await ctx.logger.error('discord/roomStall', `notice failed: ${String(err)}`);
+            }
+          },
+        });
+        this.roomStall = roomStall;
+
         const handleRoomMessage = createRoomMessageHandler({
           rooms: ctx.rooms,
+          stall: roomStall,
           logger: ctx.logger,
         });
         roomGateways.bindRoomListeners(handleRoomMessage);
@@ -172,6 +193,10 @@ export class DiscordProvider implements BridgeProvider {
   }
 
   async stop(): Promise<void> {
+    if (this.roomStall) {
+      this.roomStall.clear();
+      this.roomStall = null;
+    }
     if (this.roomGateways) {
       await this.roomGateways.stop();
       this.roomGateways = null;

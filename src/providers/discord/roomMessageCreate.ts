@@ -16,14 +16,26 @@
  * The non-room path is untouched: non-room channels are handled solely by slot
  * 0's existing `handleMessageCreate`; this listener returns immediately for
  * them, so room bots (slots 1..N) ignore non-room channels entirely.
+ *
+ * This is also the ONE routing path reconnect-gap reconciliation replays into
+ * (`roomGateways.ts`), so it is idempotent: it advances a per-`(slot, channel)`
+ * cursor on every room message it sees, and de-dupes routing on `message.id` so
+ * a hop already routed live is a no-op when a `resume`-time refetch replays it.
+ * The honest contract is **best-effort-with-catch-up, never exactly-once** — a
+ * message dropped by the transport is recovered on the next `resume`; anything
+ * reconciliation cannot see is caught by stall detection (`roomStall.ts`).
  */
 
 import type { Message } from 'discord.js';
 import type { KernelLogger, ProviderName, RoomGateway } from '../../core/types';
 import { logger as defaultLogger } from '../../core/logger';
 import { roomsDb as defaultRoomsDb, type RoomParticipant } from '../../core/room/roomsDb';
+import { NoopStallDetector, type RoomStallDetector } from './roomStall';
 
 const PROVIDER: ProviderName = 'discord';
+
+/** Cap on the in-memory recently-routed set (idempotency guard, oldest evicted). */
+const ROUTED_CAP = 512;
 
 export type RoomMessageDeps = {
   /** The room bus seam — `isRoom` gate + the single-hop `submitMessage`. */
@@ -31,10 +43,12 @@ export type RoomMessageDeps = {
   /** Kernel persistence seam (room + participant + gateway registry lookups). */
   roomsDb?: Pick<
     typeof defaultRoomsDb,
-    'getRoomByChannel' | 'getParticipants' | 'getRoomBots'
+    'getRoomByChannel' | 'getParticipants' | 'getRoomBots' | 'advanceRoomBotCursor'
   >;
   /** This client's own bot account id; defaults to `message.client.user.id`. */
   getBotUserId?: (message: Message) => string | undefined;
+  /** Stall detection seam; defaults to the no-op detector (no timers). */
+  stall?: RoomStallDetector;
   logger?: KernelLogger;
 };
 
@@ -42,11 +56,27 @@ export type RoomMessageDeps = {
  * Build the per-client room listener. Every bot in a room receives every room
  * message; the mention gate ensures only the *addressed* bot acts, which is the
  * natural dedup that avoids cross-bot coordination.
+ *
+ * The returned handler is safe to invoke from BOTH the live `messageCreate`
+ * event and the reconciliation refetch — routing de-dupes on `message.id`, so a
+ * message seen through both paths routes exactly once.
  */
 export function createRoomMessageHandler(deps: RoomMessageDeps) {
   const roomsDb = deps.roomsDb ?? defaultRoomsDb;
   const getBotUserId = deps.getBotUserId ?? ((m: Message) => m.client.user?.id);
+  const stall = deps.stall ?? NoopStallDetector;
   const log: KernelLogger = deps.logger ?? defaultLogger;
+
+  // Idempotency guard shared by the live listener and reconciliation replay:
+  // a message id already routed here is dropped the second time. Bounded FIFO.
+  const recentlyRouted = new Set<string>();
+  const markRouted = (id: string): void => {
+    recentlyRouted.add(id);
+    if (recentlyRouted.size > ROUTED_CAP) {
+      const oldest = recentlyRouted.values().next().value;
+      if (oldest !== undefined) recentlyRouted.delete(oldest);
+    }
+  };
 
   return async function handleRoomMessage(message: Message): Promise<void> {
     const channelId = message.channel.id;
@@ -60,6 +90,22 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
       return;
     }
 
+    // slot → resolved bot account id for every registered gateway client.
+    const slotToBotId = new Map(roomsDb.getRoomBots().map((b) => [b.slot, b.bot_user_id]));
+
+    // Advance THIS client's reconnect cursor for every room message it sees —
+    // whether it ends up routing or intentionally skipping. This is the
+    // low-water mark reconciliation replays from, so it must move on all
+    // messages, including our own and unaddressed ones.
+    const thisSlot = [...slotToBotId.entries()].find(([, id]) => id === thisBotUserId)?.[0];
+    if (thisSlot !== undefined) {
+      roomsDb.advanceRoomBotCursor(thisSlot, channelId, message.id);
+    }
+
+    // The room is alive: a message (id !== the message that armed a pending
+    // expectation) clears any stall watch for this channel.
+    stall.observe(channelId, message.id);
+
     // The CHANGED line vs `messageCreate.ts`: drop only *self* (the loop guard),
     // never a blanket `author.bot` drop — a registered peer relay bot must pass
     // through so agents can address one another.
@@ -68,9 +114,6 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
     const room = roomsDb.getRoomByChannel(PROVIDER, channelId);
     if (!room) return;
     const participants = roomsDb.getParticipants(room.room_key);
-
-    // slot → resolved bot account id for every registered gateway client.
-    const slotToBotId = new Map(roomsDb.getRoomBots().map((b) => [b.slot, b.bot_user_id]));
 
     // The bot accounts that render a participant of THIS room — the legitimate
     // peer relay bots. Any bot account outside this set is third-party.
@@ -96,6 +139,10 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
     // Mention gate: only the addressed bot proceeds (natural dedup).
     if (!message.mentions.users.has(thisBotUserId)) return;
 
+    // Idempotency guard: if we already routed this message id (live event), a
+    // reconciliation replay of the same message is a no-op — exactly once.
+    if (recentlyRouted.has(message.id)) return;
+
     // Strip this bot's own native mention (`<@id>` / `<@!id>`) from the content,
     // mirroring `messageCreate.ts`'s `mentionPattern` cleanup.
     const mentionPattern = new RegExp(`<@!?${thisBotUserId}>`, 'g');
@@ -112,9 +159,15 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
 
     // Route exactly once for the addressed bot. The bus (Phase 4) owns the next
     // hop; we never enqueue it here.
+    markRouted(message.id);
     deps.rooms.submitMessage(PROVIDER, channelId, fromHandle, cleanedText, {
       toAgentId: selfParticipant.agent_id,
       fromKind,
     });
+
+    // Arm the stall watch: we now expect a follow-up room message (the bot's
+    // reply, or a human) after this one. Keyed on this message id so peer bots'
+    // observations of the very same message do not clear it prematurely.
+    stall.expect(channelId, selfParticipant.handle, message.id);
   };
 }
