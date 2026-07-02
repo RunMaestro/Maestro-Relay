@@ -40,6 +40,22 @@ export interface RoomBotIdentity {
 }
 
 /**
+ * Docs anchor for the manual per-bot onboarding flow. Kept as a constant so the
+ * error copy below and any future help text point at the same section.
+ */
+export const ROOM_BOT_ONBOARDING_DOC_REF =
+  'docs/discord.md § Multi-agent rooms → onboarding checklist';
+
+/**
+ * User-facing error when `/room invite` (Phase 6) can't bind an agent because
+ * every configured room-bot slot is already taken — or none are configured at
+ * all. Exported so Phase 6's `/room` command reuses this exact wording instead
+ * of re-inventing the pointer to the manual provisioning steps.
+ */
+export const NO_FREE_ROOM_BOT_SLOT_ERROR =
+  `No free room-bot slot — see ${ROOM_BOT_ONBOARDING_DOC_REF} to provision another bot.`;
+
+/**
  * Discord reserves usernames containing these substrings. A room persona name
  * doubles as an `@handle`, so we apply the same rule the baseline `sanitizeHandle`
  * enforces (docs/plans/multi-agent-rooms.md §Phase 1).

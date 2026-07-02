@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { loadRoomBots } from '../providers/discord/roomBots';
+import {
+  loadRoomBots,
+  NO_FREE_ROOM_BOT_SLOT_ERROR,
+  ROOM_BOT_ONBOARDING_DOC_REF,
+} from '../providers/discord/roomBots';
 
 /** All env keys the loader reads; cleared before each case so tests stay isolated. */
 function clearRoomBotEnv(): void {
@@ -139,4 +143,13 @@ test('empty clientId throws naming the slot', () => {
       (err: Error) => err.message.includes('"x"') && /clientId is empty/i.test(err.message),
     );
   });
+});
+
+test('no-free-slot error points at the onboarding checklist in docs/discord.md', () => {
+  // Phase 6's `/room invite` reuses this exact string, so lock in the wording:
+  // it must name the doc and route the user to the onboarding checklist section.
+  assert.match(NO_FREE_ROOM_BOT_SLOT_ERROR, /No free room-bot slot/);
+  assert.match(NO_FREE_ROOM_BOT_SLOT_ERROR, /docs\/discord\.md/);
+  assert.ok(NO_FREE_ROOM_BOT_SLOT_ERROR.includes(ROOM_BOT_ONBOARDING_DOC_REF));
+  assert.match(ROOM_BOT_ONBOARDING_DOC_REF, /onboarding checklist/);
 });
