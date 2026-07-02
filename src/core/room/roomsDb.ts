@@ -126,6 +126,11 @@ export const roomsDb = {
     db.prepare('UPDATE rooms SET spent_usd = spent_usd + ? WHERE room_key = ?').run(usd, roomKey);
   },
 
+  /** Set (or clear, with `null`) the room's cost cap. Drives `/room budget`. */
+  setBudget(roomKey: string, budgetUsd: number | null): void {
+    db.prepare('UPDATE rooms SET budget_usd = ? WHERE room_key = ?').run(budgetUsd, roomKey);
+  },
+
   /** Increment the burst-scoped turn counter and return the new value. */
   incrementTurn(roomKey: string): number {
     const row = db
@@ -204,6 +209,31 @@ export const roomsDb = {
       .all(roomKey) as RoomParticipant[];
   },
 
+  /** A single participant of a room, or undefined if the agent is not in it. */
+  getParticipant(roomKey: string, agentId: string): RoomParticipant | undefined {
+    return db
+      .prepare('SELECT * FROM room_participants WHERE room_key = ? AND agent_id = ?')
+      .get(roomKey, agentId) as RoomParticipant | undefined;
+  },
+
+  /**
+   * Remove an agent from a room, freeing its `bot_slot` for reuse by a later
+   * invite. The global `agent_bot_bindings` row is intentionally left intact —
+   * a kick removes the agent from *this* room, not its persona everywhere.
+   * Drives `/room kick`.
+   */
+  removeParticipant(roomKey: string, agentId: string): void {
+    db.prepare('DELETE FROM room_participants WHERE room_key = ? AND agent_id = ?').run(
+      roomKey,
+      agentId,
+    );
+  },
+
+  /** Clear every participant's `session_id` in a room (used by `/room reset`). */
+  clearSessions(roomKey: string): void {
+    db.prepare('UPDATE room_participants SET session_id = NULL WHERE room_key = ?').run(roomKey);
+  },
+
   /**
    * True if any room has a participant bound to this bot slot. Drives the slot-0
    * dual-role decision in the gateway manager: the primary client hosts the
@@ -239,6 +269,38 @@ export const roomsDb = {
       `INSERT INTO agent_bot_bindings (agent_id, bot_slot) VALUES (?, ?)
        ON CONFLICT(agent_id) DO UPDATE SET bot_slot = excluded.bot_slot`,
     ).run(agentId, slot);
+  },
+
+  /**
+   * The only sanctioned way to change an agent's global persona: rewrite the
+   * `agent_bot_bindings` row AND the denormalized `bot_slot` on every room this
+   * agent already participates in, so the global mapping and the per-room copies
+   * never drift. Pre-checks slot-uniqueness in each affected room and throws
+   * `SlotConflictError` (leaving everything unchanged) if the new slot is already
+   * held by another agent there. Drives `/room rebind`.
+   */
+  rebindAgent(agentId: string, slot: string): void {
+    const rebind = db.transaction(() => {
+      const rooms = db
+        .prepare('SELECT room_key FROM room_participants WHERE agent_id = ?')
+        .all(agentId) as Array<{ room_key: string }>;
+      for (const { room_key } of rooms) {
+        const taken = db
+          .prepare(
+            'SELECT agent_id FROM room_participants WHERE room_key = ? AND bot_slot = ? AND agent_id != ?',
+          )
+          .get(room_key, slot, agentId) as { agent_id: string } | undefined;
+        if (taken !== undefined) {
+          throw new SlotConflictError(
+            `Cannot rebind agent ${agentId} to bot slot "${slot}": it is already used by ` +
+              `agent ${taken.agent_id} in room ${room_key}.`,
+          );
+        }
+      }
+      this.setAgentBinding(agentId, slot);
+      db.prepare('UPDATE room_participants SET bot_slot = ? WHERE agent_id = ?').run(slot, agentId);
+    });
+    rebind();
   },
 
   /**

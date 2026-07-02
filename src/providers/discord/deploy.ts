@@ -7,6 +7,7 @@ import * as playbook from './commands/playbook';
 import * as gist from './commands/gist';
 import * as notes from './commands/notes';
 import * as autoRun from './commands/auto-run';
+import * as room from './commands/room';
 
 const commands = [
   health.data.toJSON(),
@@ -16,6 +17,7 @@ const commands = [
   gist.data.toJSON(),
   notes.data.toJSON(),
   autoRun.data.toJSON(),
+  room.data.toJSON(),
 ];
 
 const rest = new REST().setToken(discordConfig.token);

@@ -45,6 +45,7 @@ import * as playbook from './commands/playbook';
 import * as gist from './commands/gist';
 import * as notes from './commands/notes';
 import * as autoRun from './commands/auto-run';
+import * as room from './commands/room';
 
 interface CommandModule {
   data: { name: string } & Pick<SlashCommandBuilder, 'toJSON'>;
@@ -52,7 +53,7 @@ interface CommandModule {
   autocomplete?(interaction: AutocompleteInteraction): Promise<void>;
 }
 
-const COMMANDS: CommandModule[] = [health, agents, session, playbook, gist, notes, autoRun];
+const COMMANDS: CommandModule[] = [health, agents, session, playbook, gist, notes, autoRun, room];
 
 export class DiscordProvider implements BridgeProvider {
   readonly name = 'discord';
