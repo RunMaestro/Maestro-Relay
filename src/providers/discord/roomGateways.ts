@@ -20,7 +20,7 @@
  * free it.
  */
 
-import { Client, GatewayIntentBits } from 'discord.js';
+import { Client, GatewayIntentBits, type Message } from 'discord.js';
 import type { KernelLogger } from '../../core/types';
 import { logger as defaultLogger } from '../../core/logger';
 import { roomsDb } from '../../core/room/roomsDb';
@@ -43,13 +43,16 @@ export interface SlotClient {
   botUserId: string;
 }
 
+/** The room-aware `messageCreate` handler bound per client (see `roomMessageCreate.ts`). */
+export type RoomMessageListener = (message: Message) => void | Promise<void>;
+
 export interface RoomGatewayManagerDeps {
   /** Override for tests; defaults to the env-driven pool loader. */
   loadRoomBots?: () => RoomBotIdentity[];
   /** Override for tests; defaults to a real `Client` with the room intents. */
   createClient?: () => Client;
   /** Kernel persistence seam (the `room_bots` registry); defaults to `roomsDb`. */
-  roomBotsDb?: Pick<typeof roomsDb, 'upsertRoomBot'>;
+  roomBotsDb?: Pick<typeof roomsDb, 'upsertRoomBot' | 'isSlotParticipant'>;
   logger?: KernelLogger;
 }
 
@@ -75,9 +78,11 @@ export class RoomGatewayManager {
   private readonly slots = new Map<string, SlotClient>();
   /** Clients this manager constructed and must destroy on stop (excludes the primary). */
   private readonly ownedClients: Client[] = [];
+  /** Clients already carrying the room listener — the idempotency guard for `bindRoomListeners`. */
+  private readonly listenerBound = new Set<Client>();
   private readonly loadRoomBots: () => RoomBotIdentity[];
   private readonly createClient: () => Client;
-  private readonly roomBotsDb: Pick<typeof roomsDb, 'upsertRoomBot'>;
+  private readonly roomBotsDb: Pick<typeof roomsDb, 'upsertRoomBot' | 'isSlotParticipant'>;
   private readonly log: KernelLogger;
 
   constructor(deps: RoomGatewayManagerDeps = {}) {
@@ -144,6 +149,35 @@ export class RoomGatewayManager {
     return [...this.slots.values()];
   }
 
+  /**
+   * Bind the room-aware `messageCreate` listener per client, enforcing slot 0's
+   * dual-role separation (plan Phase 3 §Slot-0 dual-role):
+   *
+   *  - **Pool clients (slots 1..N)** are room-only: they always get the listener.
+   *  - **The primary (slot 0)** wears two independent hats. It is the `/room`
+   *    slash-command host — that `interactionCreate` binding lives on
+   *    `DiscordProvider`'s client and is untouched here. It is *also* a room
+   *    participant, but only when it has actually been invited into a room. So
+   *    the chat listener is bound to slot 0 ONLY if `slot 0` is a room
+   *    participant; the command host must never route chat.
+   *
+   * The listener and the command host share no state — they are two independent
+   * event bindings. The bind is **idempotent**: a client is never double-bound,
+   * so this is safe to re-invoke (e.g. after a `/room` invite makes slot 0 a
+   * participant for the first time).
+   */
+  bindRoomListeners(listener: RoomMessageListener): void {
+    for (const { slot, client } of this.slots.values()) {
+      if (slot === PRIMARY_SLOT && !this.roomBotsDb.isSlotParticipant(PRIMARY_SLOT)) {
+        // Slot 0 is only the command host right now — do not route chat through it.
+        continue;
+      }
+      if (this.listenerBound.has(client)) continue;
+      client.on('messageCreate', listener);
+      this.listenerBound.add(client);
+    }
+  }
+
   /** Destroy every pool client this manager constructed; the primary is left to its owner. */
   async stop(): Promise<void> {
     for (const client of this.ownedClients) {
@@ -158,5 +192,6 @@ export class RoomGatewayManager {
     }
     this.ownedClients.length = 0;
     this.slots.clear();
+    this.listenerBound.clear();
   }
 }

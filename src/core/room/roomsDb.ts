@@ -204,6 +204,19 @@ export const roomsDb = {
       .all(roomKey) as RoomParticipant[];
   },
 
+  /**
+   * True if any room has a participant bound to this bot slot. Drives the slot-0
+   * dual-role decision in the gateway manager: the primary client hosts the
+   * `/room` commands unconditionally, but only routes room chat when slot 0 is
+   * itself an invited participant somewhere.
+   */
+  isSlotParticipant(slot: string): boolean {
+    const row = db
+      .prepare('SELECT 1 FROM room_participants WHERE bot_slot = ? LIMIT 1')
+      .get(slot);
+    return row !== undefined;
+  },
+
   updateParticipantSession(roomKey: string, agentId: string, sessionId: string | null): void {
     db.prepare(
       'UPDATE room_participants SET session_id = ? WHERE room_key = ? AND agent_id = ?',

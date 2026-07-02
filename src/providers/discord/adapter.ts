@@ -28,6 +28,7 @@ import { discordConfig } from './config';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { createMessageCreateHandler } from './messageCreate';
+import { createRoomMessageHandler } from './roomMessageCreate';
 import { RoomGatewayManager } from './roomGateways';
 import {
   isVoiceMessage,
@@ -150,6 +151,21 @@ export class DiscordProvider implements BridgeProvider {
     this.roomGateways = roomGateways;
     try {
       await roomGateways.start(client);
+
+      // Slot-0 dual-role separation: `interactionCreate` (the `/room` command
+      // host) stays bound above on the primary client only; room bots register
+      // no slash commands. The room chat listener is a *separate* binding,
+      // attached per-client by the manager — always to pool clients, and to
+      // slot 0 only when it is itself a room participant. It routes solely
+      // through the kernel bus (`ctx.rooms`), so it can only bind once the bus
+      // is wired (Phase 4); until then room bots log in but stay quiet.
+      if (ctx.rooms) {
+        const handleRoomMessage = createRoomMessageHandler({
+          rooms: ctx.rooms,
+          logger: ctx.logger,
+        });
+        roomGateways.bindRoomListeners(handleRoomMessage);
+      }
     } catch (err) {
       await ctx.logger.error('discord/roomGateways', `failed to start room gateways: ${String(err)}`);
     }
