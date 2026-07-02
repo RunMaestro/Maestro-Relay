@@ -47,8 +47,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const embed = new EmbedBuilder()
     .setColor(0x57f287)
     .setTitle(`📎 Gist published — ${channelInfo.agent_name}`)
-    .setURL(result.url)
-    .setDescription(`[Open gist](${result.url})\nVisibility: **${visibility}**`);
+    .setURL(result.gistUrl)
+    .setDescription(`[Open gist](${result.gistUrl})\nVisibility: **${visibility}**`);
 
   await interaction.editReply({ embeds: [embed] });
 }

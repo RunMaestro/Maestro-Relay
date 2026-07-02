@@ -122,8 +122,9 @@ export interface MaestroAgentDetail extends MaestroAgent {
 }
 
 export interface GistResult {
-  url: string;
-  id: string;
+  success: boolean;
+  agentId: string;
+  gistUrl: string;
   [key: string]: unknown;
 }
 

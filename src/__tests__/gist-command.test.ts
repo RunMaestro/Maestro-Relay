@@ -53,8 +53,9 @@ test('gist resolves the parent channel binding when run inside a thread', async 
 
   const { maestro } = await import('../core/maestro');
   const createGist = mock.method(maestro, 'createGist', async () => ({
-    url: 'https://gist.example/abc',
-    id: 'abc',
+    success: true,
+    agentId: 'agent-1',
+    gistUrl: 'https://gist.example/abc',
   }));
 
   const i = makeInteraction();
@@ -79,8 +80,9 @@ test('gist publishes and renders an embed with the gist url', async () => {
 
   const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'createGist', async () => ({
-    url: 'https://gist.example/abc',
-    id: 'abc',
+    success: true,
+    agentId: 'agent-1',
+    gistUrl: 'https://gist.example/abc',
   }));
 
   const i = makeInteraction({ description: 'desc', public: true });
