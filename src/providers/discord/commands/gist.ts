@@ -3,7 +3,7 @@ import {
   EmbedBuilder,
   SlashCommandBuilder,
 } from 'discord.js';
-import { channelDb } from '../channelsDb';
+import { getChannelInfoForInteraction } from '../channelsDb';
 import { maestro } from '../../../core/maestro';
 
 export const data = new SlashCommandBuilder()
@@ -20,7 +20,7 @@ export const data = new SlashCommandBuilder()
   );
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
-  const channelInfo = channelDb.get(interaction.channelId);
+  const channelInfo = getChannelInfoForInteraction(interaction);
   if (!channelInfo) {
     await interaction.reply({
       content: '❌ This channel is not connected to an agent. Use `/agents new` first.',
