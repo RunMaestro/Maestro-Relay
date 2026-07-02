@@ -3,6 +3,8 @@ import { config } from './core/config';
 import { logger } from './core/logger';
 import { maestro } from './core/maestro';
 import { createQueue } from './core/queue';
+import { createRoomBus } from './core/room/bus';
+import { roomsDb } from './core/room/roomsDb';
 import { startServer } from './core/api';
 import { buildProviders } from './core/providers';
 import type { KernelContext } from './core/types';
@@ -23,9 +25,24 @@ async function main() {
     logger,
   });
 
+  // The multi-agent room bus: the per-room-serialized worker that drives an
+  // auto-relay burst across many bots (Phase 4). It reaches each provider's
+  // outbound path through `provider.sendAs`, so the Discord `RoomGatewayManager`
+  // (constructed and torn down inside `DiscordProvider`) is shared implicitly —
+  // the bus never touches a chat SDK. Exposed as `ctx.rooms` BEFORE providers
+  // start so their room listeners can bind to it; single-agent deployments that
+  // never register a room simply never call it.
+  const roomBus = createRoomBus({
+    db: roomsDb,
+    maestro,
+    getProvider: (name) => providers.get(name),
+    logger,
+  });
+
   const ctx: KernelContext = {
     enqueue: queue.enqueue,
     logger,
+    rooms: roomBus,
   };
 
   for (const [name, provider] of providers) {
