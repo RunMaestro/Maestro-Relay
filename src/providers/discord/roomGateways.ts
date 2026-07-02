@@ -149,6 +149,19 @@ export class RoomGatewayManager {
     return this.slots.get(slot)?.client;
   }
 
+  /**
+   * The client whose bot account is `botUserId` (for Phase 4 `sendAs` outbound),
+   * or undefined if no registered slot renders that persona. The bus carries
+   * `identity.botUserId` rather than a slot, so this is the reverse of
+   * `getBotUserIdForSlot`.
+   */
+  getClientForBotUserId(botUserId: string): Client | undefined {
+    for (const slot of this.slots.values()) {
+      if (slot.botUserId === botUserId) return slot.client;
+    }
+    return undefined;
+  }
+
   /** The resolved bot user id for a slot (for the self/peer filter), or undefined. */
   getBotUserIdForSlot(slot: string): string | undefined {
     return this.slots.get(slot)?.botUserId;

@@ -18,6 +18,7 @@ import type {
   KernelContext,
   MessageTarget,
   OutgoingMessage,
+  PersonaIdentity,
   ReactionHandle,
 } from '../../core/types';
 import { maestro } from '../../core/maestro';
@@ -251,6 +252,43 @@ export class DiscordProvider implements BridgeProvider {
     }
   }
 
+  /**
+   * Send under a distinct room persona (multi-agent rooms). Unlike Slack/Teams,
+   * which mask a single bot via `chat:write.customize`, Discord fronts a real
+   * bot account per persona: we pick the gateway client whose account is
+   * `identity.botUserId` (registered by the Phase-3 `RoomGatewayManager`) and
+   * post through it — no webhook. Falls back to the primary client when no pool
+   * client matches (single-bot deployments, or slot-0's own persona), so a
+   * missing pool never silently drops a room reply.
+   *
+   * `target.threadId` (when the room lives in a thread) takes precedence over
+   * `channelId`; a Discord thread is itself a sendable channel.
+   */
+  async sendAs(
+    target: ChannelTarget,
+    identity: PersonaIdentity,
+    msg: OutgoingMessage,
+  ): Promise<void> {
+    const client =
+      (identity.botUserId
+        ? this.roomGateways?.getClientForBotUserId(identity.botUserId)
+        : undefined) ?? this.client;
+    if (!client) throw new Error('Discord client not initialised');
+
+    const channel = await this.fetchSendableFrom(client, target.threadId ?? target.channelId);
+    let text = msg.text;
+    if (msg.mention && discordConfig.mentionUserId) {
+      text = `<@${discordConfig.mentionUserId}> ${text}`;
+    }
+    try {
+      await channel.send(text);
+    } catch (err) {
+      const rl = toRateLimitError(err);
+      if (rl) throw rl;
+      throw err;
+    }
+  }
+
   async react(target: MessageTarget, emoji: string): Promise<ReactionHandle> {
     const channel = await this.fetchSendable(target.channelId);
     const message = await channel.messages.fetch(target.messageId);
@@ -335,7 +373,14 @@ export class DiscordProvider implements BridgeProvider {
 
   private async fetchSendable(channelId: string): Promise<SendableChannels> {
     if (!this.client) throw new Error('Discord client not initialised');
-    const fetched = await this.client.channels.fetch(channelId);
+    return this.fetchSendableFrom(this.client, channelId);
+  }
+
+  private async fetchSendableFrom(
+    client: Client,
+    channelId: string,
+  ): Promise<SendableChannels> {
+    const fetched = await client.channels.fetch(channelId);
     if (!fetched?.isSendable()) {
       const err = new Error(`Channel ${channelId} is missing or not sendable`);
       void logger.error('discord/fetchSendable', err.message);
