@@ -3,6 +3,7 @@ import type { BridgeProvider } from './types';
 import { config } from './config';
 import { logger } from './logger';
 import { splitMessage as defaultSplit } from './splitMessage';
+import { AgentNotFoundError, RateLimitError } from './errors';
 
 export interface SendRequest {
   agentId: string;
@@ -16,7 +17,7 @@ export type ApiDeps = {
   /** Map provider-name → BridgeProvider instance. */
   providers: Map<string, BridgeProvider>;
   splitMessage?: (text: string) => string[];
-  logger?: { error(...args: unknown[]): unknown };
+  logger?: import('./types').KernelLogger;
 };
 
 const MAX_BODY_SIZE = 1_048_576; // 1 MB
@@ -49,8 +50,13 @@ export function parseBody(req: http.IncomingMessage): Promise<SendRequest> {
   });
 }
 
-function sendJson(res: http.ServerResponse, status: number, data: object) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+function sendJson(
+  res: http.ServerResponse,
+  status: number,
+  data: object,
+  headers?: Record<string, string | number>,
+) {
+  res.writeHead(status, { 'Content-Type': 'application/json', ...(headers ?? {}) });
   res.end(JSON.stringify(data));
 }
 
@@ -113,10 +119,10 @@ export function createServerHandler(deps: ApiDeps) {
     try {
       info = await provider.findOrCreateAgentChannel(body.agentId);
     } catch (err) {
-      const msg = (err as Error).message;
-      if (msg.startsWith('Agent not found:')) {
-        sendJson(res, 404, { success: false, error: msg });
+      if (err instanceof AgentNotFoundError) {
+        sendJson(res, 404, { success: false, error: err.message });
       } else {
+        const msg = (err as Error).message;
         await log.error('api/findOrCreateAgentChannel', msg);
         sendJson(res, 500, { success: false, error: msg });
       }
@@ -137,22 +143,30 @@ export function createServerHandler(deps: ApiDeps) {
           break;
         } catch (err) {
           lastError = err as Error;
-          const discordErr = err as { status?: number; retryAfter?: number };
-          const isRateLimited = discordErr.status === 429 || discordErr.retryAfter != null;
-          if (isRateLimited) {
-            const delay = discordErr.retryAfter ?? 1000;
-            await new Promise((r) => setTimeout(r, delay));
+          if (err instanceof RateLimitError) {
+            // Clamp the in-request backoff: never spin with a zero delay, and
+            // never tie up the HTTP connection for more than a few seconds.
+            // Larger backoffs are surfaced to the caller via Retry-After below.
+            const waitMs = Math.min(Math.max(err.retryAfterMs, 100), 5000);
+            await new Promise((r) => setTimeout(r, waitMs));
           } else {
             break;
           }
         }
       }
       if (lastError) {
-        const discordErr = lastError as Error & { status?: number; retryAfter?: number };
-        const isRateLimited = discordErr.status === 429 || discordErr.retryAfter != null;
-        if (isRateLimited) {
+        if (lastError instanceof RateLimitError) {
           await log.error('api', 'Rate limited by provider after 3 retries');
-          sendJson(res, 429, { success: false, error: 'Rate limited, retry later' });
+          // Round up to whole seconds; clamp to a minimum of 1 so we never
+          // advertise a zero-second backoff that the kernel already waited
+          // through and still hit the limit.
+          const retryAfterSec = Math.max(1, Math.ceil(lastError.retryAfterMs / 1000));
+          sendJson(
+            res,
+            429,
+            { success: false, error: 'Rate limited, retry later' },
+            { 'Retry-After': retryAfterSec },
+          );
         } else {
           await log.error('api', lastError.message);
           sendJson(res, 500, { success: false, error: lastError.message });
@@ -207,16 +221,17 @@ export function startServer(providers: Map<string, BridgeProvider>): http.Server
   const server = http.createServer(handler);
 
   server.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`API server failed to start: port ${config.apiPort} is already in use`);
-    } else {
-      console.error('API server error:', err.message);
-    }
+    void logger.error(
+      'api/startup',
+      err.code === 'EADDRINUSE'
+        ? `API server failed to start: port ${config.apiPort} is already in use`
+        : `API server error: ${err.message}`,
+    );
     process.exit(1);
   });
 
   server.listen(config.apiPort, '127.0.0.1', () => {
-    console.log(`API server listening on http://127.0.0.1:${config.apiPort}`);
+    logger.info('api/startup', `API server listening on http://127.0.0.1:${config.apiPort}`);
   });
 
   return server;

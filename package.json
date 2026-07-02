@@ -1,12 +1,10 @@
 {
   "name": "maestro-relay",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Maestro Relay — connect chat platforms (Discord today, Slack/Teams next) to Maestro AI agents via maestro-cli.",
   "main": "dist/index.js",
   "bin": {
-    "maestro-relay": "dist/cli/maestro-relay.js",
-    "maestro-bridge": "dist/cli/maestro-relay.js",
-    "maestro-discord": "dist/cli/maestro-relay.js"
+    "maestro-relay": "dist/cli/maestro-relay.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -14,9 +12,7 @@
     "start": "node dist/index.js",
     "deploy-commands": "tsx src/providers/discord/deploy.ts",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
-    "maestro-relay": "tsx src/cli/maestro-relay.ts",
-    "maestro-bridge": "tsx src/cli/maestro-relay.ts",
-    "maestro-discord": "tsx src/cli/maestro-relay.ts"
+    "maestro-relay": "tsx src/cli/maestro-relay.ts"
   },
   "keywords": [],
   "author": "",

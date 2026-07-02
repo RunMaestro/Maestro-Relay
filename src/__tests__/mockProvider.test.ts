@@ -75,10 +75,13 @@ test('a minimal MockProvider satisfies BridgeProvider and works with the kernel 
     },
     getProvider: (name) => (name === 'mock' ? mockProvider : undefined),
     splitMessage: (text) => [text],
-    logger: { error: () => {} },
+    logger: { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} },
   });
 
-  await mockProvider.start({ enqueue: queue.enqueue, logger: { error: () => {} } });
+  await mockProvider.start({
+    enqueue: queue.enqueue,
+    logger: { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} },
+  });
 
   const message: IncomingMessage = {
     provider: 'mock',

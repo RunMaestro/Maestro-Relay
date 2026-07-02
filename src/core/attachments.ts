@@ -2,6 +2,7 @@ import { mkdir, rm, writeFile } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import path from 'path';
 import type { IncomingAttachment } from './types';
+import { logger } from './logger';
 
 export interface DownloadedFile {
   originalName: string;
@@ -30,7 +31,7 @@ export async function downloadAttachments(
   try {
     await mkdir(targetDir, { recursive: true });
   } catch (err) {
-    console.warn(`[attachments] Failed to create directory "${targetDir}":`, err);
+    logger.warn('attachments/mkdir', `Failed to create directory "${targetDir}": ${String(err)}`);
     return { downloaded: [], failed: attachments.map((a) => a.name) };
   }
 
@@ -39,8 +40,9 @@ export async function downloadAttachments(
 
   for (const attachment of attachments) {
     if (attachment.size > MAX_FILE_SIZE) {
-      console.warn(
-        `[attachments] Skipping "${attachment.name}" (${attachment.size} bytes) — exceeds ${MAX_FILE_SIZE} byte limit`,
+      logger.warn(
+        'attachments/skip',
+        `Skipping "${attachment.name}" (${attachment.size} bytes) — exceeds ${MAX_FILE_SIZE} byte limit`,
       );
       failed.push(attachment.name);
       continue;
@@ -53,8 +55,9 @@ export async function downloadAttachments(
     try {
       const response = await fetch(attachment.url);
       if (!response.ok) {
-        console.warn(
-          `[attachments] Failed to download "${attachment.name}": HTTP ${response.status}`,
+        logger.warn(
+          'attachments/download',
+          `Failed to download "${attachment.name}": HTTP ${response.status}`,
         );
         failed.push(attachment.name);
         continue;
@@ -64,7 +67,7 @@ export async function downloadAttachments(
       await writeFile(savedPath, buffer);
       downloaded.push({ originalName: attachment.name, savedPath });
     } catch (err) {
-      console.warn(`[attachments] Error downloading "${attachment.name}":`, err);
+      logger.warn('attachments/download', `Error downloading "${attachment.name}": ${String(err)}`);
       failed.push(attachment.name);
     }
   }

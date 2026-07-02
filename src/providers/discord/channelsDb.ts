@@ -1,3 +1,4 @@
+import type { AutocompleteInteraction, ChatInputCommandInteraction } from 'discord.js';
 import { channelDb as core, type AgentChannel } from '../../core/db';
 
 /**
@@ -30,5 +31,21 @@ export const channelDb = {
     return core.listByGuild(guildId);
   },
 };
+
+/**
+ * Resolve the agent binding for an interaction's channel, falling back to the
+ * parent channel when the interaction happens inside a thread (agent sessions
+ * live in threads, but bindings are keyed on the parent channel).
+ */
+export function getChannelInfoForInteraction(
+  interaction: ChatInputCommandInteraction | AutocompleteInteraction,
+): AgentChannel | undefined {
+  const direct = channelDb.get(interaction.channelId);
+  if (direct) return direct;
+  if (interaction.channel?.isThread() && interaction.channel.parentId) {
+    return channelDb.get(interaction.channel.parentId);
+  }
+  return undefined;
+}
 
 export type { AgentChannel } from '../../core/db';

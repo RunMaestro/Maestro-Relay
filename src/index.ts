@@ -10,7 +10,8 @@ import type { KernelContext } from './core/types';
 async function main() {
   const providers = await buildProviders(config.enabledProviders);
   if (providers.size === 0) {
-    console.error(
+    await logger.error(
+      'bridge/startup',
       `No providers enabled. Set ENABLED_PROVIDERS in .env (default 'discord'). Exiting.`,
     );
     process.exit(1);
@@ -30,9 +31,9 @@ async function main() {
   for (const [name, provider] of providers) {
     try {
       await provider.start(ctx);
-      console.log(`[bridge] provider "${name}" started`);
+      logger.info('bridge/startup', `provider "${name}" started`);
     } catch (err) {
-      console.error(`[bridge] provider "${name}" failed to start:`, err);
+      await logger.error('bridge/startup', `provider "${name}" failed to start: ${String(err)}`);
       process.exit(1);
     }
   }
@@ -40,20 +41,20 @@ async function main() {
   const server = startServer(providers);
 
   const shutdown = async (signal: string) => {
-    console.log(`\n[bridge] received ${signal}, shutting down...`);
+    logger.info('bridge/shutdown', `received ${signal}, shutting down...`);
     server.close();
     for (const [name, provider] of providers) {
       try {
         await provider.stop();
       } catch (err) {
-        console.error(`[bridge] error stopping provider "${name}":`, err);
+        await logger.error('bridge/shutdown', `error stopping provider "${name}": ${String(err)}`);
       }
     }
     try {
       db.exec('PRAGMA wal_checkpoint(RESTART);');
       db.close();
     } catch (err) {
-      console.error('[bridge] db shutdown error:', err);
+      await logger.error('bridge/shutdown', `db shutdown error: ${String(err)}`);
     }
     process.exit(0);
   };

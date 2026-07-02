@@ -4,7 +4,7 @@
 
 **Maestro Relay** connects chat platforms to [Maestro](https://runmaestro.ai) AI agents through `maestro-cli`. Discord and Slack ship in the box; Teams, Matrix, and others can be added by dropping in a provider adapter — the kernel is provider-agnostic.
 
-> **Migrating from `discord-maestro`?** Same codebase, new name. The legacy `maestro-discord` binary is preserved as an alias and all `DISCORD_*` env vars work unchanged. See "Migration" below.
+> **Migrating from `discord-maestro`?** Same codebase, new name. All `DISCORD_*` env vars work unchanged; the legacy `maestro-discord` binary has been retired in favour of `maestro-relay`. See "Migration" below.
 
 ## Features
 
@@ -37,8 +37,6 @@ maestro-relay-ctl update    # upgrade to latest release (preserves config)
 maestro-relay-ctl uninstall # remove install + service files
 ```
 
-The legacy aliases `maestro-bridge-ctl` and `maestro-discord-ctl` still work for back-compat.
-
 ## Quick start
 
 | Path                          | Purpose                                  |
@@ -46,6 +44,7 @@ The legacy aliases `maestro-bridge-ctl` and `maestro-discord-ctl` still work for
 | `~/.local/share/maestro-relay/` | Installed bot (built JS + dependencies) |
 | `~/.config/maestro-relay/.env`  | Configuration (preserved across updates) |
 | `~/.local/bin/maestro-relay-ctl` | Service control wrapper             |
+| `~/.local/bin/maestro-relay`  | Agent → chat CLI (`send`, `notify`, `status`) |
 | systemd user / launchd agent  | Auto-start unit                          |
 
 Override any of these with `MAESTRO_RELAY_HOME`, `XDG_CONFIG_HOME`, or `MAESTRO_RELAY_BIN_DIR`. Pin a specific version with `MAESTRO_RELAY_VERSION=v1.0.0`.
@@ -135,7 +134,7 @@ Agents can push messages to chat via the `maestro-relay` CLI / HTTP API. See [do
 
 This project was renamed from `discord-maestro` / `Maestro-Discord`. To smooth upgrades:
 
-- The `maestro-discord` binary is preserved as an alias of `maestro-relay`. Existing scripts that call `maestro-discord send …` keep working unchanged.
+- The legacy `maestro-discord` / `maestro-bridge` binaries have been retired; install + upgrade now scrub any leftover symlinks. Update any scripts that invoke them to `maestro-relay send …`.
 - All `DISCORD_*` env vars are unchanged. New optional `ENABLED_PROVIDERS` defaults to `discord`.
 - The SQLite database upgrades automatically on first start: `agent_channels` gains a `provider` column (existing rows default to `discord`); `agent_threads` is renamed to `discord_agent_threads` with rows preserved. No manual migration needed.
 - The HTTP `/api/send` endpoint accepts an optional `provider` field that defaults to `discord`; existing callers are unaffected.

@@ -87,7 +87,12 @@ function createMocks(overrides: Partial<ConversationRecord> = {}): MockSetup {
     splitMessage: (text: string) => [text],
     downloadAttachments: mockDownload as any,
     formatAttachmentRefs: mockFormat as any,
-    logger: { error: mockLoggerError as any },
+    logger: {
+      error: mockLoggerError as any,
+      warn: () => undefined,
+      info: () => undefined,
+      debug: () => undefined,
+    },
     _mocks: {
       getAgentCwd: mockGetAgentCwd,
       send: mockSend,

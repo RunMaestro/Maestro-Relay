@@ -4,11 +4,13 @@ import type {
   EnqueueOptions,
   IncomingAttachment,
   IncomingMessage,
+  KernelLogger,
 } from '../../core/types';
 import {
   isTranscriberAvailable,
   transcribeVoiceAttachment,
 } from '../../core/transcription';
+import { logger as defaultLogger } from '../../core/logger';
 import { splitMessage } from '../../core/splitMessage';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
@@ -26,7 +28,7 @@ export type MessageCreateDeps = {
   transcribeVoiceAttachment: typeof transcribeVoiceAttachment;
   isTranscriberAvailable: typeof isTranscriberAvailable;
   splitMessage: typeof splitMessage;
-  logger?: Pick<Console, 'warn' | 'error'>;
+  logger?: KernelLogger;
 };
 
 function toIncoming(message: Message, attachmentSource?: IncomingAttachment[]): IncomingMessage {
@@ -47,6 +49,8 @@ function toIncoming(message: Message, attachmentSource?: IncomingAttachment[]): 
 }
 
 export function createMessageCreateHandler(deps: MessageCreateDeps) {
+  const log: KernelLogger = deps.logger ?? defaultLogger;
+
   return async function handleMessageCreate(message: Message): Promise<void> {
     if (message.author.bot) return;
     if (message.system) return;
@@ -56,15 +60,14 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
 
     const botUserId = deps.getBotUserId(message);
     if (!botUserId) {
-      const warn = deps.logger?.warn ?? console.warn;
-      warn('messageCreate: bot user ID missing, skipping message handling');
+      log.warn('messageCreate', 'bot user ID missing, skipping message handling');
       return;
     }
 
     if (!message.channel.isThread()) {
       const channelInfo = deps.channelDb.get(message.channel.id);
       if (!channelInfo) {
-        console.debug(`[mention] channel ${message.channel.id} not registered, ignoring`);
+        log.debug('messageCreate/mention', `channel ${message.channel.id} not registered, ignoring`);
         return;
       }
 
@@ -75,8 +78,9 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
         message.content.includes(`<@${botUserId}>`) ||
         message.content.includes(`<@!${botUserId}>`) ||
         (!!botRoleId && message.content.includes(`<@&${botRoleId}>`));
-      console.debug(
-        `[mention] botUserId=${botUserId} botRoleId=${botRoleId} user=${mentionedByUser} role=${mentionedByRole} content=${mentionedByContent} raw=${JSON.stringify(message.content)}`,
+      log.debug(
+        'messageCreate/mention',
+        `botUserId=${botUserId} botRoleId=${botRoleId} user=${mentionedByUser} role=${mentionedByRole} content=${mentionedByContent} raw=${JSON.stringify(message.content)}`,
       );
       if (!mentionedByUser && !mentionedByRole && !mentionedByContent) return;
 
@@ -117,8 +121,7 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
           deps.enqueue(toIncoming(threadMessage));
         }
       } catch (err) {
-        const log = deps.logger?.error ?? console.error;
-        log('messageCreate: failed to create thread for mention:', err);
+        await log.error('messageCreate/thread', `failed to create thread for mention: ${String(err)}`);
         try {
           await message.reply('❌ Failed to create a thread for this mention.');
         } catch {
@@ -189,9 +192,9 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
       );
       const failedReplies = replyResults.filter((result) => result.status === 'rejected');
       if (failedReplies.length > 0) {
-        const logWarn = deps.logger?.warn ?? console.warn;
-        logWarn(
-          `messageCreate: failed to send ${failedReplies.length} transcription reply part(s)`,
+        log.warn(
+          'messageCreate/transcription',
+          `failed to send ${failedReplies.length} transcription reply part(s)`,
         );
       }
 
@@ -218,8 +221,7 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
         /* ignore cleanup */
       }
 
-      const log = deps.logger?.error ?? console.error;
-      log('messageCreate: failed to transcribe voice message:', err);
+      await log.error('messageCreate/transcription', `failed to transcribe voice message: ${String(err)}`);
       try {
         await message.reply({
           content:
@@ -227,8 +229,7 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
           allowedMentions: { parse: [] },
         });
       } catch (replyErr) {
-        const logErr = deps.logger?.error ?? console.error;
-        logErr('messageCreate: failed to send transcription error reply:', replyErr);
+        await log.error('messageCreate/transcription', `failed to send transcription error reply: ${String(replyErr)}`);
       }
       deps.enqueue(toIncoming(message));
     }

@@ -46,6 +46,17 @@ Defined in `src/core/types.ts`. Every provider exports a class implementing this
 
 The kernel calls `react` and `sendTyping` if they exist; safe to omit when the platform has no analogue.
 
+### Typed errors providers throw
+
+Providers communicate two distinct failure modes back to the kernel via typed errors from `src/core/errors.ts`. Throwing strings or generic `Error`s bypasses the kernel's retry/HTTP-status logic.
+
+| Error                        | Thrown from                  | Carries          | Kernel reaction                                                                                  |
+| ---------------------------- | ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------ |
+| `RateLimitError`             | `send(target, msg)`          | `retryAfterMs`   | In-request retry up to 3× (clamped 100–5000 ms); on final failure returns `429` with `Retry-After` header (seconds) |
+| `AgentNotFoundError`         | `findOrCreateAgentChannel`   | `agentId`        | Returns `404 { error: "Agent not found: <id>" }` from `POST /api/send`                            |
+
+Platforms report rate limits in different units (Discord: ms, Slack: seconds). Convert to ms in a small `toRateLimitError(err)` helper inside the adapter — see the exported helpers in `src/providers/discord/adapter.ts` and `src/providers/slack/adapter.ts` for the pattern (both exported for unit tests).
+
 ### `KernelContext`
 
 What `start(ctx)` receives. Currently exposes:
@@ -155,7 +166,7 @@ Add a `docs/<provider>.md` mirroring `docs/discord.md`'s structure: bot setup, c
 
 - Unit-test the message translation (platform event → `IncomingMessage`) in isolation; don't pull in the platform SDK runtime in tests.
 - The kernel's tests (`src/__tests__/queue.test.ts`, `server.test.ts`, etc.) use `mockProvider.test.ts` as a reference for a minimal `BridgeProvider` implementation — copy that pattern when building a real adapter so the kernel tests stay provider-agnostic.
-- Run the full suite: `npm test` (169 tests at time of writing). All kernel tests should pass with your provider added.
+- Run the full suite: `npm test`. All kernel tests should pass with your provider added.
 
 ## Voice transcription
 

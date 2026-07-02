@@ -13,6 +13,7 @@ import type {
 } from '../../core/types';
 import { maestro } from '../../core/maestro';
 import { logger } from '../../core/logger';
+import { AgentNotFoundError, RateLimitError } from '../../core/errors';
 import { slackConfig } from './config';
 import { channelDb } from './channelsDb';
 import { conversationDb } from './conversationsDb';
@@ -321,24 +322,30 @@ export class SlackProvider implements BridgeProvider {
       text = `<@${slackConfig.mentionUserId}> ${text}`;
     }
 
-    if (isThreadTs(target.channelId)) {
-      // target is a thread_ts — look up parent channel
-      const convo = conversationDb.get(target.channelId);
-      if (!convo) {
-        // The thread is orphaned — its row was likely removed when the
-        // bound channel was disconnected, or the DB was reset. Log the
-        // mismatch specifically so operators can distinguish it from
-        // generic Slack/network errors before surfacing to the kernel.
-        void logger.error('slack/send:orphan-thread', `thread_ts=${target.channelId}`);
-        throw new Error(`No conversation found for thread_ts ${target.channelId}`);
+    try {
+      if (isThreadTs(target.channelId)) {
+        // target is a thread_ts — look up parent channel
+        const convo = conversationDb.get(target.channelId);
+        if (!convo) {
+          // The thread is orphaned — its row was likely removed when the
+          // bound channel was disconnected, or the DB was reset. Log the
+          // mismatch specifically so operators can distinguish it from
+          // generic Slack/network errors before surfacing to the kernel.
+          void logger.error('slack/send:orphan-thread', `thread_ts=${target.channelId}`);
+          throw new Error(`No conversation found for thread_ts ${target.channelId}`);
+        }
+        await this.client.chat.postMessage({
+          channel: convo.channel_id,
+          thread_ts: target.channelId,
+          text,
+        });
+      } else {
+        await this.client.chat.postMessage({ channel: target.channelId, text });
       }
-      await this.client.chat.postMessage({
-        channel: convo.channel_id,
-        thread_ts: target.channelId,
-        text,
-      });
-    } else {
-      await this.client.chat.postMessage({ channel: target.channelId, text });
+    } catch (err) {
+      const rl = toRateLimitError(err);
+      if (rl) throw rl;
+      throw err;
     }
   }
 
@@ -396,7 +403,7 @@ export class SlackProvider implements BridgeProvider {
 
       const allAgents = await maestro.listAgents();
       const agent = allAgents.find((a) => a.id === agentId);
-      if (!agent) throw new Error(`Agent not found: ${agentId}`);
+      if (!agent) throw new AgentNotFoundError(agentId);
 
       const { channelId } = await findOrCreateSlackChannel(this.client, agent);
       channelDb.register(channelId, agent.id, agent.name);
@@ -410,4 +417,21 @@ export class SlackProvider implements BridgeProvider {
       this.pendingChannels.delete(agentId);
     }
   }
+}
+
+/**
+ * Translate a `@slack/web-api` `WebAPIRateLimitedError` into the kernel-level
+ * `RateLimitError`. Slack's `retryAfter` is in seconds — we convert to ms
+ * so the kernel deals in a single unit.
+ *
+ * Returns `null` when the error is not a rate-limit; the caller rethrows
+ * the original error in that case.
+ */
+export function toRateLimitError(err: unknown): RateLimitError | null {
+  if (!err || typeof err !== 'object') return null;
+  const e = err as { code?: string; retryAfter?: number };
+  if (e.code === 'slack_webapi_rate_limited_error' && typeof e.retryAfter === 'number') {
+    return new RateLimitError(e.retryAfter * 1000, `Slack rate limited; retry after ${e.retryAfter}s`);
+  }
+  return null;
 }

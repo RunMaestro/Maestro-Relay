@@ -9,6 +9,7 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=@INSTALL_DIR@
 EnvironmentFile=@CONFIG_DIR@/.env
+Environment=PATH=@HOME@/.local/bin:@NODE_DIR@:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=@NODE_BIN@ @INSTALL_DIR@/dist/index.js
 Restart=on-failure
 RestartSec=5

@@ -2,7 +2,11 @@ node_modules/
 dist/
 .env
 *.db
+logs/
 
 Auto Run Docs/
 models
 .maestro/
+
+# local PR-review worktree (not part of the project)
+.pr52-review/
