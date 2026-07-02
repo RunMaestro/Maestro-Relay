@@ -83,6 +83,21 @@ export interface PersonaIdentity {
 }
 
 /**
+ * Options carried alongside a room-bound message into the bus.
+ *
+ * `toAgentId` names the addressed participant the message routes to (the agent
+ * the acting bot renders). `fromKind` classifies the author so the bus can
+ * reset the burst-scoped turn counter on human input but not on a peer-bot hop.
+ * Both are optional so a provider that cannot classify still submits cleanly.
+ */
+export interface RoomSubmitOptions {
+  /** Agent the addressed message routes to (the acting bot's bound participant). */
+  toAgentId?: string;
+  /** Whether the author was a person or a peer relay bot. */
+  fromKind?: 'human' | 'bot';
+}
+
+/**
  * Kernel-internal gateway to the multi-agent room bus. Providers consult
  * `isRoom` to decide whether an inbound message belongs to a room, and hand
  * room-bound messages to the bus via `submitMessage`. Provider-agnostic.
@@ -94,6 +109,7 @@ export interface RoomGateway {
     channelId: string,
     from: string,
     text: string,
+    opts?: RoomSubmitOptions,
   ): void;
 }
 

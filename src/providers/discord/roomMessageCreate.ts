@@ -1,0 +1,120 @@
+/**
+ * Discord multi-agent rooms — room-aware `messageCreate` listener (Phase 3).
+ *
+ * This is the sibling of `messageCreate.ts` for the room path. It is bound
+ * PER discord.js `Client` (one per pool bot; see `roomGateways.ts`), so
+ * `message.client.user.id` is *this* bot's account id — the identity the
+ * self/peer filter and the mention gate pivot on.
+ *
+ * Discord-provider code: it may touch `discord.js` types, but all room logic
+ * comes from the pure kernel — `roomsDb` for participant/registry lookups and
+ * `RoomGateway` for the `isRoom` check and the single `submitMessage` hop. It
+ * never enqueues the next turn itself (that is the Phase 4 bus's job); routing
+ * an inbound room message means calling `submitMessage(...)` exactly once for
+ * the addressed bot.
+ *
+ * The non-room path is untouched: non-room channels are handled solely by slot
+ * 0's existing `handleMessageCreate`; this listener returns immediately for
+ * them, so room bots (slots 1..N) ignore non-room channels entirely.
+ */
+
+import type { Message } from 'discord.js';
+import type { KernelLogger, ProviderName, RoomGateway } from '../../core/types';
+import { logger as defaultLogger } from '../../core/logger';
+import { roomsDb as defaultRoomsDb, type RoomParticipant } from '../../core/room/roomsDb';
+
+const PROVIDER: ProviderName = 'discord';
+
+export type RoomMessageDeps = {
+  /** The room bus seam — `isRoom` gate + the single-hop `submitMessage`. */
+  rooms: Pick<RoomGateway, 'isRoom' | 'submitMessage'>;
+  /** Kernel persistence seam (room + participant + gateway registry lookups). */
+  roomsDb?: Pick<
+    typeof defaultRoomsDb,
+    'getRoomByChannel' | 'getParticipants' | 'getRoomBots'
+  >;
+  /** This client's own bot account id; defaults to `message.client.user.id`. */
+  getBotUserId?: (message: Message) => string | undefined;
+  logger?: KernelLogger;
+};
+
+/**
+ * Build the per-client room listener. Every bot in a room receives every room
+ * message; the mention gate ensures only the *addressed* bot acts, which is the
+ * natural dedup that avoids cross-bot coordination.
+ */
+export function createRoomMessageHandler(deps: RoomMessageDeps) {
+  const roomsDb = deps.roomsDb ?? defaultRoomsDb;
+  const getBotUserId = deps.getBotUserId ?? ((m: Message) => m.client.user?.id);
+  const log: KernelLogger = deps.logger ?? defaultLogger;
+
+  return async function handleRoomMessage(message: Message): Promise<void> {
+    const channelId = message.channel.id;
+
+    // Room path only. Non-room channels belong to slot 0's `handleMessageCreate`.
+    if (!deps.rooms.isRoom(PROVIDER, channelId)) return;
+
+    const thisBotUserId = getBotUserId(message);
+    if (!thisBotUserId) {
+      log.warn('roomMessageCreate', 'bot user id missing, skipping room message');
+      return;
+    }
+
+    // The CHANGED line vs `messageCreate.ts`: drop only *self* (the loop guard),
+    // never a blanket `author.bot` drop — a registered peer relay bot must pass
+    // through so agents can address one another.
+    if (message.author.id === thisBotUserId) return;
+
+    const room = roomsDb.getRoomByChannel(PROVIDER, channelId);
+    if (!room) return;
+    const participants = roomsDb.getParticipants(room.room_key);
+
+    // slot → resolved bot account id for every registered gateway client.
+    const slotToBotId = new Map(roomsDb.getRoomBots().map((b) => [b.slot, b.bot_user_id]));
+
+    // The bot accounts that render a participant of THIS room — the legitimate
+    // peer relay bots. Any bot account outside this set is third-party.
+    const roomBotUserIds = new Set<string>();
+    let selfParticipant: RoomParticipant | undefined;
+    let authorParticipant: RoomParticipant | undefined;
+    for (const p of participants) {
+      if (p.bot_slot == null) continue;
+      const botId = slotToBotId.get(p.bot_slot);
+      if (!botId) continue;
+      roomBotUserIds.add(botId);
+      if (botId === thisBotUserId) selfParticipant = p;
+      if (botId === message.author.id) authorParticipant = p;
+    }
+
+    // Peer filter: a real user always passes; a bot passes only if it is a
+    // registered peer relay bot of this room. Third-party bots are dropped.
+    if (message.author.bot && !roomBotUserIds.has(message.author.id)) return;
+
+    // This bot must itself be a room participant to act on the message.
+    if (!selfParticipant) return;
+
+    // Mention gate: only the addressed bot proceeds (natural dedup).
+    if (!message.mentions.users.has(thisBotUserId)) return;
+
+    // Strip this bot's own native mention (`<@id>` / `<@!id>`) from the content,
+    // mirroring `messageCreate.ts`'s `mentionPattern` cleanup.
+    const mentionPattern = new RegExp(`<@!?${thisBotUserId}>`, 'g');
+    const cleanedText = message.content.replace(mentionPattern, '').trim();
+
+    // Classify the author so Phase 4 can reset the turn counter on human input.
+    // `fromHandle`: a peer bot uses its participant handle; a human uses their
+    // display name.
+    const fromKind: 'human' | 'bot' = message.author.bot ? 'bot' : 'human';
+    const fromHandle =
+      fromKind === 'bot'
+        ? authorParticipant?.handle ?? message.author.username
+        : message.member?.displayName ?? message.author.username ?? message.author.id;
+
+    // Route exactly once for the addressed bot. The bus (Phase 4) owns the next
+    // hop; we never enqueue it here.
+    deps.rooms.submitMessage(PROVIDER, channelId, fromHandle, cleanedText, {
+      toAgentId: selfParticipant.agent_id,
+      fromKind,
+    });
+  };
+}

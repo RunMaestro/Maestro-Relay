@@ -99,6 +99,17 @@ export const roomsDb = {
       | undefined;
   },
 
+  /**
+   * The room for a (provider, channelId) pair, or undefined if none. Queries the
+   * columns rather than reconstructing the `room_key`, so it never depends on the
+   * key-encoding convention.
+   */
+  getRoomByChannel(provider: string, channelId: string): RoomRecord | undefined {
+    return db
+      .prepare('SELECT * FROM rooms WHERE provider = ? AND channel_id = ?')
+      .get(provider, channelId) as RoomRecord | undefined;
+  },
+
   /** A (provider, channelId) pair is a room iff a row exists for it. */
   isRoom(provider: string, channelId: string): boolean {
     const row = db
