@@ -39,6 +39,25 @@ Lives under `src/providers/slack/` (`adapter.ts`, `messageCreate.ts`, `commands/
 
 Lives under `src/providers/teams/` (`adapter.ts`, `messageCreate.ts`, `commands/`, `deploy.ts`, `channelsDb.ts`, `conversationRefsDb.ts`, `errors.ts`, `config.ts`). Uses the Bot Framework SDK (`botbuilder`). Shipped in Phase 1 with DM/personal scope: one DM binds to one agent via typed `agents new <id>` (no slash commands), switching agents re-binds and resets the session. Group-chat and team channels are on the roadmap. Proactive `/api/send` requires a captured conversation reference (`teams_conversation_refs` table), so a chat must message the bot once before pushes work. For Teams-specific setup (Entra app, Azure Bot, app-package upload), env vars, command surface, and runtime behavior see [docs/teams.md](docs/teams.md).
 
+### Multi-agent rooms
+
+`src/core/room/` holds the provider-agnostic room bus (`bus.ts`) and registry (`roomsDb.ts`):
+one channel, many personas, per-room-serialized turns with budget/turn/echo safety brakes. The
+bus calls `provider.sendAs(target, identity, msg)` for every persona post — that single contract
+is the **seam** across all providers. **Identity strategy is split by provider, gated on config:**
+
+- **Discord → real bots.** With room-bot slots configured (`DISCORD_ROOM_BOT_*`), each persona is
+  a genuine separate bot account (own gateway) so personas **natively `@`-ping each other**;
+  `sendAs` routes to the client for `identity.botUserId`. No `MANAGE_WEBHOOKS` needed. With no pool
+  configured, it falls back to **masked-persona mode**: the single primary bot mirrors every
+  persona with a `**Handle:**` prefix (no native pinging). The `/room` command group hosts on
+  slot 0.
+- **Slack & Teams → masking.** Keep single-bot `chat:write.customize` masking (N real bots would
+  mean N apps/registrations per workspace/tenant).
+
+Deep-dive: [AGENTS-providers.md](AGENTS-providers.md) §"Rooms — real bots vs. masking" and
+[docs/plans/multi-agent-rooms-real-bots.md](docs/plans/multi-agent-rooms-real-bots.md).
+
 ### CLI
 
 - `src/cli/maestro-relay.ts` — verb dispatcher (`send`, `notify`, `status`)

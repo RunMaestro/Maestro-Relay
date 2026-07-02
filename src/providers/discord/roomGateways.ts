@@ -94,6 +94,8 @@ export class RoomGatewayManager {
   private readonly createClient: () => Client;
   private readonly roomBotsDb: RoomGatewayDbSeam;
   private readonly log: KernelLogger;
+  /** Count of configured pool slots (env-driven), captured at `start()`. */
+  private configuredPoolSize = 0;
 
   constructor(deps: RoomGatewayManagerDeps = {}) {
     this.loadRoomBots = deps.loadRoomBots ?? defaultLoadRoomBots;
@@ -119,7 +121,9 @@ export class RoomGatewayManager {
     }
     this.registerSlot(PRIMARY_SLOT, primaryClient, primaryId);
 
-    for (const bot of this.loadRoomBots()) {
+    const pool = this.loadRoomBots();
+    this.configuredPoolSize = pool.length;
+    for (const bot of pool) {
       const client = this.createClient();
       this.ownedClients.push(client);
       try {
@@ -142,6 +146,17 @@ export class RoomGatewayManager {
   private registerSlot(slot: string, client: Client, botUserId: string): void {
     this.slots.set(slot, { slot, client, botUserId });
     this.roomBotsDb.upsertRoomBot(slot, botUserId);
+  }
+
+  /**
+   * Whether any room-bot pool slots are configured (env-driven, captured at
+   * `start()`). Gates the adapter's `sendAs` path: real bots when true, the
+   * documented masked-persona fallback (single primary bot) when false. Counts
+   * *configured* slots, not successful logins, so a transient bad token doesn't
+   * silently downgrade a real-bots deployment to masking.
+   */
+  hasRoomBots(): boolean {
+    return this.configuredPoolSize > 0;
   }
 
   /** The client bound to a slot (for Phase 4 outbound), or undefined if unregistered. */

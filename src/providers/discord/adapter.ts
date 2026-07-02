@@ -254,30 +254,68 @@ export class DiscordProvider implements BridgeProvider {
   }
 
   /**
-   * Send under a distinct room persona (multi-agent rooms). Unlike Slack/Teams,
-   * which mask a single bot via `chat:write.customize`, Discord fronts a real
-   * bot account per persona: we pick the gateway client whose account is
-   * `identity.botUserId` (registered by the Phase-3 `RoomGatewayManager`) and
-   * post through it — no webhook. Falls back to the primary client when no pool
-   * client matches (single-bot deployments, or slot-0's own persona), so a
-   * missing pool never silently drops a room reply.
+   * Send under a distinct room persona (multi-agent rooms). Two identity
+   * strategies coexist, gated on config (see the "Rooms — real bots vs. masking"
+   * note in CLAUDE.md / AGENTS-providers.md):
    *
-   * `target.threadId` (when the room lives in a thread) takes precedence over
-   * `channelId`; a Discord thread is itself a sendable channel.
+   * - **Real-bots path (room-bot slots configured).** Discord fronts a real bot
+   *   account per persona: we pick the gateway client whose account is
+   *   `identity.botUserId` (registered by the Phase-3 `RoomGatewayManager`) and
+   *   post through it — no webhook, so personas can *natively* `@`-ping each
+   *   other. Falls back to the primary client when no pool client matches
+   *   (slot-0's own persona), so a missing pool never silently drops a reply.
+   *
+   * - **Masked-persona fallback (no room-bot pool configured).** The single
+   *   primary bot mirrors every persona, prefixing the handle so readers can
+   *   tell speakers apart. No native pinging — this is the documented
+   *   masked-persona mode, mirroring how Slack/Teams mask one bot via
+   *   `chat:write.customize`. Lets a user run rooms without provisioning N bots.
+   *
+   * The `sendAs` contract is identical to callers either way; only the transport
+   * differs. `target.threadId` (when the room lives in a thread) takes
+   * precedence over `channelId`; a Discord thread is itself a sendable channel.
    */
   async sendAs(
     target: ChannelTarget,
     identity: PersonaIdentity,
     msg: OutgoingMessage,
   ): Promise<void> {
-    const client =
-      (identity.botUserId
-        ? this.roomGateways?.getClientForBotUserId(identity.botUserId)
-        : undefined) ?? this.client;
-    if (!client) throw new Error('Discord client not initialised');
+    const realBotsConfigured = this.roomGateways?.hasRoomBots() ?? false;
 
+    if (realBotsConfigured) {
+      const client =
+        (identity.botUserId
+          ? this.roomGateways?.getClientForBotUserId(identity.botUserId)
+          : undefined) ?? this.client;
+      if (!client) throw new Error('Discord client not initialised');
+      await this.postThrough(client, target, msg);
+      return;
+    }
+
+    // No pool configured → documented masked-persona fallback on the primary
+    // bot. Prefix the handle since a plain bot message (unlike a webhook) cannot
+    // override its username per-message.
+    if (!this.client) throw new Error('Discord client not initialised');
+    await this.postThrough(this.client, target, msg, identity.name);
+  }
+
+  /**
+   * Shared outbound for `sendAs`: fetch the target (thread over channel) via the
+   * given client and post `msg.text`, applying the human `@`-mention prefix and,
+   * in masked-persona mode, a `maskName` handle prefix. Rate-limit errors are
+   * translated like `send()`.
+   */
+  private async postThrough(
+    client: Client,
+    target: ChannelTarget,
+    msg: OutgoingMessage,
+    maskName?: string,
+  ): Promise<void> {
     const channel = await this.fetchSendableFrom(client, target.threadId ?? target.channelId);
     let text = msg.text;
+    if (maskName) {
+      text = `**${maskName}:** ${text}`;
+    }
     if (msg.mention && discordConfig.mentionUserId) {
       text = `<@${discordConfig.mentionUserId}> ${text}`;
     }

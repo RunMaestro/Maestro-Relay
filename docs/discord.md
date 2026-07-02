@@ -99,6 +99,25 @@ binds an agent to the next free bot slot (no more portal work per bind).
 > creation, the Message Content Intent toggle, and OAuth2 invites are all manual, one-time,
 > per-bot Developer-Portal steps.
 
+### Real bots vs. masked-persona fallback
+
+There are two identity modes, chosen automatically by config — you never flip a flag:
+
+- **Real bots (recommended).** When a room-bot pool is configured (`DISCORD_ROOM_BOT_*` below),
+  each persona posts through its **own bot account and gateway**. Only real accounts can fire a
+  **native `<@id>` mention** that another bot's gateway receives as a first-class event — that
+  cross-bot ping is what makes an A↔B exchange terminate organically. This is the whole point of
+  the real-bots path, and it needs **no `Manage Webhooks`** permission (the bot posts as itself).
+- **Masked-persona fallback (no pool configured).** With zero room bots configured, the single
+  primary bot mirrors every persona, prefixing each line with the handle (`**Ada:** …`) so readers
+  can tell speakers apart. This is mirror-only: personas **cannot** natively ping each other, so a
+  multi-agent back-and-forth won't self-drive. It exists so you can try rooms without provisioning
+  N bots, and it mirrors how the Slack/Teams providers mask a single bot via `chat:write.customize`.
+  Provision the pool below to unlock native pinging.
+
+The switch is `DiscordProvider.sendAs` gating on whether any `DISCORD_ROOM_BOT_*` slots loaded at
+startup — see [AGENTS-providers.md](../AGENTS-providers.md) §"Rooms — real bots vs. masking".
+
 ### Per-bot onboarding checklist
 
 Repeat this **once per persona** (`<n>` = 1, 2, 3, … up to your room size). Each persona is its own
