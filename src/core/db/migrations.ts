@@ -11,6 +11,8 @@ import type Database from 'better-sqlite3';
  *  5. Add `slack_agent_conversations` thread/timestamp registry
  *  6. Create `telegram_agent_topics` for forum-topic-per-session tracking
  *  7. Add `teams_conversation_refs` proactive-messaging reference store
+ *  8. Create multi-agent rooms tables (`rooms`, `room_participants`,
+ *     `agent_bot_bindings`) — provider-agnostic kernel schema
  */
 export function runMigrations(db: Database.Database): void {
   ensureReadOnlyColumn(db);
@@ -21,6 +23,7 @@ export function runMigrations(db: Database.Database): void {
   ensureOwnerUserIdColumn(db);
   ensureSlackConversationsTable(db);
   ensureTeamsConversationRefsTable(db);
+  ensureRoomsTables(db);
 }
 
 export function ensureOwnerUserIdColumn(database: Database.Database): void {
@@ -160,6 +163,67 @@ function ensureTeamsConversationRefsTable(database: Database.Database): void {
       service_url     TEXT NOT NULL,
       tenant_id       TEXT,
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+}
+
+/**
+ * Multi-agent rooms schema (provider-agnostic kernel — no Discord client library).
+ *
+ * `rooms` mirrors the baseline Phase 1 shape (room_key PK = `${provider}:${channelId}`,
+ * status/budget ledger) plus the real-bots additions `max_turns` / `turn_count`
+ * (the burst-scoped turn-depth brake — see the Phase 4 bus). `room_participants`
+ * carries the sanitized `handle`, per-(room, agent) `session_id`, and the new
+ * `bot_slot` (the pool bot rendering this agent's identity in this room), unique
+ * per room. `agent_bot_bindings` is the enforced global agent→bot mapping: an
+ * agent bound to slot "Ada" in one room is "Ada" in every room.
+ *
+ * All three are created idempotently with `IF NOT EXISTS`, so re-running is safe
+ * and existing provider tables are untouched.
+ */
+function ensureRoomsTables(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS rooms (
+      room_key          TEXT PRIMARY KEY,
+      provider          TEXT NOT NULL,
+      channel_id        TEXT NOT NULL,
+      thread_id         TEXT,
+      status            TEXT NOT NULL DEFAULT 'active',
+      budget_usd        REAL,
+      spent_usd         REAL NOT NULL DEFAULT 0,
+      max_mentions      INTEGER NOT NULL DEFAULT 2,
+      max_turns         INTEGER NOT NULL DEFAULT 30,
+      turn_count        INTEGER NOT NULL DEFAULT 0,
+      created_at        INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS room_participants (
+      room_key    TEXT NOT NULL,
+      agent_id    TEXT NOT NULL,
+      handle      TEXT NOT NULL,
+      avatar_url  TEXT,
+      session_id  TEXT,
+      bot_slot    TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (room_key, agent_id)
+    )
+  `);
+
+  // A bot slot renders at most one agent within a room. NULL bot_slots are
+  // exempt (SQLite treats each NULL as distinct), so participants without a
+  // bound slot never collide. The kernel roomsDb enforces this in code too.
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_room_participants_bot_slot
+      ON room_participants (room_key, bot_slot)
+      WHERE bot_slot IS NOT NULL
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS agent_bot_bindings (
+      agent_id   TEXT PRIMARY KEY,
+      bot_slot   TEXT NOT NULL
     )
   `);
 }
