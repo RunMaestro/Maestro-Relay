@@ -13,6 +13,12 @@ export interface ChannelTarget {
   provider: ProviderName;
   /** Conversation id — the channel id, or the thread/sub-conversation id if applicable. */
   channelId: string;
+  /**
+   * Optional sub-conversation id. When set, providers post into this
+   * thread/reply rather than the top-level channel. Rooms use it so a room can
+   * live in a dedicated thread of a channel.
+   */
+  threadId?: string;
 }
 
 export interface MessageTarget extends ChannelTarget {
@@ -63,6 +69,35 @@ export interface OutgoingMessage {
 }
 
 /**
+ * A per-message sender identity. Used by the optional `sendAs` capability so a
+ * single conversation can carry many distinct personas (multi-agent rooms).
+ * Kernel-generic: no provider types. `botUserId` lets the renderer self-exclude
+ * a persona from its own native mentions and lets the transport pick the right
+ * underlying client when a provider fronts several bot identities.
+ */
+export interface PersonaIdentity {
+  name: string;
+  avatarUrl?: string;
+  /** Provider-side user id of the bot rendering this persona, if any. */
+  botUserId?: string;
+}
+
+/**
+ * Kernel-internal gateway to the multi-agent room bus. Providers consult
+ * `isRoom` to decide whether an inbound message belongs to a room, and hand
+ * room-bound messages to the bus via `submitMessage`. Provider-agnostic.
+ */
+export interface RoomGateway {
+  isRoom(provider: ProviderName, channelId: string): boolean;
+  submitMessage(
+    provider: ProviderName,
+    channelId: string,
+    from: string,
+    text: string,
+  ): void;
+}
+
+/**
  * Per-conversation state the queue needs to drive a maestro send.
  * Returned by the provider for each incoming message; encapsulates
  * the provider-specific channel-vs-thread storage decision.
@@ -104,6 +139,17 @@ export interface BridgeProvider {
   send(target: ChannelTarget, msg: OutgoingMessage): Promise<void>;
 
   /**
+   * Optional: send a message under a distinct per-message identity (multi-agent
+   * rooms). Slack/Teams mask via customized username/avatar; Discord routes to
+   * the bot client bound to `identity.botUserId`. Optional like `react?`.
+   */
+  sendAs?(
+    target: ChannelTarget,
+    identity: PersonaIdentity,
+    msg: OutgoingMessage,
+  ): Promise<void>;
+
+  /**
    * Look up (or create) the platform channel bound to a given agent.
    * Used by the HTTP API for agent-initiated messages.
    */
@@ -134,4 +180,10 @@ export interface KernelLogger {
 export interface KernelContext {
   enqueue(message: IncomingMessage, options?: EnqueueOptions): void;
   logger: KernelLogger;
+  /**
+   * Optional multi-agent room gateway. Present once the room bus is wired
+   * (Phase 4); providers guard on its presence before treating a channel as a
+   * room. Optional so single-agent deployments run without it.
+   */
+  rooms?: RoomGateway;
 }
