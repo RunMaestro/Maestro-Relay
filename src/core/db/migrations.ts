@@ -13,6 +13,8 @@ import type Database from 'better-sqlite3';
  *  7. Add `teams_conversation_refs` proactive-messaging reference store
  *  8. Create multi-agent rooms tables (`rooms`, `room_participants`,
  *     `agent_bot_bindings`) — provider-agnostic kernel schema
+ *  9. Create `room_bots` registry (slot → resolved bot_user_id; never the token)
+ *     populated by the multi-client gateway manager
  */
 export function runMigrations(db: Database.Database): void {
   ensureReadOnlyColumn(db);
@@ -24,6 +26,7 @@ export function runMigrations(db: Database.Database): void {
   ensureSlackConversationsTable(db);
   ensureTeamsConversationRefsTable(db);
   ensureRoomsTables(db);
+  ensureRoomBotsRegistryTable(db);
 }
 
 export function ensureOwnerUserIdColumn(database: Database.Database): void {
@@ -224,6 +227,25 @@ function ensureRoomsTables(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS agent_bot_bindings (
       agent_id   TEXT PRIMARY KEY,
       bot_slot   TEXT NOT NULL
+    )
+  `);
+}
+
+/**
+ * Multi-client gateway registry (provider-agnostic kernel — no Discord client library).
+ *
+ * `room_bots` maps a pool `slot` (the primary bot is slot "0"; pool bots are
+ * "1".."N") to the `bot_user_id` the gateway manager resolved once that client
+ * logged in. It stores the resolved bot user id ONLY — never the token — so the
+ * outbound native-mention rewrite and the inbound self/peer filter can look up
+ * a slot's account id without a live client. Idempotent `IF NOT EXISTS`.
+ */
+function ensureRoomBotsRegistryTable(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS room_bots (
+      slot         TEXT PRIMARY KEY,
+      bot_user_id  TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
 }

@@ -234,4 +234,34 @@ export const roomsDb = {
     );
     return configuredSlots.find((slot) => !used.has(slot)) ?? null;
   },
+
+  // ---- gateway bot registry (slot → resolved bot user id) -------------------
+
+  /**
+   * Record the bot user id the gateway manager resolved for a slot once its
+   * client logged in. Idempotent per slot — a rotated token that yields the
+   * same account keeps the same row; a re-slotted account overwrites it. Stores
+   * the bot user id ONLY, never the token.
+   */
+  upsertRoomBot(slot: string, botUserId: string): void {
+    db.prepare(
+      `INSERT INTO room_bots (slot, bot_user_id, updated_at) VALUES (?, ?, unixepoch())
+       ON CONFLICT(slot) DO UPDATE SET bot_user_id = excluded.bot_user_id, updated_at = unixepoch()`,
+    ).run(slot, botUserId);
+  },
+
+  /** The bot user id registered for a slot, or null if the slot has no client. */
+  getRoomBotUserId(slot: string): string | null {
+    const row = db
+      .prepare('SELECT bot_user_id FROM room_bots WHERE slot = ?')
+      .get(slot) as { bot_user_id: string } | undefined;
+    return row?.bot_user_id ?? null;
+  },
+
+  /** All registered (slot, bot_user_id) pairs, ordered by slot. */
+  getRoomBots(): Array<{ slot: string; bot_user_id: string }> {
+    return db
+      .prepare('SELECT slot, bot_user_id FROM room_bots ORDER BY slot')
+      .all() as Array<{ slot: string; bot_user_id: string }>;
+  },
 };

@@ -28,6 +28,7 @@ import { discordConfig } from './config';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { createMessageCreateHandler } from './messageCreate';
+import { RoomGatewayManager } from './roomGateways';
 import {
   isVoiceMessage,
   isVoiceAttachment,
@@ -53,6 +54,7 @@ const COMMANDS: CommandModule[] = [health, agents, session, playbook, gist, note
 export class DiscordProvider implements BridgeProvider {
   readonly name = 'discord';
   private client: Client | null = null;
+  private roomGateways: RoomGatewayManager | null = null;
   private pendingChannels = new Map<string, Promise<AgentChannelInfo>>();
   private pendingCategory: Promise<CategoryChannel> | null = null;
 
@@ -70,9 +72,12 @@ export class DiscordProvider implements BridgeProvider {
       COMMANDS.map((c) => [c.data.name, c]),
     );
 
-    client.once('ready', async (c) => {
-      logger.info('discord/ready', `logged in as ${c.user.tag}`);
-      await checkTranscriptionDependencies();
+    const primaryReady = new Promise<void>((resolve) => {
+      client.once('ready', async (c) => {
+        logger.info('discord/ready', `logged in as ${c.user.tag}`);
+        await checkTranscriptionDependencies();
+        resolve();
+      });
     });
 
     client.on('interactionCreate', async (interaction: Interaction) => {
@@ -135,9 +140,26 @@ export class DiscordProvider implements BridgeProvider {
     client.on('messageCreate', handleMessageCreate);
 
     await client.login(discordConfig.token);
+
+    // Bring up the multi-client room gateway pool once the primary is ready and
+    // its bot user id is resolvable. With no room bots configured this just
+    // registers slot 0, so a single-agent deployment is unaffected. A failing
+    // pool bot is logged inside the manager and never blocks the primary bridge.
+    await primaryReady;
+    const roomGateways = new RoomGatewayManager({ logger: ctx.logger });
+    this.roomGateways = roomGateways;
+    try {
+      await roomGateways.start(client);
+    } catch (err) {
+      await ctx.logger.error('discord/roomGateways', `failed to start room gateways: ${String(err)}`);
+    }
   }
 
   async stop(): Promise<void> {
+    if (this.roomGateways) {
+      await this.roomGateways.stop();
+      this.roomGateways = null;
+    }
     if (this.client) {
       this.client.destroy();
       this.client = null;
