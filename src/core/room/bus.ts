@@ -221,8 +221,18 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
     };
 
     // --- Step 1: status + budget, BEFORE any send. ---
+    if (room.status === 'paused') {
+      // Hold, don't drop: put the message back at the front of the backlog and
+      // release the lock. A paused room retains its in-flight messages; they
+      // replay in order the next time the room processes (a `/room resume`
+      // followed by any new room message re-kicks the drain via `submitMessage`).
+      backlog.unshift(msg);
+      queues.set(roomKey, backlog);
+      processing.delete(roomKey);
+      return;
+    }
     if (room.status !== 'active') {
-      // Paused/halted: skip this message, keep draining the rest quietly.
+      // Halted (terminal): drop this message, keep draining the rest quietly.
       void processNext(roomKey);
       return;
     }
