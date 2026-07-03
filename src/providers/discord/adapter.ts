@@ -280,8 +280,12 @@ export class DiscordProvider implements BridgeProvider {
    *   account per persona: we pick the gateway client whose account is
    *   `identity.botUserId` (registered by the Phase-3 `RoomGatewayManager`) and
    *   post through it — no webhook, so personas can *natively* `@`-ping each
-   *   other. Falls back to the primary client when no pool client matches
-   *   (slot-0's own persona), so a missing pool never silently drops a reply.
+   *   other. Every legitimate persona (including slot 0's own) is a registered
+   *   slot, so a resolved client is always available. If it is NOT — a persona's
+   *   room bot failed to log in, i.e. a broken real-bot deployment — we **hard
+   *   fail the hop** rather than silently posting it through the primary bot
+   *   under the wrong identity (no mask, no native ping). The bus logs the
+   *   failure; a wrong-identity post would be worse than a missing one.
    *
    * - **Masked-persona fallback (no room-bot pool configured).** The single
    *   primary bot mirrors every persona, prefixing the handle so readers can
@@ -301,11 +305,19 @@ export class DiscordProvider implements BridgeProvider {
     const realBotsConfigured = this.roomGateways?.hasRoomBots() ?? false;
 
     if (realBotsConfigured) {
-      const client =
-        (identity.botUserId
-          ? this.roomGateways?.getClientForBotUserId(identity.botUserId)
-          : undefined) ?? this.client;
-      if (!client) throw new Error('Discord client not initialised');
+      // Resolve the persona's OWN bot client. No fallback to the primary bot: if
+      // this persona has no ready client, the deployment is broken and posting
+      // through the primary would misattribute the message. Fail the hop instead.
+      const client = identity.botUserId
+        ? this.roomGateways?.getClientForBotUserId(identity.botUserId)
+        : undefined;
+      if (!client) {
+        throw new Error(
+          `Room persona "${identity.name}" has no ready bot client ` +
+            `(botUserId=${identity.botUserId ?? 'unset'}); refusing to post via the primary bot. ` +
+            `Check the room-bot pool (DISCORD_ROOM_BOT_*) — one of its bots failed to log in.`,
+        );
+      }
       await this.postThrough(client, target, msg);
       return;
     }
