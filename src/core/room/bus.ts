@@ -70,6 +70,13 @@ interface RoutedMessage {
   toAgentId: string;
   /** Author class, carried through so the transcript buffer can label the entry. */
   fromKind: 'human' | 'bot';
+  /**
+   * Provider message id of the room utterance this work item derives from, when
+   * the provider supplies one. A message addressing two bots yields two routed
+   * items sharing this id; the transcript buffer dedupes on it so the utterance is
+   * recorded once (and excludes itself from its own onboarding window).
+   */
+  messageId?: string;
 }
 
 /**
@@ -82,6 +89,8 @@ interface TranscriptEntry extends TranscriptEntryLike {
   source: 'human' | 'bot';
   fromHandle: string;
   text: string;
+  /** Provider message id of the source utterance, for record-once dedupe (optional). */
+  messageId?: string;
 }
 
 /**
@@ -163,9 +172,19 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
    */
   const transcripts = new Map<string, TranscriptEntry[]>();
 
-  /** Append one entry to a room's transcript buffer, evicting the oldest past the cap. */
+  /**
+   * Append one entry to a room's transcript buffer, evicting the oldest past the
+   * cap. **Record-once:** a single room utterance addressing two bots enters the
+   * bus as two per-addressee work items (one `submitMessage` each) that share a
+   * provider message id; the buffer records that utterance exactly once, so the
+   * onboarding window and the 200-entry ring aren't polluted by the duplicate. A
+   * missing id (provider can't supply one) always records — no dedupe key.
+   */
   function appendTranscript(roomKey: string, entry: TranscriptEntry): void {
     const buf = transcripts.get(roomKey) ?? [];
+    if (entry.messageId !== undefined && buf.some((e) => e.messageId === entry.messageId)) {
+      return;
+    }
     buf.push(entry);
     if (buf.length > TRANSCRIPT_CAP) buf.splice(0, buf.length - TRANSCRIPT_CAP);
     transcripts.set(roomKey, buf);
@@ -211,7 +230,13 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
     }
 
     const backlog = queues.get(room.room_key) ?? [];
-    backlog.push({ fromHandle: from, text, toAgentId, fromKind: opts.fromKind ?? 'human' });
+    backlog.push({
+      fromHandle: from,
+      text,
+      toAgentId,
+      fromKind: opts.fromKind ?? 'human',
+      messageId: opts.messageId,
+    });
     queues.set(room.room_key, backlog);
 
     if (!processing.has(room.room_key)) {
@@ -367,7 +392,12 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
       // taken BEFORE this message is recorded, so the trigger isn't duplicated in
       // its own onboarding block.
       let contextBlock = '';
-      const history = transcripts.get(roomKey) ?? [];
+      // Exclude the current utterance from its own onboarding window: when a
+      // sibling addressee (multi-mention) already recorded this message id, it is
+      // the trigger — it must not also appear inside the "conversation so far".
+      const history = (transcripts.get(roomKey) ?? []).filter(
+        (e) => msg.messageId === undefined || e.messageId !== msg.messageId,
+      );
       if (!self.session_id && history.length > 0) {
         const inferred = inferContextStrategy(msg.text);
         const strategy: ContextWindowStrategy =
@@ -384,6 +414,7 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
         source: msg.fromKind,
         fromHandle: msg.fromHandle,
         text: msg.text,
+        messageId: msg.messageId,
       });
 
       const input = `${preamble}\n\n${contextBlock}[${msg.fromHandle}]: ${msg.text}`;

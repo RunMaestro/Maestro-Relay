@@ -271,6 +271,47 @@ test('an onboarding transcript honors a natural-language window hint in the trig
   assert.ok(!onboarded.includes('[Alice]: msg two'), 'older messages are windowed out');
 });
 
+test('a message addressing two bots is recorded in the transcript exactly once', async () => {
+  // One human utterance @-mentions both B and C, so it enters the bus as TWO
+  // per-addressee submits sharing the same provider message id. The transcript
+  // must record it once, not twice — otherwise onboarding windows over-count and
+  // the 200-entry ring evicts real history early. We observe the ring by inviting
+  // a third bot D (no session) and counting the utterance in its onboarding block.
+  const room = makeRoom();
+  const b = makeParticipant({ agent_id: 'b', handle: 'B', bot_slot: 'slot-b', session_id: 'sess-b' });
+  const c = makeParticipant({ agent_id: 'c', handle: 'C', bot_slot: 'slot-c', session_id: 'sess-c' });
+  const d = makeParticipant({ agent_id: 'd', handle: 'D', bot_slot: 'slot-d' });
+  const db = makeDb(room, [b, c, d], { 'slot-b': '222', 'slot-c': '333', 'slot-d': '444' });
+  const { maestro, calls } = makeMaestro([reply('ok', 0)]);
+  const { provider } = makeProvider();
+  const bus = createRoomBus({ db, maestro, getProvider: () => provider, logger: silentLogger });
+
+  // The multi-mention: two submits, same message id, one per addressed bot.
+  bus.submitMessage('discord', 'chan1', 'Alice', 'hello both', {
+    toAgentId: 'b',
+    fromKind: 'human',
+    messageId: 'mid-1',
+  });
+  bus.submitMessage('discord', 'chan1', 'Alice', 'hello both', {
+    toAgentId: 'c',
+    fromKind: 'human',
+    messageId: 'mid-1',
+  });
+  await settle();
+
+  // Invite D (no session) → onboarded with the room-so-far.
+  bus.submitMessage('discord', 'chan1', 'Alice', 'D, weigh in', {
+    toAgentId: 'd',
+    fromKind: 'human',
+    messageId: 'mid-2',
+  });
+  await settle();
+
+  const onboarded = calls[calls.length - 1].message;
+  const occurrences = onboarded.split('[Alice]: hello both').length - 1;
+  assert.equal(occurrences, 1, 'the multi-mention utterance appears exactly once in the transcript');
+});
+
 // --- budget cap -------------------------------------------------------------
 
 test('budget cap: cumulative spend reaching budget halts the room with no further send', async () => {

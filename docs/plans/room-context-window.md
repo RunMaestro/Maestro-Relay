@@ -10,8 +10,15 @@ room-so-far — not just the preamble + the single trigger message.
 
 - `type ContextWindowStrategy` — `full | recent-turns | recent-messages`.
 - `inferContextStrategy(message)` — natural-language hints in the trigger
-  (`"the last 5 messages"`, `"share the last N"`, `"this thread"`, `"most
-  recent"`) narrow the slice; no hint → `full`.
+  (`"the last 5 messages"`, `"share the last N"`, `"this thread"`, `"most recent
+  messages"`) narrow the slice; no hint → `full`. Hints are bound to
+  *conversational* vocabulary on purpose: a soft `"most recent"` / `"recent"` only
+  fires when it names the dialogue (`message(s)`/`turn(s)`/`exchange(s)`/
+  `thread`/`conversation`/`context`/`topic`/`matter`), so `"the most recent
+  commit"` stays `full`; and the unit-less `"share the last N"` only fires when
+  nothing — or a mere connector word — follows the count, so `"share the last 2
+  commits"` (a competing non-conversational noun) also stays `full`. When in
+  doubt, fall back to the full transcript rather than clamp a new bot to a tail.
 - `selectContextWindow(logs, strategy)` + `tailByConversationalCount` /
   `isConversational` — tail-slice keeping interleaved non-conversational entries
   for coherence; fewer-than-N falls back to the whole transcript.
@@ -35,6 +42,11 @@ context (kept in-range, never counted).
 
 - An in-memory per-room ring buffer (`transcripts`, cap `TRANSCRIPT_CAP = 200`)
   records each **processed** message (`appendTranscript`, evict-oldest).
+  **Record-once:** a message addressing two bots enters the bus as two
+  per-addressee `submitMessage` calls sharing one provider message id
+  (`RoomSubmitOptions.messageId`), so `appendTranscript` dedupes on that id — the
+  utterance lands in the ring exactly once, and it is excluded from its own
+  onboarding window regardless of how many addressees it had.
 - In `processNext`, before the `maestro.send`: if the acting participant has **no
   maestro session yet** (`!self.session_id`) and history exists, prepend a
   windowed transcript block (`renderTranscript`). Strategy defaults to

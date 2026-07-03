@@ -67,11 +67,33 @@ const HANDLE_TOKEN = /@[A-Za-z0-9_-]+/g;
 
 /** Explicit count with a unit: "last 5 messages", "last 3 turns", "last 2 exchanges". */
 const EXPLICIT_UNIT = /\blast\s+(\d+)\s+(messages?|turns?|exchanges?)\b/;
-/** Unit-less share: "share the last 10" — defaults to messages. */
-const SHARE_LAST = /\bshare\s+(?:the\s+)?last\s+(\d+)\b/;
-/** Soft "recent" hints that imply a small trailing window. */
-const SOFT_HINT =
-  /most recent|this (?:matter|topic|thread)|recent (?:matter|topic|thread)|pull .* in on this/;
+/**
+ * Unit-less share: "share the last 10". Captures the word immediately after the
+ * count (group 2, if any) so we can reject a competing *non-conversational* noun
+ * — "share the last 2 commits" must NOT force a tiny window (see `inferContextStrategy`).
+ */
+const SHARE_LAST = /\bshare\s+(?:the\s+)?last\s+(\d+)(?:\s+([a-z]+))?/;
+/**
+ * Function/connector words that may legitimately follow a unit-less "share the
+ * last N" without naming a competing noun ("share last 4 with them"). Anything
+ * NOT in this set (e.g. "commits", "files") is read as a non-conversational noun,
+ * so the unit-less share is declined and we fall back to the full transcript.
+ */
+const UNITLESS_SHARE_CONNECTORS = new Set([
+  'with', 'to', 'for', 'from', 'of', 'in', 'on', 'and', 'so', 'then',
+  'please', 'here', 'there', 'now', 'again', 'them', 'us', 'it', 'plz',
+]);
+/**
+ * Conversational nouns that anchor a soft "recent"/"most recent" hint to the
+ * dialogue itself. Bare "most recent" (as in "the most recent commit") must NOT
+ * match — only "most recent message(s)/turn(s)/exchange(s)/thread/conversation/…".
+ */
+const CONV_NOUN = 'context|conversation|discussion|thread|topic|matter|exchanges?|messages?|turns?';
+/** Soft "recent" hints that imply a small trailing window — bound to conversational vocab. */
+const SOFT_HINT = new RegExp(
+  `most recent (?:${CONV_NOUN})|this (?:matter|topic|thread|conversation|discussion)|` +
+    `recent (?:${CONV_NOUN})|pull .* in on this`,
+);
 
 /** Blank every `@handle` token so hint matching runs against prose, not addressing. */
 function stripMentions(message: string): string {
@@ -105,11 +127,16 @@ export function inferContextStrategy(message: string): ContextWindowStrategy {
     }
   }
 
-  // Priority 1b: "share (the) last N" with no unit → messages.
+  // Priority 1b: "share (the) last N" with no unit → messages. A conversational
+  // unit ("share the last 2 messages") was already caught by priority 1; here a
+  // trailing noun can only be a competing non-conversational one ("share the last
+  // 2 commits"), so we accept ONLY when nothing — or a mere connector word —
+  // follows the count, and otherwise fall through (conservatively) to `full`.
   const shareMatch = cleaned.match(SHARE_LAST);
   if (shareMatch) {
     const count = Number.parseInt(shareMatch[1], 10);
-    if (count > 0) {
+    const trailing = shareMatch[2];
+    if (count > 0 && (trailing === undefined || UNITLESS_SHARE_CONNECTORS.has(trailing))) {
       return { kind: 'recent-messages', messages: count };
     }
   }

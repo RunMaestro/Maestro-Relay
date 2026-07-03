@@ -74,6 +74,32 @@ test('inferContextStrategy: no hint → full transcript', () => {
   assert.deepEqual(inferContextStrategy(''), { kind: 'full' });
 });
 
+test('inferContextStrategy: "most recent <non-conversational noun>" does NOT force a window', () => {
+  // The noun is code/work, not conversation — a newly invited bot should get the
+  // full room history, not a tail. (Bare "most recent" used to match too broadly.)
+  assert.deepEqual(inferContextStrategy('what changed in the most recent commit?'), {
+    kind: 'full',
+  });
+  assert.deepEqual(inferContextStrategy('most recent commit'), { kind: 'full' });
+  assert.deepEqual(inferContextStrategy('rerun the most recent test'), { kind: 'full' });
+});
+
+test('inferContextStrategy: unit-less "share the last N" with a competing noun → full', () => {
+  // "commits"/"files" are not conversational units, so a unit-less share must not
+  // clamp the window — fall back to the full transcript.
+  assert.deepEqual(inferContextStrategy('share the last 2 commits'), { kind: 'full' });
+  assert.deepEqual(inferContextStrategy('share the last 2 files'), { kind: 'full' });
+  // …but the genuinely unit-less forms still resolve to messages (regression guard).
+  assert.deepEqual(inferContextStrategy('share the last 10'), {
+    kind: 'recent-messages',
+    messages: 10,
+  });
+  assert.deepEqual(inferContextStrategy('share last 4 with them'), {
+    kind: 'recent-messages',
+    messages: 4,
+  });
+});
+
 test('inferContextStrategy: an explicit count wins over a soft hint', () => {
   // "this thread" (soft) co-occurs with an explicit unit count; the count wins.
   assert.deepEqual(inferContextStrategy('in this thread, take the last 2 messages'), {
