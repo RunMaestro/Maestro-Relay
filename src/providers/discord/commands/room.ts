@@ -383,8 +383,16 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
   roomsDb.clearSessions(room.room_key);
   roomsDb.resetTurnCount(room.room_key);
   roomsDb.resetLifetimeTurnCount(room.room_key);
+  // Reactivate the room. A room halted by a turn/budget brake stays `halted`,
+  // and the bus drops turns for any non-active room — so without this a `/room
+  // reset` would clear the counters but leave the room dead, forcing the user to
+  // additionally guess `/room resume`. Reset is the "unstick and start over"
+  // action, so it returns the room to `active` in lock-step with the counters.
+  roomsDb.setStatus(room.room_key, 'active');
   await interaction.reply({
-    content: '🔄 Cleared all participant sessions and reset the burst + lifetime turn counters.',
+    content:
+      '🔄 Cleared all participant sessions, reset the burst + lifetime turn counters, ' +
+      'and reactivated the room.',
     ephemeral: true,
   });
 }

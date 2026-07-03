@@ -330,6 +330,19 @@ test('reset zeroes the turn counter and clears participant sessions', async () =
   assert.match(reset.reply.mock.calls[0].arguments[0].content, /reset/i);
 });
 
+test('reset reactivates a halted room (P2 #59)', async () => {
+  const r = newRoom();
+  // Simulate a room halted by a turn/budget brake.
+  roomsDb.setStatus(r.roomKey, 'halted');
+  assert.equal(roomsDb.getRoom(r.roomKey)!.status, 'halted');
+
+  const reset = makeInteraction({ channelId: r.channelId, sub: 'reset' });
+  await execute(reset);
+
+  assert.equal(roomsDb.getRoom(r.roomKey)!.status, 'active', 'reset returns the room to active');
+  assert.match(reset.reply.mock.calls[0].arguments[0].content, /reactivat/i);
+});
+
 // --- pause / resume / stop set the room status ------------------------------
 
 test('pause, resume and stop set the expected room status', async () => {
