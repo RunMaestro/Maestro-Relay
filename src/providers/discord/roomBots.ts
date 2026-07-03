@@ -200,13 +200,29 @@ export function loadRoomBots(): RoomBotIdentity[] {
   // so native `@`-pings and the self/peer filter could no longer tell them apart
   // — reject it at load so the misconfiguration surfaces at startup, not as
   // silent cross-persona bleed at runtime.
+  //
+  // Seed the seen set with the PRIMARY bot's client id (slot 0). The gateway
+  // manager registers slot 0 on `DISCORD_CLIENT_ID`, so a pool slot that reuses
+  // it is the same collision: `getClientForBotUserId` returns the first match
+  // and the self/peer filter can no longer distinguish the primary from that
+  // pool persona. Read the env directly (not the throwing `required()` getter)
+  // so this loader stays throw-free when the primary id is unset.
+  const primaryClientId = process.env.DISCORD_CLIENT_ID?.trim();
   const seenSlots = new Set<string>();
   const seenClientIds = new Set<string>();
+  if (primaryClientId) seenClientIds.add(primaryClientId);
   for (const bot of bots) {
     if (seenSlots.has(bot.slot)) {
       fail(bot.slot, 'duplicate slot (each room bot must use a unique slot)');
     }
     seenSlots.add(bot.slot);
+    if (bot.clientId === primaryClientId) {
+      fail(
+        bot.slot,
+        `clientId "${bot.clientId}" is the primary bot's DISCORD_CLIENT_ID — a room bot must ` +
+          'be a distinct Discord account from the primary (slot 0)',
+      );
+    }
     if (seenClientIds.has(bot.clientId)) {
       fail(
         bot.slot,

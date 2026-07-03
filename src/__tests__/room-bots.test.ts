@@ -135,6 +135,26 @@ test('duplicate clientId (same bot account on two slots) throws naming the slot 
   });
 });
 
+test('a pool slot reusing the primary DISCORD_CLIENT_ID is rejected at load (P2 #59)', () => {
+  withEnv(() => {
+    // slot 0 (the primary bot) is registered on DISCORD_CLIENT_ID; a pool slot
+    // that reuses it collides on the resolved bot user id, so the self/peer
+    // filter could no longer distinguish the two personas.
+    process.env.DISCORD_CLIENT_ID = '700000000000000007';
+    process.env.DISCORD_ROOM_BOTS = JSON.stringify([
+      { slot: 'clash', token: 'tok', clientId: '700000000000000007', name: 'Clash' },
+    ]);
+
+    assert.throws(
+      () => loadRoomBots(),
+      (err: Error) =>
+        err.message.includes('"clash"') &&
+        err.message.includes('700000000000000007') &&
+        /primary/i.test(err.message),
+    );
+  });
+});
+
 test('malformed clientId throws naming the slot', () => {
   withEnv(() => {
     process.env.DISCORD_ROOM_BOT_COUNT = '1';
