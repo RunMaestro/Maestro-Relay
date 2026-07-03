@@ -118,6 +118,14 @@ export interface RoomGateway {
     text: string,
     opts?: RoomSubmitOptions,
   ): void;
+  /**
+   * Optional: re-kick a room's drain. Turns submitted while a room is paused are
+   * held in the bus's backlog; nothing re-processes them until the next inbound
+   * message. A provider calls `nudge` after a `/room resume` (or `/room reset`)
+   * so any held turns drain immediately instead of waiting for a chance trigger.
+   * A no-op if the room has no backlog, is already processing, or isn't active.
+   */
+  nudge?(provider: ProviderName, channelId: string): void;
 }
 
 /**

@@ -60,6 +60,8 @@ export class DiscordProvider implements BridgeProvider {
   private client: Client | null = null;
   private roomGateways: RoomGatewayManager | null = null;
   private roomStall: TimeoutStallDetector | null = null;
+  /** The kernel room bus, retained so `/room` commands can nudge a resumed room's drain. */
+  private rooms: import('../../core/types').RoomGateway | null = null;
   /**
    * The room-aware `messageCreate` listener, retained so it can be re-bound at
    * runtime. Slot 0 (the primary bot) only receives it once it becomes a room
@@ -143,6 +145,13 @@ export class DiscordProvider implements BridgeProvider {
         if (interaction.commandName === 'room' && this.roomGateways && this.handleRoomMessage) {
           this.roomGateways.bindRoomListeners(this.handleRoomMessage);
         }
+        // A `/room resume`/`reset` may have reactivated a room that is holding
+        // turns queued while it was paused. Nudge the bus so those held turns
+        // drain now instead of waiting for the next inbound message. Idempotent
+        // and status-aware, so it is safe to fire after any `/room` command.
+        if (interaction.commandName === 'room') {
+          this.rooms?.nudge?.('discord', interaction.channelId);
+        }
       }
     });
 
@@ -180,6 +189,8 @@ export class DiscordProvider implements BridgeProvider {
       // through the kernel bus (`ctx.rooms`), so it can only bind once the bus
       // is wired (Phase 4); until then room bots log in but stay quiet.
       if (ctx.rooms) {
+        // Retain the bus so `/room resume`/`reset` can nudge a held backlog to drain.
+        this.rooms = ctx.rooms;
         // Stall detection is the honest best-effort floor for anything
         // reconnect-gap reconciliation cannot recover: if a routed mention gets
         // no follow-up, log it and post an `@human` notice into the room.
@@ -227,6 +238,7 @@ export class DiscordProvider implements BridgeProvider {
       this.roomGateways = null;
     }
     this.handleRoomMessage = null;
+    this.rooms = null;
     if (this.client) {
       this.client.destroy();
       this.client = null;

@@ -244,6 +244,25 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
     }
   }
 
+  /**
+   * Re-kick a room's drain (drives `/room resume` and `/room reset`). A turn
+   * submitted while the room was paused is held at the front of the backlog and
+   * the lock released (see `processNext`'s paused branch); resuming the room only
+   * flips the DB status, so without an explicit nudge those held turns sit until
+   * the next inbound message happens to re-enter `submitMessage`. This re-enters
+   * the drain directly. Safe and idempotent: it no-ops when the room is unknown,
+   * has no backlog, or is already processing, and `processNext` re-reads the
+   * status, so a nudge on a still-paused room simply holds again.
+   */
+  function nudge(provider: ProviderName, channelId: string): void {
+    const room = db.getRoomByChannel(provider, channelId);
+    if (!room) return;
+    const backlog = queues.get(room.room_key);
+    if (backlog && backlog.length > 0 && !processing.has(room.room_key)) {
+      void processNext(room.room_key);
+    }
+  }
+
   /** Post a one-off system notice via the primary bot (slot 0). Best-effort. */
   async function postSystemNotice(
     provider: BridgeProvider | undefined,
@@ -500,5 +519,5 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
     void processNext(roomKey);
   }
 
-  return { isRoom, submitMessage };
+  return { isRoom, submitMessage, nudge };
 }
