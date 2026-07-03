@@ -340,13 +340,17 @@ export const roomsDb = {
 
   /**
    * The only sanctioned way to change an agent's global persona: rewrite the
-   * `agent_bot_bindings` row AND the denormalized `bot_slot` on every room this
-   * agent already participates in, so the global mapping and the per-room copies
-   * never drift. Pre-checks slot-uniqueness in each affected room and throws
-   * `SlotConflictError` (leaving everything unchanged) if the new slot is already
-   * held by another agent there. Drives `/room rebind`.
+   * `agent_bot_bindings` row AND the denormalized persona columns (`bot_slot`,
+   * `handle`, `avatar_url`) on every room this agent already participates in, so
+   * the global mapping and the per-room copies never drift. The `handle`/
+   * `avatar_url` of the new slot's persona are passed in by the provider (the
+   * kernel doesn't know provider-side persona config); updating them here keeps
+   * the preamble and `@Handle` addressing in sync with the new slot instead of
+   * showing the stale old handle. Pre-checks slot-uniqueness in each affected
+   * room and throws `SlotConflictError` (leaving everything unchanged) if the new
+   * slot is already held by another agent there. Drives `/room rebind`.
    */
-  rebindAgent(agentId: string, slot: string): void {
+  rebindAgent(agentId: string, slot: string, handle: string, avatarUrl: string | null): void {
     const rebind = db.transaction(() => {
       const rooms = db
         .prepare('SELECT room_key FROM room_participants WHERE agent_id = ?')
@@ -365,7 +369,9 @@ export const roomsDb = {
         }
       }
       this.setAgentBinding(agentId, slot);
-      db.prepare('UPDATE room_participants SET bot_slot = ? WHERE agent_id = ?').run(slot, agentId);
+      db.prepare(
+        'UPDATE room_participants SET bot_slot = ?, handle = ?, avatar_url = ? WHERE agent_id = ?',
+      ).run(slot, handle, avatarUrl, agentId);
     });
     rebind();
   },

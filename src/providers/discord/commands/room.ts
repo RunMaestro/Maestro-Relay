@@ -309,7 +309,9 @@ async function handleRebind(interaction: ChatInputCommandInteraction): Promise<v
   }
 
   try {
-    roomsDb.rebindAgent(agent.id, slot);
+    // Propagate the new persona's handle + avatar (not just the slot) to every
+    // participant row so the preamble and `@Handle` addressing follow the rebind.
+    roomsDb.rebindAgent(agent.id, slot, identity.name, identity.avatarUrl ?? null);
   } catch (err) {
     if (err instanceof SlotConflictError) {
       await interaction.editReply(`❌ ${err.message}`);

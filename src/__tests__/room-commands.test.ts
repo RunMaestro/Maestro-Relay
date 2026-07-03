@@ -228,11 +228,10 @@ test('rebind changes the agent global binding and the per-room slot', async () =
   await execute(rebind);
 
   assert.equal(roomsDb.getAgentBinding(agentId), 'Bo', 'global binding rewritten');
-  assert.equal(
-    roomsDb.getParticipant(r.roomKey, agentId)?.bot_slot,
-    'Bo',
-    'per-room slot rewritten in lock-step',
-  );
+  const participant = roomsDb.getParticipant(r.roomKey, agentId);
+  assert.equal(participant?.bot_slot, 'Bo', 'per-room slot rewritten in lock-step');
+  // Handle + avatar follow the new persona too, not just the slot (P2 #59).
+  assert.equal(participant?.handle, 'Bo', 'handle updated to the new persona name');
   const reply = editReplyText(rebind);
   assert.match(reply, /Bo/);
   assert.match(reply, /every/i, 'warns the change applies everywhere');
