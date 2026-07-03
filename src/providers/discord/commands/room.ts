@@ -382,8 +382,9 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
 
   roomsDb.clearSessions(room.room_key);
   roomsDb.resetTurnCount(room.room_key);
+  roomsDb.resetLifetimeTurnCount(room.room_key);
   await interaction.reply({
-    content: '🔄 Cleared all participant sessions and reset the burst turn counter.',
+    content: '🔄 Cleared all participant sessions and reset the burst + lifetime turn counters.',
     ephemeral: true,
   });
 }
