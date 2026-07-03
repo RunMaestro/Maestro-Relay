@@ -67,11 +67,16 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
   const stall = deps.stall ?? NoopStallDetector;
   const log: KernelLogger = deps.logger ?? defaultLogger;
 
-  // Idempotency guard shared by the live listener and reconciliation replay:
-  // a message id already routed here is dropped the second time. Bounded FIFO.
+  // Idempotency guard shared by the live listener and reconciliation replay: a
+  // message already routed for a given bot is dropped the second time. The key is
+  // per-(bot, message-id), NOT per-message-id: a single message can `@`-mention
+  // two room bots (up to `max_mentions`), and BOTH must route — one to each
+  // agent. A shared per-message-id set would let the first bot's routing suppress
+  // the second addressee, silently dropping its turn. Bounded FIFO.
   const recentlyRouted = new Set<string>();
-  const markRouted = (id: string): void => {
-    recentlyRouted.add(id);
+  const routeKey = (botUserId: string, messageId: string): string => `${botUserId}:${messageId}`;
+  const markRouted = (key: string): void => {
+    recentlyRouted.add(key);
     if (recentlyRouted.size > ROUTED_CAP) {
       const oldest = recentlyRouted.values().next().value;
       if (oldest !== undefined) recentlyRouted.delete(oldest);
@@ -139,9 +144,11 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
     // Mention gate: only the addressed bot proceeds (natural dedup).
     if (!message.mentions.users.has(thisBotUserId)) return;
 
-    // Idempotency guard: if we already routed this message id (live event), a
-    // reconciliation replay of the same message is a no-op — exactly once.
-    if (recentlyRouted.has(message.id)) return;
+    // Idempotency guard: if THIS bot already routed this message id (live event),
+    // a reconciliation replay of the same message is a no-op — exactly once per
+    // bot. A different addressed bot has its own key and still routes.
+    const dedupeKey = routeKey(thisBotUserId, message.id);
+    if (recentlyRouted.has(dedupeKey)) return;
 
     // Strip this bot's own native mention (`<@id>` / `<@!id>`) from the content,
     // mirroring `messageCreate.ts`'s `mentionPattern` cleanup.
@@ -159,7 +166,7 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
 
     // Route exactly once for the addressed bot. The bus (Phase 4) owns the next
     // hop; we never enqueue it here.
-    markRouted(message.id);
+    markRouted(dedupeKey);
     deps.rooms.submitMessage(PROVIDER, channelId, fromHandle, cleanedText, {
       toAgentId: selfParticipant.agent_id,
       fromKind,
