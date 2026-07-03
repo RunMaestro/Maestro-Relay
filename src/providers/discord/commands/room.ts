@@ -27,6 +27,7 @@
 import {
   AutocompleteInteraction,
   ChatInputCommandInteraction,
+  PermissionFlagsBits,
   SlashCommandBuilder,
   EmbedBuilder,
 } from 'discord.js';
@@ -63,6 +64,13 @@ function identityForSlot(slot: string): RoomBotIdentity | undefined {
 export const data = new SlashCommandBuilder()
   .setName('room')
   .setDescription('Manage a multi-agent room')
+  // `/room` mutates global room state and `/room invite` spends money (each bot
+  // turn has a cost). Gate the whole command group to server administrators —
+  // Discord's default member permissions are command-level, not per-subcommand,
+  // so the money-spending subcommands are covered by gating the group. Server
+  // owners can still grant finer access via Server Settings → Integrations.
+  // NOTE: requires re-running `npm run deploy-commands` to take effect.
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addSubcommand((sub) =>
     sub.setName('new').setDescription('Create a room bound to this channel'),
   )
