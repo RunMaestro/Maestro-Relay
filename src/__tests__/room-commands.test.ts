@@ -420,6 +420,23 @@ test('reset reactivates a halted room (P2 #59)', async () => {
   assert.match(reset.reply.mock.calls[0].arguments[0].content, /reactivat/i);
 });
 
+test('reset zeroes the spend ledger so a budget-halted room is usable again (P2 #59)', async () => {
+  const r = newRoom();
+  // Simulate a room that hit its budget cap and was halted by the budget brake.
+  roomsDb.setBudget(r.roomKey, 1);
+  roomsDb.addSpend(r.roomKey, 1.5);
+  roomsDb.setStatus(r.roomKey, 'halted');
+  assert.ok(roomsDb.getRoom(r.roomKey)!.spent_usd >= roomsDb.getRoom(r.roomKey)!.budget_usd!);
+
+  const reset = makeInteraction({ channelId: r.channelId, sub: 'reset' });
+  await execute(reset);
+
+  const room = roomsDb.getRoom(r.roomKey)!;
+  assert.equal(room.status, 'active', 'room reactivated');
+  assert.equal(room.spent_usd, 0, 'spend ledger zeroed so the budget brake no longer trips');
+  assert.equal(room.budget_usd, 1, 'the budget cap itself is preserved');
+});
+
 // --- pause / resume / stop set the room status ------------------------------
 
 test('pause, resume and stop set the expected room status', async () => {

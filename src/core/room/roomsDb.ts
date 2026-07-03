@@ -151,6 +151,16 @@ export const roomsDb = {
     db.prepare('UPDATE rooms SET spent_usd = spent_usd + ? WHERE room_key = ?').run(usd, roomKey);
   },
 
+  /**
+   * Zero the accumulated spend ledger (leaving the budget cap intact). Called by
+   * `/room reset`: a room halted by the budget brake (`spent_usd >= budget_usd`)
+   * would otherwise re-halt on its very next turn, so "unstick and start over"
+   * must clear the spend that tripped the brake alongside the turn counters.
+   */
+  resetSpend(roomKey: string): void {
+    db.prepare('UPDATE rooms SET spent_usd = 0 WHERE room_key = ?').run(roomKey);
+  },
+
   /** Set (or clear, with `null`) the room's cost cap. Drives `/room budget`. */
   setBudget(roomKey: string, budgetUsd: number | null): void {
     db.prepare('UPDATE rooms SET budget_usd = ? WHERE room_key = ?').run(budgetUsd, roomKey);

@@ -418,6 +418,12 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
   roomsDb.clearSessions(room.room_key);
   roomsDb.resetTurnCount(room.room_key);
   roomsDb.resetLifetimeTurnCount(room.room_key);
+  // Clear the spend ledger too. A room halted by the budget brake
+  // (`spent_usd >= budget_usd`) would immediately re-halt on its next turn if we
+  // reactivated it without zeroing the spend that tripped the brake — reset would
+  // then falsely report reactivation for a room that stays unusable. Zeroing
+  // spend alongside the turn counters keeps "unstick and start over" honest.
+  roomsDb.resetSpend(room.room_key);
   // Reactivate the room. A room halted by a turn/budget brake stays `halted`,
   // and the bus drops turns for any non-active room — so without this a `/room
   // reset` would clear the counters but leave the room dead, forcing the user to
@@ -427,7 +433,7 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
   await interaction.reply({
     content:
       '🔄 Cleared all participant sessions, reset the burst + lifetime turn counters, ' +
-      'and reactivated the room.',
+      'zeroed the spend ledger, and reactivated the room.',
     ephemeral: true,
   });
 }
