@@ -18,6 +18,7 @@ import type {
   KernelContext,
   MessageTarget,
   OutgoingMessage,
+  PersonaIdentity,
   ReactionHandle,
 } from '../../core/types';
 import { maestro } from '../../core/maestro';
@@ -28,6 +29,9 @@ import { discordConfig } from './config';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { createMessageCreateHandler } from './messageCreate';
+import { createRoomMessageHandler } from './roomMessageCreate';
+import { RoomGatewayManager } from './roomGateways';
+import { TimeoutStallDetector } from './roomStall';
 import {
   isVoiceMessage,
   isVoiceAttachment,
@@ -41,6 +45,7 @@ import * as playbook from './commands/playbook';
 import * as gist from './commands/gist';
 import * as notes from './commands/notes';
 import * as autoRun from './commands/auto-run';
+import * as room from './commands/room';
 
 interface CommandModule {
   data: { name: string } & Pick<SlashCommandBuilder, 'toJSON'>;
@@ -48,11 +53,22 @@ interface CommandModule {
   autocomplete?(interaction: AutocompleteInteraction): Promise<void>;
 }
 
-const COMMANDS: CommandModule[] = [health, agents, session, playbook, gist, notes, autoRun];
+const COMMANDS: CommandModule[] = [health, agents, session, playbook, gist, notes, autoRun, room];
 
 export class DiscordProvider implements BridgeProvider {
   readonly name = 'discord';
   private client: Client | null = null;
+  private roomGateways: RoomGatewayManager | null = null;
+  private roomStall: TimeoutStallDetector | null = null;
+  /**
+   * The room-aware `messageCreate` listener, retained so it can be re-bound at
+   * runtime. Slot 0 (the primary bot) only receives it once it becomes a room
+   * participant — `/room invite` can make that true after `start()` has already
+   * run, so a re-bind after each `/room` command picks up the newly-participating
+   * slot 0. `bindRoomListeners` is idempotent, so re-binding is safe.
+   */
+  private handleRoomMessage: ((message: import('discord.js').Message) => void | Promise<void>) | null =
+    null;
   private pendingChannels = new Map<string, Promise<AgentChannelInfo>>();
   private pendingCategory: Promise<CategoryChannel> | null = null;
 
@@ -70,9 +86,12 @@ export class DiscordProvider implements BridgeProvider {
       COMMANDS.map((c) => [c.data.name, c]),
     );
 
-    client.once('ready', async (c) => {
-      logger.info('discord/ready', `logged in as ${c.user.tag}`);
-      await checkTranscriptionDependencies();
+    const primaryReady = new Promise<void>((resolve) => {
+      client.once('ready', async (c) => {
+        logger.info('discord/ready', `logged in as ${c.user.tag}`);
+        await checkTranscriptionDependencies();
+        resolve();
+      });
     });
 
     client.on('interactionCreate', async (interaction: Interaction) => {
@@ -117,6 +136,13 @@ export class DiscordProvider implements BridgeProvider {
         } else {
           await interaction.reply(msg);
         }
+      } finally {
+        // A `/room` command (e.g. `invite`) may have just made slot 0 a room
+        // participant. Re-bind so the primary client starts routing room chat;
+        // `bindRoomListeners` is idempotent, so this is a no-op otherwise.
+        if (interaction.commandName === 'room' && this.roomGateways && this.handleRoomMessage) {
+          this.roomGateways.bindRoomListeners(this.handleRoomMessage);
+        }
       }
     });
 
@@ -135,9 +161,66 @@ export class DiscordProvider implements BridgeProvider {
     client.on('messageCreate', handleMessageCreate);
 
     await client.login(discordConfig.token);
+
+    // Bring up the multi-client room gateway pool once the primary is ready and
+    // its bot user id is resolvable. With no room bots configured this just
+    // registers slot 0, so a single-agent deployment is unaffected. A failing
+    // pool bot is logged inside the manager and never blocks the primary bridge.
+    await primaryReady;
+    const roomGateways = new RoomGatewayManager({ logger: ctx.logger });
+    this.roomGateways = roomGateways;
+    try {
+      await roomGateways.start(client);
+
+      // Slot-0 dual-role separation: `interactionCreate` (the `/room` command
+      // host) stays bound above on the primary client only; room bots register
+      // no slash commands. The room chat listener is a *separate* binding,
+      // attached per-client by the manager — always to pool clients, and to
+      // slot 0 only when it is itself a room participant. It routes solely
+      // through the kernel bus (`ctx.rooms`), so it can only bind once the bus
+      // is wired (Phase 4); until then room bots log in but stay quiet.
+      if (ctx.rooms) {
+        // Stall detection is the honest best-effort floor for anything
+        // reconnect-gap reconciliation cannot recover: if a routed mention gets
+        // no follow-up, log it and post an `@human` notice into the room.
+        const roomStall = new TimeoutStallDetector({
+          logger: ctx.logger,
+          onStall: async ({ channelId, addressee, timeoutMs }) => {
+            try {
+              const channel = await this.fetchSendable(channelId);
+              await channel.send(
+                `⚠️ @human — no response from @${addressee} in ${Math.round(timeoutMs / 1000)}s.`,
+              );
+            } catch (err) {
+              await ctx.logger.error('discord/roomStall', `notice failed: ${String(err)}`);
+            }
+          },
+        });
+        this.roomStall = roomStall;
+
+        const handleRoomMessage = createRoomMessageHandler({
+          rooms: ctx.rooms,
+          stall: roomStall,
+          logger: ctx.logger,
+        });
+        this.handleRoomMessage = handleRoomMessage;
+        roomGateways.bindRoomListeners(handleRoomMessage);
+      }
+    } catch (err) {
+      await ctx.logger.error('discord/roomGateways', `failed to start room gateways: ${String(err)}`);
+    }
   }
 
   async stop(): Promise<void> {
+    if (this.roomStall) {
+      this.roomStall.clear();
+      this.roomStall = null;
+    }
+    if (this.roomGateways) {
+      await this.roomGateways.stop();
+      this.roomGateways = null;
+    }
+    this.handleRoomMessage = null;
     if (this.client) {
       this.client.destroy();
       this.client = null;
@@ -176,6 +259,93 @@ export class DiscordProvider implements BridgeProvider {
   async send(target: ChannelTarget, msg: OutgoingMessage): Promise<void> {
     const channel = await this.fetchSendable(target.channelId);
     let text = msg.text;
+    if (msg.mention && discordConfig.mentionUserId) {
+      text = `<@${discordConfig.mentionUserId}> ${text}`;
+    }
+    try {
+      await channel.send(text);
+    } catch (err) {
+      const rl = toRateLimitError(err);
+      if (rl) throw rl;
+      throw err;
+    }
+  }
+
+  /**
+   * Send under a distinct room persona (multi-agent rooms). Two identity
+   * strategies coexist, gated on config (see the "Rooms — real bots vs. masking"
+   * note in CLAUDE.md / AGENTS-providers.md):
+   *
+   * - **Real-bots path (room-bot slots configured).** Discord fronts a real bot
+   *   account per persona: we pick the gateway client whose account is
+   *   `identity.botUserId` (registered by the Phase-3 `RoomGatewayManager`) and
+   *   post through it — no webhook, so personas can *natively* `@`-ping each
+   *   other. Every legitimate persona (including slot 0's own) is a registered
+   *   slot, so a resolved client is always available. If it is NOT — a persona's
+   *   room bot failed to log in, i.e. a broken real-bot deployment — we **hard
+   *   fail the hop** rather than silently posting it through the primary bot
+   *   under the wrong identity (no mask, no native ping). The bus logs the
+   *   failure; a wrong-identity post would be worse than a missing one.
+   *
+   * - **Masked-persona fallback (no room-bot pool configured).** The single
+   *   primary bot mirrors every persona, prefixing the handle so readers can
+   *   tell speakers apart. No native pinging — this is the documented
+   *   masked-persona mode, mirroring how Slack/Teams mask one bot via
+   *   `chat:write.customize`. Lets a user run rooms without provisioning N bots.
+   *
+   * The `sendAs` contract is identical to callers either way; only the transport
+   * differs. `target.threadId` (when the room lives in a thread) takes
+   * precedence over `channelId`; a Discord thread is itself a sendable channel.
+   */
+  async sendAs(
+    target: ChannelTarget,
+    identity: PersonaIdentity,
+    msg: OutgoingMessage,
+  ): Promise<void> {
+    const realBotsConfigured = this.roomGateways?.hasRoomBots() ?? false;
+
+    if (realBotsConfigured) {
+      // Resolve the persona's OWN bot client. No fallback to the primary bot: if
+      // this persona has no ready client, the deployment is broken and posting
+      // through the primary would misattribute the message. Fail the hop instead.
+      const client = identity.botUserId
+        ? this.roomGateways?.getClientForBotUserId(identity.botUserId)
+        : undefined;
+      if (!client) {
+        throw new Error(
+          `Room persona "${identity.name}" has no ready bot client ` +
+            `(botUserId=${identity.botUserId ?? 'unset'}); refusing to post via the primary bot. ` +
+            `Check the room-bot pool (DISCORD_ROOM_BOT_*) — one of its bots failed to log in.`,
+        );
+      }
+      await this.postThrough(client, target, msg);
+      return;
+    }
+
+    // No pool configured → documented masked-persona fallback on the primary
+    // bot. Prefix the handle since a plain bot message (unlike a webhook) cannot
+    // override its username per-message.
+    if (!this.client) throw new Error('Discord client not initialised');
+    await this.postThrough(this.client, target, msg, identity.name);
+  }
+
+  /**
+   * Shared outbound for `sendAs`: fetch the target (thread over channel) via the
+   * given client and post `msg.text`, applying the human `@`-mention prefix and,
+   * in masked-persona mode, a `maskName` handle prefix. Rate-limit errors are
+   * translated like `send()`.
+   */
+  private async postThrough(
+    client: Client,
+    target: ChannelTarget,
+    msg: OutgoingMessage,
+    maskName?: string,
+  ): Promise<void> {
+    const channel = await this.fetchSendableFrom(client, target.threadId ?? target.channelId);
+    let text = msg.text;
+    if (maskName) {
+      text = `**${maskName}:** ${text}`;
+    }
     if (msg.mention && discordConfig.mentionUserId) {
       text = `<@${discordConfig.mentionUserId}> ${text}`;
     }
@@ -272,7 +442,14 @@ export class DiscordProvider implements BridgeProvider {
 
   private async fetchSendable(channelId: string): Promise<SendableChannels> {
     if (!this.client) throw new Error('Discord client not initialised');
-    const fetched = await this.client.channels.fetch(channelId);
+    return this.fetchSendableFrom(this.client, channelId);
+  }
+
+  private async fetchSendableFrom(
+    client: Client,
+    channelId: string,
+  ): Promise<SendableChannels> {
+    const fetched = await client.channels.fetch(channelId);
     if (!fetched?.isSendable()) {
       const err = new Error(`Channel ${channelId} is missing or not sendable`);
       void logger.error('discord/fetchSendable', err.message);

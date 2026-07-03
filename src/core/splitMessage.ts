@@ -29,8 +29,39 @@ function fenceReserve(text: string): number {
 }
 
 /**
+ * Discord mention/channel tokens that must never be cut across a chunk
+ * boundary: user (`<@id>` / `<@!id>`), role (`<@&id>`), and channel (`<#id>`).
+ * A token torn at a boundary fires no ping, so it is treated as indivisible.
+ */
+const MENTION_TOKEN = /<(?:@[!&]?|#)\d+>/g;
+
+/**
+ * Nudge a candidate split index so it never lands *inside* a Discord mention
+ * token. If the boundary would straddle a token, break **before** it so the
+ * whole token carries to the next chunk. Newline-based boundaries are already
+ * safe (a token contains no newline); this only ever moves a hard-split index.
+ * Falls back to the original index when the offending token starts at 0 (a lone
+ * token longer than the budget), so the loop always makes progress.
+ */
+function avoidMentionCut(text: string, splitAt: number): number {
+  MENTION_TOKEN.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = MENTION_TOKEN.exec(text)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (start >= splitAt) break; // tokens are ordered; none earlier can straddle
+    if (splitAt > start && splitAt < end) {
+      return start > 0 ? start : splitAt;
+    }
+  }
+  return splitAt;
+}
+
+/**
  * Greedy newline-preserving split (the original behavior). Splits on the last
  * newline under `maxLength`, hard-splitting only when a single line is too long.
+ * A hard-split boundary is pulled back before any Discord mention token it would
+ * otherwise slice through, keeping mention tokens atomic.
  */
 function rawSplit(text: string, maxLength: number): string[] {
   if (text.length <= maxLength) return [text];
@@ -41,6 +72,7 @@ function rawSplit(text: string, maxLength: number): string[] {
   while (remaining.length > maxLength) {
     let splitAt = remaining.lastIndexOf('\n', maxLength);
     if (splitAt <= 0) splitAt = maxLength;
+    splitAt = avoidMentionCut(remaining, splitAt);
 
     parts.push(remaining.slice(0, splitAt));
     remaining = remaining.slice(splitAt).trimStart();

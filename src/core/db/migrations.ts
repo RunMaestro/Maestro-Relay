@@ -11,6 +11,14 @@ import type Database from 'better-sqlite3';
  *  5. Add `slack_agent_conversations` thread/timestamp registry
  *  6. Create `telegram_agent_topics` for forum-topic-per-session tracking
  *  7. Add `teams_conversation_refs` proactive-messaging reference store
+ *  8. Create multi-agent rooms tables (`rooms`, `room_participants`,
+ *     `agent_bot_bindings`) — provider-agnostic kernel schema
+ *  9. Create `room_bots` registry (slot → resolved bot_user_id; never the token)
+ *     populated by the multi-client gateway manager
+ * 10. Create `room_bot_cursors` (slot, channel_id → last_seen_message_id): the
+ *     per-client low-water mark that reconnect-gap reconciliation replays from
+ * 11. Add `max_lifetime_turns` / `lifetime_turn_count` to `rooms` — the hard
+ *     loop backstop that (unlike the burst counter) only resets on `/room reset`
  */
 export function runMigrations(db: Database.Database): void {
   ensureReadOnlyColumn(db);
@@ -21,6 +29,37 @@ export function runMigrations(db: Database.Database): void {
   ensureOwnerUserIdColumn(db);
   ensureSlackConversationsTable(db);
   ensureTeamsConversationRefsTable(db);
+  ensureRoomsTables(db);
+  ensureRoomLifetimeTurnColumns(db);
+  ensureRoomBotsRegistryTable(db);
+  ensureRoomBotCursorsTable(db);
+}
+
+/**
+ * Additive lifetime-turn backstop columns on an already-created `rooms` table
+ * (migration 11). The burst counter (`turn_count`) re-arms on every human
+ * message, so it cannot bound a loop that a human keeps poking; the lifetime
+ * counter only resets on `/room reset`. Idempotent via the duplicate-column
+ * guard, and a no-op when `rooms` does not exist yet (the fresh CREATE above
+ * already includes both columns).
+ */
+export function ensureRoomLifetimeTurnColumns(database: Database.Database): void {
+  const cols = database.prepare("PRAGMA table_info('rooms')").all() as Array<{ name: string }>;
+  if (cols.length === 0) return; // table not created yet — CREATE carries the columns.
+  const add = (sql: string): void => {
+    try {
+      database.exec(sql);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !error.message.toLowerCase().includes('duplicate column name')
+      ) {
+        throw error;
+      }
+    }
+  };
+  add('ALTER TABLE rooms ADD COLUMN max_lifetime_turns INTEGER NOT NULL DEFAULT 500');
+  add('ALTER TABLE rooms ADD COLUMN lifetime_turn_count INTEGER NOT NULL DEFAULT 0');
 }
 
 export function ensureOwnerUserIdColumn(database: Database.Database): void {
@@ -160,6 +199,112 @@ function ensureTeamsConversationRefsTable(database: Database.Database): void {
       service_url     TEXT NOT NULL,
       tenant_id       TEXT,
       updated_at      INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+}
+
+/**
+ * Multi-agent rooms schema (provider-agnostic kernel — no Discord client library).
+ *
+ * `rooms` mirrors the baseline Phase 1 shape (room_key PK = `${provider}:${channelId}`,
+ * status/budget ledger) plus the real-bots additions `max_turns` / `turn_count`
+ * (the burst-scoped turn-depth brake — see the Phase 4 bus). `room_participants`
+ * carries the sanitized `handle`, per-(room, agent) `session_id`, and the new
+ * `bot_slot` (the pool bot rendering this agent's identity in this room), unique
+ * per room. `agent_bot_bindings` is the enforced global agent→bot mapping: an
+ * agent bound to slot "Ada" in one room is "Ada" in every room.
+ *
+ * All three are created idempotently with `IF NOT EXISTS`, so re-running is safe
+ * and existing provider tables are untouched.
+ */
+function ensureRoomsTables(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS rooms (
+      room_key            TEXT PRIMARY KEY,
+      provider            TEXT NOT NULL,
+      channel_id          TEXT NOT NULL,
+      thread_id           TEXT,
+      status              TEXT NOT NULL DEFAULT 'active',
+      budget_usd          REAL DEFAULT 5.0,
+      spent_usd           REAL NOT NULL DEFAULT 0,
+      max_mentions        INTEGER NOT NULL DEFAULT 2,
+      max_turns           INTEGER NOT NULL DEFAULT 30,
+      turn_count          INTEGER NOT NULL DEFAULT 0,
+      max_lifetime_turns  INTEGER NOT NULL DEFAULT 500,
+      lifetime_turn_count INTEGER NOT NULL DEFAULT 0,
+      created_at          INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS room_participants (
+      room_key    TEXT NOT NULL,
+      agent_id    TEXT NOT NULL,
+      handle      TEXT NOT NULL,
+      avatar_url  TEXT,
+      session_id  TEXT,
+      bot_slot    TEXT,
+      created_at  INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (room_key, agent_id)
+    )
+  `);
+
+  // A bot slot renders at most one agent within a room. NULL bot_slots are
+  // exempt (SQLite treats each NULL as distinct), so participants without a
+  // bound slot never collide. The kernel roomsDb enforces this in code too.
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_room_participants_bot_slot
+      ON room_participants (room_key, bot_slot)
+      WHERE bot_slot IS NOT NULL
+  `);
+
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS agent_bot_bindings (
+      agent_id   TEXT PRIMARY KEY,
+      bot_slot   TEXT NOT NULL
+    )
+  `);
+}
+
+/**
+ * Multi-client gateway registry (provider-agnostic kernel — no Discord client library).
+ *
+ * `room_bots` maps a pool `slot` (the primary bot is slot "0"; pool bots are
+ * "1".."N") to the `bot_user_id` the gateway manager resolved once that client
+ * logged in. It stores the resolved bot user id ONLY — never the token — so the
+ * outbound native-mention rewrite and the inbound self/peer filter can look up
+ * a slot's account id without a live client. Idempotent `IF NOT EXISTS`.
+ */
+function ensureRoomBotsRegistryTable(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS room_bots (
+      slot         TEXT PRIMARY KEY,
+      bot_user_id  TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+}
+
+/**
+ * Reconnect-gap reconciliation cursor (provider-agnostic kernel — no Discord
+ * client library).
+ *
+ * `room_bot_cursors` tracks, per `(slot, channel_id)`, the snowflake id of the
+ * last room message that slot's gateway client processed or intentionally
+ * skipped (`last_seen_message_id`). Because a `messageCreate` gateway push is
+ * best-effort — a client mid-reconnect silently misses it — this low-water mark
+ * is what a client re-fetches *after* on `resume`, replaying any mention it
+ * missed through the same listener path. Stores the snowflake id ONLY, never
+ * message content. Idempotent `IF NOT EXISTS`.
+ */
+function ensureRoomBotCursorsTable(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS room_bot_cursors (
+      slot                 TEXT NOT NULL,
+      channel_id           TEXT NOT NULL,
+      last_seen_message_id TEXT NOT NULL,
+      updated_at           INTEGER NOT NULL DEFAULT (unixepoch()),
+      PRIMARY KEY (slot, channel_id)
     )
   `);
 }

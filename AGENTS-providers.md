@@ -45,8 +45,35 @@ Defined in `src/core/types.ts`. Every provider exports a class implementing this
 | `isReady()`                     | yes      | Provider readiness for `/api/health`                                                 |
 | `react?(target, emoji)`         | optional | Queue/transcription indicator (e.g. `⏳`, `🎧`)                                      |
 | `sendTyping?(target)`           | optional | Typing indicator while the agent thinks                                              |
+| `sendAs?(target, identity, msg)`| optional | Post under a distinct per-message persona (multi-agent rooms) — see below            |
 
 The kernel calls `react` and `sendTyping` if they exist; safe to omit when the platform has no analogue.
+
+### Rooms — real bots vs. masking
+
+Multi-agent rooms let one channel carry many personas. The room bus (`src/core/room/`)
+is provider-agnostic and calls `provider.sendAs(target, identity, msg)` for every persona
+post — that one contract is the **seam** that lets a single bus drive all providers, each
+picking its own identity transport:
+
+- **Discord → real bots (native pinging).** When room-bot slots are configured
+  (`DISCORD_ROOM_BOT_*`, loaded by `src/providers/discord/roomBots.ts`), each persona is a
+  genuine separate bot account with its own gateway connection; `sendAs` routes to the client
+  whose account is `identity.botUserId`. Because the posts come from real accounts, personas
+  can **natively `@`-ping each other**, and that ping is a first-class gateway event the peer
+  bot's listener receives. No `MANAGE_WEBHOOKS` permission is needed.
+  - **Masked-persona fallback (no pool configured).** The single primary bot mirrors every
+    persona, prefixing the handle (`**Ada:** …`) so readers can tell speakers apart. No native
+    pinging — this is the documented masked mode, for deployments that don't want to provision
+    N bots. `DiscordProvider.sendAs` gates on `RoomGatewayManager.hasRoomBots()`.
+- **Slack & Teams → masking.** Real N-bots would mean N separate Slack apps / N Azure bot
+  registrations per workspace/tenant, so these providers keep the single-bot `chat:write.customize`
+  masking (customized username/avatar per message). No native cross-bot pinging.
+
+The kernel never learns which strategy a provider uses — it only calls `sendAs`. See
+[`docs/plans/multi-agent-rooms-real-bots.md`](docs/plans/multi-agent-rooms-real-bots.md) §Phase 6
+for the full migration rationale, and [`docs/discord.md`](docs/discord.md) for the room-bot pool
+env, native-ping model, permissions delta, and rotation runbook.
 
 ### Typed errors providers throw
 
