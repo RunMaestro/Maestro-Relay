@@ -40,6 +40,7 @@ import {
   NO_FREE_ROOM_BOT_SLOT_ERROR,
   type RoomBotIdentity,
 } from '../roomBots';
+import { PRIMARY_SLOT } from '../roomGateways';
 
 const PROVIDER = 'discord';
 
@@ -59,6 +60,16 @@ async function resolveAgent(input: string): Promise<MaestroAgent | undefined> {
 /** The configured pool bot for a slot, or undefined if the slot is unknown. */
 function identityForSlot(slot: string): RoomBotIdentity | undefined {
   return loadRoomBots().find((b) => b.slot === slot);
+}
+
+/**
+ * A slot usable as a room persona: the primary bot (slot 0, always registered by
+ * the gateway manager and supported as a participant by the room listener) or
+ * any configured pool slot. Slot 0 has no pool persona config, so callers fall
+ * back to the agent's own name as its handle.
+ */
+function isUsableSlot(slot: string): boolean {
+  return slot === PRIMARY_SLOT || identityForSlot(slot) !== undefined;
 }
 
 export const data = new SlashCommandBuilder()
@@ -244,7 +255,7 @@ async function handleInvite(interaction: ChatInputCommandInteraction): Promise<v
     }
     slot = binding;
   } else if (explicitSlot !== null) {
-    if (!identityForSlot(explicitSlot)) {
+    if (!isUsableSlot(explicitSlot)) {
       await interaction.editReply(
         `❌ Bot slot \`${explicitSlot}\` is not a configured room bot. ${NO_FREE_ROOM_BOT_SLOT_ERROR}`,
       );
@@ -300,18 +311,21 @@ async function handleRebind(interaction: ChatInputCommandInteraction): Promise<v
     return;
   }
 
-  const identity = identityForSlot(slot);
-  if (!identity) {
+  if (!isUsableSlot(slot)) {
     await interaction.editReply(
       `❌ Bot slot \`${slot}\` is not a configured room bot. ${NO_FREE_ROOM_BOT_SLOT_ERROR}`,
     );
     return;
   }
+  // Slot 0 (primary bot) has no pool persona config → fall back to the agent's name.
+  const identity = identityForSlot(slot);
+  const handle = identity?.name ?? agent.name;
+  const avatarUrl = identity?.avatarUrl ?? null;
 
   try {
     // Propagate the new persona's handle + avatar (not just the slot) to every
     // participant row so the preamble and `@Handle` addressing follow the rebind.
-    roomsDb.rebindAgent(agent.id, slot, identity.name, identity.avatarUrl ?? null);
+    roomsDb.rebindAgent(agent.id, slot, handle, avatarUrl);
   } catch (err) {
     if (err instanceof SlotConflictError) {
       await interaction.editReply(`❌ ${err.message}`);
@@ -321,7 +335,7 @@ async function handleRebind(interaction: ChatInputCommandInteraction): Promise<v
   }
 
   await interaction.editReply(
-    `✅ Rebound **${agent.name}** to bot slot \`${slot}\` (**@${identity.name}**). ` +
+    `✅ Rebound **${agent.name}** to bot slot \`${slot}\` (**@${handle}**). ` +
       '⚠️ This changes the persona in **every** room the agent is in.',
   );
 }

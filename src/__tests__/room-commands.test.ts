@@ -209,6 +209,26 @@ test('invite surfaces the onboarding error when every configured slot is taken',
   assert.match(editReplyText(full), /No free room-bot slot/);
 });
 
+test('invite accepts the primary bot as slot 0, handle falls back to agent name (P2 #59)', async () => {
+  const agentId = newAgentId();
+  mockAgents([{ id: agentId, name: 'Prime-agent' }]);
+
+  const r = newRoom();
+  const invite = makeInteraction({
+    channelId: r.channelId,
+    sub: 'invite',
+    agent: agentId,
+    slot: '0',
+  });
+  await execute(invite);
+
+  const p = roomsDb.getParticipant(r.roomKey, agentId);
+  assert.equal(p?.bot_slot, '0', 'bound to the primary bot (slot 0)');
+  assert.equal(p?.handle, 'Prime-agent', 'slot 0 has no pool persona → handle is the agent name');
+  assert.equal(roomsDb.getAgentBinding(agentId), '0', 'global binding written to slot 0');
+  assert.match(editReplyText(invite), /slot `0`/);
+});
+
 // --- rebind: changes the global binding everywhere --------------------------
 
 test('rebind changes the agent global binding and the per-room slot', async () => {
