@@ -20,6 +20,23 @@ import { db } from '../db';
 
 export type RoomStatus = 'active' | 'paused' | 'halted';
 
+/**
+ * Default cost cap ($USD) applied to a freshly-created room. A safety net, not a
+ * tight budget: at typical per-turn costs it allows a long conversation while
+ * still stopping a runaway bot↔bot loop from spending without bound. `/room
+ * budget 0` clears it (uncapped) and any positive value overrides it.
+ */
+export const DEFAULT_ROOM_BUDGET_USD = 5;
+
+/**
+ * Default lifetime turn cap for a room — the hard backstop that survives human
+ * re-arms of the burst counter. The burst counter (`turn_count`) resets whenever
+ * a human speaks, so a human repeatedly poking a loop could re-arm it forever;
+ * the lifetime counter (`lifetime_turn_count`) only resets on an explicit
+ * `/room reset`, bounding total agent turns regardless of human activity.
+ */
+export const DEFAULT_MAX_LIFETIME_TURNS = 500;
+
 export interface RoomRecord {
   room_key: string;
   provider: string;
@@ -31,6 +48,8 @@ export interface RoomRecord {
   max_mentions: number;
   max_turns: number;
   turn_count: number;
+  max_lifetime_turns: number;
+  lifetime_turn_count: number;
   created_at: number;
 }
 
@@ -52,6 +71,7 @@ export interface CreateRoomParams {
   budgetUsd?: number | null;
   maxMentions?: number;
   maxTurns?: number;
+  maxLifetimeTurns?: number;
 }
 
 export interface AddParticipantParams {
@@ -79,17 +99,22 @@ export const roomsDb = {
   // ---- rooms ----------------------------------------------------------------
 
   createRoom(params: CreateRoomParams): void {
+    // Distinguish "omitted" (apply the default cap) from an explicit `null`
+    // (deliberately uncapped) — `??` would collapse both to the default.
+    const budgetUsd =
+      params.budgetUsd === undefined ? DEFAULT_ROOM_BUDGET_USD : params.budgetUsd;
     db.prepare(
-      `INSERT INTO rooms (room_key, provider, channel_id, thread_id, budget_usd, max_mentions, max_turns)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO rooms (room_key, provider, channel_id, thread_id, budget_usd, max_mentions, max_turns, max_lifetime_turns)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       params.roomKey,
       params.provider,
       params.channelId,
       params.threadId ?? null,
-      params.budgetUsd ?? null,
+      budgetUsd,
       params.maxMentions ?? 2,
       params.maxTurns ?? 30,
+      params.maxLifetimeTurns ?? DEFAULT_MAX_LIFETIME_TURNS,
     );
   },
 
@@ -141,8 +166,33 @@ export const roomsDb = {
     return row?.turn_count ?? 0;
   },
 
+  /**
+   * Increment the lifetime turn counter and return the new value. Unlike the
+   * burst counter this is NEVER reset by a human message — only by an explicit
+   * `/room reset` — so it is the hard backstop against a loop kept alive by
+   * repeated human pokes re-arming the burst counter.
+   */
+  incrementLifetimeTurn(roomKey: string): number {
+    const row = db
+      .prepare(
+        'UPDATE rooms SET lifetime_turn_count = lifetime_turn_count + 1 WHERE room_key = ? RETURNING lifetime_turn_count',
+      )
+      .get(roomKey) as { lifetime_turn_count: number } | undefined;
+    return row?.lifetime_turn_count ?? 0;
+  },
+
+  /** Reset the burst-scoped turn counter (human message / `/room reset`). */
   resetTurnCount(roomKey: string): void {
     db.prepare('UPDATE rooms SET turn_count = 0 WHERE room_key = ?').run(roomKey);
+  },
+
+  /**
+   * Reset the lifetime turn counter. Deliberately NOT called on a human message
+   * (that only re-arms the burst counter) — only `/room reset` clears the
+   * lifetime backstop.
+   */
+  resetLifetimeTurnCount(roomKey: string): void {
+    db.prepare('UPDATE rooms SET lifetime_turn_count = 0 WHERE room_key = ?').run(roomKey);
   },
 
   // ---- participants ---------------------------------------------------------

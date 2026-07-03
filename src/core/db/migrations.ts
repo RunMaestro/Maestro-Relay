@@ -17,6 +17,8 @@ import type Database from 'better-sqlite3';
  *     populated by the multi-client gateway manager
  * 10. Create `room_bot_cursors` (slot, channel_id → last_seen_message_id): the
  *     per-client low-water mark that reconnect-gap reconciliation replays from
+ * 11. Add `max_lifetime_turns` / `lifetime_turn_count` to `rooms` — the hard
+ *     loop backstop that (unlike the burst counter) only resets on `/room reset`
  */
 export function runMigrations(db: Database.Database): void {
   ensureReadOnlyColumn(db);
@@ -28,8 +30,36 @@ export function runMigrations(db: Database.Database): void {
   ensureSlackConversationsTable(db);
   ensureTeamsConversationRefsTable(db);
   ensureRoomsTables(db);
+  ensureRoomLifetimeTurnColumns(db);
   ensureRoomBotsRegistryTable(db);
   ensureRoomBotCursorsTable(db);
+}
+
+/**
+ * Additive lifetime-turn backstop columns on an already-created `rooms` table
+ * (migration 11). The burst counter (`turn_count`) re-arms on every human
+ * message, so it cannot bound a loop that a human keeps poking; the lifetime
+ * counter only resets on `/room reset`. Idempotent via the duplicate-column
+ * guard, and a no-op when `rooms` does not exist yet (the fresh CREATE above
+ * already includes both columns).
+ */
+export function ensureRoomLifetimeTurnColumns(database: Database.Database): void {
+  const cols = database.prepare("PRAGMA table_info('rooms')").all() as Array<{ name: string }>;
+  if (cols.length === 0) return; // table not created yet — CREATE carries the columns.
+  const add = (sql: string): void => {
+    try {
+      database.exec(sql);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !error.message.toLowerCase().includes('duplicate column name')
+      ) {
+        throw error;
+      }
+    }
+  };
+  add('ALTER TABLE rooms ADD COLUMN max_lifetime_turns INTEGER NOT NULL DEFAULT 500');
+  add('ALTER TABLE rooms ADD COLUMN lifetime_turn_count INTEGER NOT NULL DEFAULT 0');
 }
 
 export function ensureOwnerUserIdColumn(database: Database.Database): void {
@@ -190,17 +220,19 @@ function ensureTeamsConversationRefsTable(database: Database.Database): void {
 function ensureRoomsTables(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS rooms (
-      room_key          TEXT PRIMARY KEY,
-      provider          TEXT NOT NULL,
-      channel_id        TEXT NOT NULL,
-      thread_id         TEXT,
-      status            TEXT NOT NULL DEFAULT 'active',
-      budget_usd        REAL,
-      spent_usd         REAL NOT NULL DEFAULT 0,
-      max_mentions      INTEGER NOT NULL DEFAULT 2,
-      max_turns         INTEGER NOT NULL DEFAULT 30,
-      turn_count        INTEGER NOT NULL DEFAULT 0,
-      created_at        INTEGER NOT NULL DEFAULT (unixepoch())
+      room_key            TEXT PRIMARY KEY,
+      provider            TEXT NOT NULL,
+      channel_id          TEXT NOT NULL,
+      thread_id           TEXT,
+      status              TEXT NOT NULL DEFAULT 'active',
+      budget_usd          REAL DEFAULT 5.0,
+      spent_usd           REAL NOT NULL DEFAULT 0,
+      max_mentions        INTEGER NOT NULL DEFAULT 2,
+      max_turns           INTEGER NOT NULL DEFAULT 30,
+      turn_count          INTEGER NOT NULL DEFAULT 0,
+      max_lifetime_turns  INTEGER NOT NULL DEFAULT 500,
+      lifetime_turn_count INTEGER NOT NULL DEFAULT 0,
+      created_at          INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
 

@@ -24,6 +24,8 @@ function makeRoom(overrides: Partial<RoomRecord> = {}): RoomRecord {
     max_mentions: 2,
     max_turns: 30,
     turn_count: 0,
+    max_lifetime_turns: 500,
+    lifetime_turn_count: 0,
     created_at: 0,
     ...overrides,
   };
@@ -62,6 +64,10 @@ function makeDb(
     incrementTurn: (_k) => {
       room.turn_count += 1;
       return room.turn_count;
+    },
+    incrementLifetimeTurn: (_k) => {
+      room.lifetime_turn_count += 1;
+      return room.lifetime_turn_count;
     },
     resetTurnCount: (_k) => {
       room.turn_count = 0;
@@ -214,7 +220,7 @@ test('budget cap: cumulative spend reaching budget halts the room with no furthe
 
 // --- turn cap is burst-scoped ----------------------------------------------
 
-test('turn cap trips within one burst but is reset by a human message and by queue drain', async () => {
+test('turn cap counts turns-since-human: human re-arms it, but a queue drain does NOT', async () => {
   // (a) A human message re-arms the burst counter in submit (before any send).
   {
     const room = makeRoom({ turn_count: 5, max_turns: 30 });
@@ -238,23 +244,26 @@ test('turn cap trips within one burst but is reset by a human message and by que
     assert.equal(room.turn_count, 1, 'reset to 0 then incremented once (not 5 → 6)');
   }
 
-  // (b) A drained queue resets the counter — a long-lived room is never killed
-  //     for lifetime turns.
+  // (b) A drained queue does NOT reset the counter. In native real-bot routing
+  //     each hop is a separate gateway round-trip, so the queue is empty between
+  //     hops — a drain reset would zero the counter on every hop and the brake
+  //     would never trip. The counter persists across drains (turns-since-human).
   {
-    const room = makeRoom({ max_turns: 30 });
+    const room = makeRoom({ turn_count: 4, max_turns: 30 });
     const b = makeParticipant({ agent_id: 'b', handle: 'B', bot_slot: 'slot-b' });
     const db = makeDb(room, [b], { 'slot-b': '222' });
     const { maestro } = makeMaestro([reply('spoken to the room, no mention', 0)]);
     const { provider } = makeProvider();
     const bus = createRoomBus({ db, maestro, getProvider: () => provider, logger: silentLogger });
 
-    bus.submitMessage('discord', 'chan1', 'human', 'hi', { toAgentId: 'b', fromKind: 'human' });
+    // A non-human (bot) hop must NOT reset — it increments and survives the drain.
+    bus.submitMessage('discord', 'chan1', 'B', 'hop', { toAgentId: 'b', fromKind: 'bot' });
     await settle();
-    assert.equal(room.turn_count, 0, 'turn counter resets to 0 once the burst drains');
+    assert.equal(room.turn_count, 5, 'counter persists across a drain (4 → 5), never zeroed');
     assert.equal(room.status, 'active', 'a healthy drained room stays active');
   }
 
-  // (c) Reaching max_turns inside a single burst halts.
+  // (c) Reaching max_turns since the last human halts.
   {
     const room = makeRoom({ max_turns: 2 });
     const b = makeParticipant({ agent_id: 'b', handle: 'B', bot_slot: 'slot-b' });
@@ -278,6 +287,37 @@ test('turn cap trips within one burst but is reset by a human message and by que
     assert.equal(notices.length, 1, 'one turn-limit notice');
     assert.ok(notices[0].text?.includes('turn limit'), 'notice mentions the turn limit');
   }
+});
+
+// --- lifetime turn cap: the backstop that survives human re-arms -------------
+
+test('lifetime turn cap halts even when a human keeps re-arming the burst counter', async () => {
+  // max_turns is high so the burst brake never trips; max_lifetime_turns is the
+  // one that fires. Every hop is a human message (re-arming the burst each time),
+  // proving the lifetime counter is NOT reset by human input.
+  const room = makeRoom({ max_turns: 100, max_lifetime_turns: 2 });
+  const b = makeParticipant({ agent_id: 'b', handle: 'B', bot_slot: 'slot-b' });
+  const db = makeDb(room, [b], { 'slot-b': '222' });
+  const { maestro, calls } = makeMaestro([reply('one', 0), reply('two', 0), reply('three', 0)]);
+  const { provider, notices } = makeProvider();
+  const bus = createRoomBus({ db, maestro, getProvider: () => provider, logger: silentLogger });
+
+  // Three separate human messages — each drains before the next, and each re-arms
+  // the burst counter. Only the lifetime counter accumulates across them.
+  bus.submitMessage('discord', 'chan1', 'human', 'm1', { toAgentId: 'b', fromKind: 'human' });
+  await settle();
+  bus.submitMessage('discord', 'chan1', 'human', 'm2', { toAgentId: 'b', fromKind: 'human' });
+  await settle();
+  bus.submitMessage('discord', 'chan1', 'human', 'm3', { toAgentId: 'b', fromKind: 'human' });
+  await settle();
+
+  assert.equal(calls.length, 2, 'third hop halts BEFORE its send (lifetime 3 > max 2)');
+  assert.equal(room.status, 'halted');
+  assert.equal(notices.length, 1, 'one lifetime-limit notice');
+  assert.ok(
+    notices[0].text?.includes('lifetime turn limit'),
+    'notice mentions the lifetime turn limit',
+  );
 });
 
 // --- maxMentions cap + self-drop + native rewrite --------------------------

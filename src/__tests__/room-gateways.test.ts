@@ -72,6 +72,8 @@ const ROOM: RoomRecord = {
   max_mentions: 2,
   max_turns: 30,
   turn_count: 0,
+  max_lifetime_turns: 500,
+  lifetime_turn_count: 0,
   created_at: 0,
 };
 

@@ -1,6 +1,11 @@
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { roomsDb, SlotConflictError } from '../core/room/roomsDb';
+import {
+  roomsDb,
+  SlotConflictError,
+  DEFAULT_ROOM_BUDGET_USD,
+  DEFAULT_MAX_LIFETIME_TURNS,
+} from '../core/room/roomsDb';
 import { db } from '../core/db';
 
 // The roomsDb module drives the shared registry singleton (like db.test.ts and
@@ -63,6 +68,10 @@ test('createRoom / getRoom / isRoom round-trip with real-bots defaults', () => {
   assert.equal(rec.spent_usd, 0);
   assert.equal(rec.max_turns, 30);
   assert.equal(rec.turn_count, 0);
+  // A newly-created room carries the default budget cap and lifetime backstop.
+  assert.equal(rec.budget_usd, DEFAULT_ROOM_BUDGET_USD);
+  assert.equal(rec.max_lifetime_turns, DEFAULT_MAX_LIFETIME_TURNS);
+  assert.equal(rec.lifetime_turn_count, 0);
 
   assert.equal(roomsDb.isRoom('discord', channelId), true);
   assert.equal(roomsDb.isRoom('discord', 'not-a-room'), false);
@@ -92,6 +101,15 @@ test('incrementTurn / resetTurnCount and addSpend mutate the room ledger', () =>
   assert.equal(roomsDb.incrementTurn(roomKey), 2);
   roomsDb.resetTurnCount(roomKey);
   assert.equal(roomsDb.getRoom(roomKey)!.turn_count, 0);
+
+  // Lifetime counter is independent: resetTurnCount leaves it untouched; only
+  // resetLifetimeTurnCount clears it.
+  assert.equal(roomsDb.incrementLifetimeTurn(roomKey), 1);
+  assert.equal(roomsDb.incrementLifetimeTurn(roomKey), 2);
+  roomsDb.resetTurnCount(roomKey);
+  assert.equal(roomsDb.getRoom(roomKey)!.lifetime_turn_count, 2, 'burst reset spares lifetime');
+  roomsDb.resetLifetimeTurnCount(roomKey);
+  assert.equal(roomsDb.getRoom(roomKey)!.lifetime_turn_count, 0);
 
   roomsDb.addSpend(roomKey, 0.25);
   roomsDb.addSpend(roomKey, 0.75);
