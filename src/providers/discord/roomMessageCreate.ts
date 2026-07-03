@@ -170,6 +170,10 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
     deps.rooms.submitMessage(PROVIDER, channelId, fromHandle, cleanedText, {
       toAgentId: selfParticipant.agent_id,
       fromKind,
+      // The provider message id identifies this ONE utterance: if it also
+      // addresses a second bot, that bot's client submits with the same id and the
+      // bus records the utterance in the transcript exactly once.
+      messageId: message.id,
     });
 
     // Arm the stall watch: we now expect a follow-up room message (the bot's

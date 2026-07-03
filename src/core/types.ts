@@ -95,6 +95,13 @@ export interface RoomSubmitOptions {
   toAgentId?: string;
   /** Whether the author was a person or a peer relay bot. */
   fromKind?: 'human' | 'bot';
+  /**
+   * Provider message id identifying the ONE room utterance this submit derives
+   * from. A single message addressing two bots enters the bus as two per-addressee
+   * submits sharing this id, so the transcript buffer dedupes on it to record the
+   * utterance exactly once. Optional: a provider that can't supply one still submits.
+   */
+  messageId?: string;
 }
 
 /**

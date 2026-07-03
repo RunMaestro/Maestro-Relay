@@ -191,6 +191,127 @@ test('routes one send to the addressee and rewrites its reply to native <@id>, n
   assert.ok(!posts[0].text?.includes('@C'), 'literal @C should be rewritten away');
 });
 
+// --- mid-conversation onboarding (windowed transcript) ---------------------
+
+test('a persona invited mid-conversation is onboarded with a windowed transcript; a session-holder is not', async () => {
+  const room = makeRoom();
+  // B already has a session (has seen the room); C is freshly invited (no session).
+  const b = makeParticipant({ agent_id: 'b', handle: 'B', bot_slot: 'slot-b', session_id: 'sess-b' });
+  const c = makeParticipant({ agent_id: 'c', handle: 'C', bot_slot: 'slot-c' });
+  const db = makeDb(room, [b, c], { 'slot-b': '222', 'slot-c': '333' });
+  const { maestro, calls } = makeMaestro([reply('B reply', 0), reply('C reply', 0, 'sess-c')]);
+  const { provider } = makeProvider();
+
+  const bus = createRoomBus({ db, maestro, getProvider: () => provider, logger: silentLogger });
+
+  // Two turns land on B (which has a session) — these build up the room history.
+  bus.submitMessage('discord', 'chan1', 'Alice', 'kick things off', {
+    toAgentId: 'b',
+    fromKind: 'human',
+  });
+  await settle();
+  bus.submitMessage('discord', 'chan1', 'Alice', 'a follow-up', {
+    toAgentId: 'b',
+    fromKind: 'human',
+  });
+  await settle();
+
+  // B (session-holder) never receives an onboarding transcript block.
+  assert.equal(calls.length, 2);
+  assert.ok(!calls[0].message.includes('Conversation so far'), 'B is not onboarded');
+  assert.ok(!calls[1].message.includes('Conversation so far'), 'B is not onboarded');
+
+  // Now C is addressed for the first time — no session yet → gets onboarded with
+  // the room-so-far, and the transcript excludes C's own trigger line.
+  bus.submitMessage('discord', 'chan1', 'Alice', 'C, thoughts?', {
+    toAgentId: 'c',
+    fromKind: 'human',
+  });
+  await settle();
+
+  assert.equal(calls.length, 3);
+  const onboarded = calls[2].message;
+  assert.ok(onboarded.includes('Conversation so far'), 'C receives an onboarding transcript');
+  assert.ok(onboarded.includes('[Alice]: kick things off'), 'history includes prior turns');
+  assert.ok(onboarded.includes('[Alice]: a follow-up'), 'history includes prior turns');
+  // The trigger line appears once (as the live line), not duplicated in the block.
+  assert.equal(
+    onboarded.split('[Alice]: C, thoughts?').length - 1,
+    1,
+    'trigger appears once, not duplicated inside the onboarding block',
+  );
+});
+
+test('an onboarding transcript honors a natural-language window hint in the trigger', async () => {
+  const room = makeRoom();
+  const b = makeParticipant({ agent_id: 'b', handle: 'B', bot_slot: 'slot-b', session_id: 'sess-b' });
+  const c = makeParticipant({ agent_id: 'c', handle: 'C', bot_slot: 'slot-c' });
+  const db = makeDb(room, [b, c], { 'slot-b': '222', 'slot-c': '333' });
+  const { maestro, calls } = makeMaestro([reply('ok', 0)]);
+  const { provider } = makeProvider();
+  const bus = createRoomBus({ db, maestro, getProvider: () => provider, logger: silentLogger });
+
+  // Build 3 human turns of history on B.
+  for (const t of ['msg one', 'msg two', 'msg three']) {
+    bus.submitMessage('discord', 'chan1', 'Alice', t, { toAgentId: 'b', fromKind: 'human' });
+    await settle();
+  }
+
+  // Invite C with an explicit "last 1 message" hint → only the most recent prior
+  // entry ("msg three") should be in the window.
+  bus.submitMessage('discord', 'chan1', 'Alice', 'C, share the last 1 message', {
+    toAgentId: 'c',
+    fromKind: 'human',
+  });
+  await settle();
+
+  const onboarded = calls[calls.length - 1].message;
+  assert.ok(onboarded.includes('[Alice]: msg three'), 'the last message is in the window');
+  assert.ok(!onboarded.includes('[Alice]: msg one'), 'older messages are windowed out');
+  assert.ok(!onboarded.includes('[Alice]: msg two'), 'older messages are windowed out');
+});
+
+test('a message addressing two bots is recorded in the transcript exactly once', async () => {
+  // One human utterance @-mentions both B and C, so it enters the bus as TWO
+  // per-addressee submits sharing the same provider message id. The transcript
+  // must record it once, not twice — otherwise onboarding windows over-count and
+  // the 200-entry ring evicts real history early. We observe the ring by inviting
+  // a third bot D (no session) and counting the utterance in its onboarding block.
+  const room = makeRoom();
+  const b = makeParticipant({ agent_id: 'b', handle: 'B', bot_slot: 'slot-b', session_id: 'sess-b' });
+  const c = makeParticipant({ agent_id: 'c', handle: 'C', bot_slot: 'slot-c', session_id: 'sess-c' });
+  const d = makeParticipant({ agent_id: 'd', handle: 'D', bot_slot: 'slot-d' });
+  const db = makeDb(room, [b, c, d], { 'slot-b': '222', 'slot-c': '333', 'slot-d': '444' });
+  const { maestro, calls } = makeMaestro([reply('ok', 0)]);
+  const { provider } = makeProvider();
+  const bus = createRoomBus({ db, maestro, getProvider: () => provider, logger: silentLogger });
+
+  // The multi-mention: two submits, same message id, one per addressed bot.
+  bus.submitMessage('discord', 'chan1', 'Alice', 'hello both', {
+    toAgentId: 'b',
+    fromKind: 'human',
+    messageId: 'mid-1',
+  });
+  bus.submitMessage('discord', 'chan1', 'Alice', 'hello both', {
+    toAgentId: 'c',
+    fromKind: 'human',
+    messageId: 'mid-1',
+  });
+  await settle();
+
+  // Invite D (no session) → onboarded with the room-so-far.
+  bus.submitMessage('discord', 'chan1', 'Alice', 'D, weigh in', {
+    toAgentId: 'd',
+    fromKind: 'human',
+    messageId: 'mid-2',
+  });
+  await settle();
+
+  const onboarded = calls[calls.length - 1].message;
+  const occurrences = onboarded.split('[Alice]: hello both').length - 1;
+  assert.equal(occurrences, 1, 'the multi-mention utterance appears exactly once in the transcript');
+});
+
 // --- budget cap -------------------------------------------------------------
 
 test('budget cap: cumulative spend reaching budget halts the room with no further send', async () => {

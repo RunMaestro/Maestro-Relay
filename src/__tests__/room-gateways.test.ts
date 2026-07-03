@@ -202,7 +202,11 @@ test('only the addressed bot routes — mention Ben, Ada no-ops', async () => {
   assert.equal(ada.submits.length, 0, 'an unaddressed bot no-ops (mention gate)');
   assert.equal(ben.submits[0].from, 'Alice');
   assert.equal(ben.submits[0].text, 'ping', 'own mention stripped from content');
-  assert.deepEqual(ben.submits[0].opts, { toAgentId: 'agent-ben', fromKind: 'human' });
+  assert.deepEqual(ben.submits[0].opts, {
+    toAgentId: 'agent-ben',
+    fromKind: 'human',
+    messageId: '100',
+  });
 });
 
 test('a room message that mentions nobody routes to no bot', async () => {
@@ -255,7 +259,11 @@ test('a registered peer relay bot addressing Ben DOES route', async () => {
 
   assert.equal(ben.submits.length, 1, 'peer relay bot passes the filter');
   assert.equal(ben.submits[0].from, 'Ada', 'peer bot routes under its participant handle');
-  assert.deepEqual(ben.submits[0].opts, { toAgentId: 'agent-ben', fromKind: 'bot' });
+  assert.deepEqual(ben.submits[0].opts, {
+    toAgentId: 'agent-ben',
+    fromKind: 'bot',
+    messageId: '103',
+  });
 });
 
 test('a third-party bot addressing Ben does NOT route', async () => {
