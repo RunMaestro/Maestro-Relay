@@ -187,9 +187,15 @@ export class DiscordProvider implements BridgeProvider {
           logger: ctx.logger,
           onStall: async ({ channelId, addressee, timeoutMs }) => {
             try {
-              const channel = await this.fetchSendable(channelId);
-              await channel.send(
-                `⚠️ @human — no response from @${addressee} in ${Math.round(timeoutMs / 1000)}s.`,
+              // Route through `send({ mention: true })` so the notice carries a
+              // real `<@DISCORD_MENTION_USER_ID>` ping (the provider's mention
+              // renderer) rather than a literal, un-notifying `@human` string.
+              await this.send(
+                { provider: 'discord', channelId },
+                {
+                  text: `⚠️ No response from @${addressee} in ${Math.round(timeoutMs / 1000)}s.`,
+                  mention: true,
+                },
               );
             } catch (err) {
               await ctx.logger.error('discord/roomStall', `notice failed: ${String(err)}`);
