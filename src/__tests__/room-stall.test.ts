@@ -32,7 +32,33 @@ test('multi-mention arms an independent stall per addressee (no sibling cancel)'
   assert.deepEqual(fired, ['Ada', 'Ben'], 'both addressees stall — first is not lost');
 });
 
-test('a follow-up message clears all pending expectations for the channel', async () => {
+test('a reply clears only its own addressee — a co-mentioned stalled bot still fires', async () => {
+  const fired: string[] = [];
+  const det = new TimeoutStallDetector({
+    timeoutMs: 20,
+    onStall: (i: RoomStallInfo) => {
+      fired.push(i.addressee);
+    },
+  });
+
+  // One message mentions both Ada and Ben; each listener arms its own watch.
+  det.expect('chan', 'Ada', 'msg1');
+  det.expect('chan', 'Ben', 'msg1');
+
+  // The arming message (peer bots observe it too) must not clear its own arms,
+  // even when attributed to a co-mentioned addressee.
+  det.observe('chan', 'msg1', 'Ada');
+  // Ada replies (a new id, authored by Ada) → clears ONLY Ada's watch. Ben is
+  // genuinely stalled and its timer must survive so its stall still fires.
+  det.observe('chan', 'msg2', 'Ada');
+
+  await delay(70);
+  det.clear();
+
+  assert.deepEqual(fired, ['Ben'], "Ben's stall still fires after Ada replies");
+});
+
+test('a human follow-up (no addressee) clears nothing — the addressed bot still stalls', async () => {
   const fired: string[] = [];
   const det = new TimeoutStallDetector({
     timeoutMs: 20,
@@ -42,17 +68,13 @@ test('a follow-up message clears all pending expectations for the channel', asyn
   });
 
   det.expect('chan', 'Ada', 'msg1');
-  det.expect('chan', 'Ben', 'msg1');
-
-  // The arming message (peer bots observe it too) must not clear its own arms.
-  det.observe('chan', 'msg1');
-  // A genuine follow-up (different id) proves the room is alive → clears both.
+  // A human message carries no participant handle → satisfies no bot's reply.
   det.observe('chan', 'msg2');
 
   await delay(70);
   det.clear();
 
-  assert.deepEqual(fired, [], 'a live room fires no stall');
+  assert.deepEqual(fired, ['Ada'], 'a human message does not absolve an addressed bot');
 });
 
 test('re-arming one addressee leaves a co-mentioned sibling intact', async () => {

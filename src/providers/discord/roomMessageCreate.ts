@@ -107,15 +107,6 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
       roomsDb.advanceRoomBotCursor(thisSlot, channelId, message.id);
     }
 
-    // The room is alive: a message (id !== the message that armed a pending
-    // expectation) clears any stall watch for this channel.
-    stall.observe(channelId, message.id);
-
-    // The CHANGED line vs `messageCreate.ts`: drop only *self* (the loop guard),
-    // never a blanket `author.bot` drop — a registered peer relay bot must pass
-    // through so agents can address one another.
-    if (message.author.id === thisBotUserId) return;
-
     const room = roomsDb.getRoomByChannel(PROVIDER, channelId);
     if (!room) return;
     const participants = roomsDb.getParticipants(room.room_key);
@@ -133,6 +124,19 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
       if (botId === thisBotUserId) selfParticipant = p;
       if (botId === message.author.id) authorParticipant = p;
     }
+
+    // Stall clear: this follow-up satisfies ONLY its author's expectation. Pass
+    // the author's participant handle (self or a peer bot) so a co-mentioned
+    // sibling that never answered keeps its watch; a human message carries no
+    // handle and clears nothing. The arming message shares its id and is ignored
+    // inside `observe`. Run this before the self-return so a bot clears its OWN
+    // expectation even when it is the only room bot in the channel.
+    stall.observe(channelId, message.id, authorParticipant?.handle);
+
+    // The CHANGED line vs `messageCreate.ts`: drop only *self* (the loop guard),
+    // never a blanket `author.bot` drop — a registered peer relay bot must pass
+    // through so agents can address one another.
+    if (message.author.id === thisBotUserId) return;
 
     // Peer filter: a real user always passes; a bot passes only if it is a
     // registered peer relay bot of this room. Third-party bots are dropped.

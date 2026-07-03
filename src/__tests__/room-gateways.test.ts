@@ -222,16 +222,20 @@ test('a room message that mentions nobody routes to no bot', async () => {
 
 // --- listener: stall arming gated on room status (P2 #59) -------------------
 
-/** Spy stall detector recording every `expect(channel, addressee)` arm. */
+/** Spy stall detector recording every `expect` arm and every `observe` clear. */
 function makeStallSpy() {
   const arms: Array<{ channelId: string; addressee: string }> = [];
+  const observes: Array<{ channelId: string; messageId: string; addressee?: string }> = [];
   return {
     arms,
+    observes,
     detector: {
       expect(channelId: string, addressee: string) {
         arms.push({ channelId, addressee });
       },
-      observe() {},
+      observe(channelId: string, messageId: string, addressee?: string) {
+        observes.push({ channelId, messageId, addressee });
+      },
       clear() {},
     },
   };
@@ -267,6 +271,37 @@ test('an active room arms a stall watch after routing a mention', async () => {
   );
 
   assert.deepEqual(stall.arms, [{ channelId: CHANNEL, addressee: 'Ben' }]);
+});
+
+test('a peer reply passes the author handle to observe so only its own watch clears (P2 #59)', async () => {
+  const db = makeRoomsDbWithStatus('active');
+  const stall = makeStallSpy();
+  const handler = createRoomMessageHandler({
+    rooms: {
+      isRoom: (p: ProviderName, c: string) => p === PROVIDER && c === CHANNEL,
+      submitMessage: () => {},
+    },
+    roomsDb: db,
+    getBotUserId: () => 'bot-ben',
+    stall: stall.detector,
+    logger: noopLogger,
+  });
+
+  // Ada (a registered peer) posts, addressing Ben. On Ben's listener the author
+  // resolves to Ada, so `observe` is told the follow-up satisfies Ada's watch —
+  // not Ben's (which is freshly armed by this very mention).
+  await handler(
+    makeMessage({
+      id: '310',
+      authorId: 'bot-ada',
+      bot: true,
+      username: 'AdaBot',
+      content: '<@bot-ben> your turn',
+      mentions: ['bot-ben'],
+    }),
+  );
+
+  assert.deepEqual(stall.observes, [{ channelId: CHANNEL, messageId: '310', addressee: 'Ada' }]);
 });
 
 for (const status of ['paused', 'halted'] as const) {

@@ -27,10 +27,12 @@ export interface RoomStallDetector {
    */
   expect(channelId: string, addressee: string, armMessageId: string): void;
   /**
-   * A room message arrived in this channel. Any message whose id differs from
-   * the arming message clears the pending expectation — the room is alive.
+   * A room message arrived in this channel. It satisfies — and clears — ONLY the
+   * expectation of the addressee that produced it (`addressee` = the author's
+   * participant handle, or undefined for a human/third-party message, which
+   * clears nothing). A co-mentioned sibling that never replied keeps its timer.
    */
-  observe(channelId: string, messageId: string): void;
+  observe(channelId: string, messageId: string, addressee?: string): void;
   /** Cancel all pending timers (graceful shutdown). */
   clear(): void;
 }
@@ -69,9 +71,11 @@ const DEFAULT_TIMEOUT_MS = 120_000;
  * and the first bot's stall went silently unreported. Keying per addressee arms
  * both independently.
  *
- * Arming re-arms only that addressee's timer; a follow-up message (or shutdown)
- * clears the channel's expectations; a fired timer logs the suspected stall and
- * runs the optional `onStall` side-effect.
+ * Arming re-arms only that addressee's timer; a follow-up message clears only
+ * the expectation of the addressee that authored it (a co-mentioned sibling that
+ * is genuinely stalled keeps its timer), shutdown clears the channel's
+ * expectations, and a fired timer logs the suspected stall and runs the optional
+ * `onStall` side-effect.
  */
 export class TimeoutStallDetector implements RoomStallDetector {
   // channelId → (addressee → pending). Nested so per-addressee arming never
@@ -112,18 +116,21 @@ export class TimeoutStallDetector implements RoomStallDetector {
     this.pending.set(channelId, byAddressee);
   }
 
-  observe(channelId: string, messageId: string): void {
+  observe(channelId: string, messageId: string, addressee?: string): void {
     const byAddressee = this.pending.get(channelId);
     if (!byAddressee) return;
-    // A message whose id differs from the arming message proves the room is
-    // alive — clear EVERY pending expectation for this channel. The arming
-    // message itself (all peer bots observe it too) shares its id, so it never
-    // clears the very expectations it armed.
-    for (const [addressee, p] of [...byAddressee.entries()]) {
-      if (p.armMessageId === messageId) continue;
-      clearTimeout(p.timer);
-      byAddressee.delete(addressee);
-    }
+    // A follow-up satisfies ONLY the expectation of the addressee that authored
+    // it. Without an identifiable addressee (a human or third-party message) it
+    // clears nothing — a co-mentioned bot that is genuinely stalled keeps its
+    // timer, so its stall still fires. Clearing every sibling here (the old
+    // behaviour) meant one bot's reply cancelled the other's watch.
+    if (addressee === undefined) return;
+    const p = byAddressee.get(addressee);
+    // The arming message shares its id (every peer bot observes it too), so it
+    // must never clear the very expectation it just armed.
+    if (!p || p.armMessageId === messageId) return;
+    clearTimeout(p.timer);
+    byAddressee.delete(addressee);
     if (byAddressee.size === 0) this.pending.delete(channelId);
   }
 
