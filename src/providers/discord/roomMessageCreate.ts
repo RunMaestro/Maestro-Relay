@@ -176,9 +176,14 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
       messageId: message.id,
     });
 
-    // Arm the stall watch: we now expect a follow-up room message (the bot's
-    // reply, or a human) after this one. Keyed on this message id so peer bots'
-    // observations of the very same message do not clear it prematurely.
-    stall.expect(channelId, selfParticipant.handle, message.id);
+    // Arm the stall watch ONLY for an active room: we now expect a follow-up
+    // room message (the bot's reply, or a human) after this one. A paused or
+    // halted room won't reply — the bus holds the turn (paused) or drops it
+    // (halted) — so arming would fire a bogus "no response" warning after the
+    // timeout even though nothing actually stalled. Keyed on this message id so
+    // peer bots' observations of the very same message do not clear it early.
+    if (room.status === 'active') {
+      stall.expect(channelId, selfParticipant.handle, message.id);
+    }
   };
 }
