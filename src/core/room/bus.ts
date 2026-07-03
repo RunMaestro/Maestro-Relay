@@ -54,6 +54,13 @@ import {
   renderNativeMentions as defaultRenderNativeMentions,
   type Participant,
 } from './protocol';
+import {
+  inferContextStrategy,
+  selectContextWindow,
+  DEFAULT_RECENT_TURNS,
+  type ContextWindowStrategy,
+  type TranscriptEntryLike,
+} from './contextWindow';
 import { roomsDb } from './roomsDb';
 
 /** A message accepted for a room, already routed to a specific agent. */
@@ -61,7 +68,28 @@ interface RoutedMessage {
   fromHandle: string;
   text: string;
   toAgentId: string;
+  /** Author class, carried through so the transcript buffer can label the entry. */
+  fromKind: 'human' | 'bot';
 }
+
+/**
+ * One entry in a room's in-memory transcript buffer. Satisfies
+ * `TranscriptEntryLike` (via `source`) so the context-window heuristics window
+ * it directly, and carries `fromHandle` + `text` so a windowed slice renders
+ * back into the same `[handle]: text` line shape the bus already uses.
+ */
+interface TranscriptEntry extends TranscriptEntryLike {
+  source: 'human' | 'bot';
+  fromHandle: string;
+  text: string;
+}
+
+/**
+ * Cap on the in-memory transcript buffer per room (oldest evicted). This is a
+ * best-effort onboarding aid, not durable history, so a bounded ring is enough:
+ * the window heuristics only ever look at the tail.
+ */
+const TRANSCRIPT_CAP = 200;
 
 /** Kernel persistence seam — the room queries the bus needs, injectable for tests. */
 export type RoomBusDbSeam = Pick<
@@ -127,6 +155,31 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
   const processing = new Set<string>();
   /** Echo guard: last posted response hash keyed by `roomKey agentId`. */
   const lastResponseHash = new Map<string, string>();
+  /**
+   * Per-room in-memory transcript ring buffer. Records each message the room has
+   * *processed*, in order, so a persona invited mid-conversation (one with no
+   * maestro session yet) can be onboarded with a windowed transcript of the
+   * room-so-far. In-memory + addressed-only by design (see `appendTranscript`).
+   */
+  const transcripts = new Map<string, TranscriptEntry[]>();
+
+  /** Append one entry to a room's transcript buffer, evicting the oldest past the cap. */
+  function appendTranscript(roomKey: string, entry: TranscriptEntry): void {
+    const buf = transcripts.get(roomKey) ?? [];
+    buf.push(entry);
+    if (buf.length > TRANSCRIPT_CAP) buf.splice(0, buf.length - TRANSCRIPT_CAP);
+    transcripts.set(roomKey, buf);
+  }
+
+  /**
+   * Render a windowed transcript slice into a preamble block. Mirrors the bus's
+   * existing `[handle]: text` line shape so onboarding history reads identically
+   * to the live trigger line the agent also sees.
+   */
+  function renderTranscript(entries: TranscriptEntry[]): string {
+    const lines = entries.map((e) => `[${e.fromHandle}]: ${e.text}`).join('\n');
+    return `Conversation so far (you were invited mid-conversation):\n${lines}`;
+  }
 
   function isRoom(provider: ProviderName, channelId: string): boolean {
     return db.isRoom(provider, channelId);
@@ -158,7 +211,7 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
     }
 
     const backlog = queues.get(room.room_key) ?? [];
-    backlog.push({ fromHandle: from, text, toAgentId });
+    backlog.push({ fromHandle: from, text, toAgentId, fromKind: opts.fromKind ?? 'human' });
     queues.set(room.room_key, backlog);
 
     if (!processing.has(room.room_key)) {
@@ -188,6 +241,7 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
     db.setStatus(roomKey, 'halted');
     queues.delete(roomKey);
     processing.delete(roomKey);
+    transcripts.delete(roomKey);
   }
 
   async function processNext(roomKey: string): Promise<void> {
@@ -304,7 +358,35 @@ export function createRoomBus(deps: RoomBusDeps): RoomGateway {
     try {
       // --- Step 3: build the input. ---
       const preamble = buildPreamble({ roomKey: room.room_key }, selfProto, roster);
-      const input = `${preamble}\n\n[${msg.fromHandle}]: ${msg.text}`;
+
+      // Onboarding: a participant with no maestro session yet has never seen the
+      // room. Prepend a windowed transcript of the room-so-far so it joins
+      // mid-conversation with context instead of just the preamble + trigger.
+      // Default is recent-turns; a natural-language hint in the trigger ("share
+      // the last 3 messages", "this thread") narrows or widens it. The window is
+      // taken BEFORE this message is recorded, so the trigger isn't duplicated in
+      // its own onboarding block.
+      let contextBlock = '';
+      const history = transcripts.get(roomKey) ?? [];
+      if (!self.session_id && history.length > 0) {
+        const inferred = inferContextStrategy(msg.text);
+        const strategy: ContextWindowStrategy =
+          inferred.kind === 'full'
+            ? { kind: 'recent-turns', turns: DEFAULT_RECENT_TURNS }
+            : inferred;
+        const windowed = selectContextWindow(history, strategy);
+        if (windowed.length > 0) contextBlock = `${renderTranscript(windowed)}\n\n`;
+      }
+
+      // Record this message into the room transcript AFTER windowing above, so the
+      // buffer stays the ordered log of processed messages for the next onboarding.
+      appendTranscript(roomKey, {
+        source: msg.fromKind,
+        fromHandle: msg.fromHandle,
+        text: msg.text,
+      });
+
+      const input = `${preamble}\n\n${contextBlock}[${msg.fromHandle}]: ${msg.text}`;
 
       // --- Step 4: send; persist session on the first reply. ---
       const result = await maestro.send(msg.toAgentId, input, {
