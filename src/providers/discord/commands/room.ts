@@ -246,6 +246,18 @@ async function handleInvite(interaction: ChatInputCommandInteraction): Promise<v
   // (rejecting one that contradicts the binding), else allocate the next free slot.
   let slot: string;
   if (binding !== null) {
+    // A standing binding can point at a slot that has since been removed from the
+    // pool (shrunk `DISCORD_ROOM_BOT_*`). Reusing it would seat the agent on a
+    // slot with no bot client — the persona would render with the fallback agent
+    // name and every hop would hard-fail in `sendAs`. Reject and steer to rebind.
+    if (!isUsableSlot(binding)) {
+      await interaction.editReply(
+        `❌ Agent **${agent.name}** is globally bound to bot slot \`${binding}\`, which is no longer a ` +
+          `configured room bot. Use \`/room rebind\` to move it to an available slot. ` +
+          `${NO_FREE_ROOM_BOT_SLOT_ERROR}`,
+      );
+      return;
+    }
     if (explicitSlot !== null && explicitSlot !== binding) {
       await interaction.editReply(
         `❌ Agent **${agent.name}** is globally bound to bot slot \`${binding}\`, not \`${explicitSlot}\`. ` +

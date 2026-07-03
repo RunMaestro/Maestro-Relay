@@ -229,6 +229,27 @@ test('invite accepts the primary bot as slot 0, handle falls back to agent name 
   assert.match(editReplyText(invite), /slot `0`/);
 });
 
+test('invite rejects a stale binding to a now-unconfigured slot, steering to rebind (P2 #59)', async () => {
+  const agentId = newAgentId();
+  mockAgents([{ id: agentId, name: 'Ghost-agent' }]);
+
+  const r = newRoom();
+  // Simulate a binding to a slot that used to be configured but no longer is.
+  roomsDb.setAgentBinding(agentId, 'Zz-gone');
+
+  const invite = makeInteraction({ channelId: r.channelId, sub: 'invite', agent: agentId });
+  await execute(invite);
+
+  const reply = editReplyText(invite);
+  assert.match(reply, /no longer a configured room bot/i);
+  assert.match(reply, /rebind/i);
+  assert.equal(
+    roomsDb.getParticipant(r.roomKey, agentId),
+    undefined,
+    'the rejected invite wrote no participant row',
+  );
+});
+
 // --- rebind: changes the global binding everywhere --------------------------
 
 test('rebind changes the agent global binding and the per-room slot', async () => {
