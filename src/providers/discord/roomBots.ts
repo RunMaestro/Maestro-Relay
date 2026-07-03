@@ -193,14 +193,43 @@ export function loadRoomBots(): RoomBotIdentity[] {
     return [];
   }
 
-  // Enforce unique slots across the whole pool (indexed vars are inherently
-  // unique, but the JSON fallback can carry duplicates).
-  const seen = new Set<string>();
+  // Enforce unique slots AND unique bot accounts across the whole pool. Indexed
+  // vars have inherently-unique slots, but the JSON fallback can carry duplicate
+  // slots, and BOTH encodings can point two slots at the same `clientId` (the
+  // Discord bot account). Two personas on one account would share a bot user id,
+  // so native `@`-pings and the self/peer filter could no longer tell them apart
+  // — reject it at load so the misconfiguration surfaces at startup, not as
+  // silent cross-persona bleed at runtime.
+  //
+  // Seed the seen set with the PRIMARY bot's client id (slot 0). The gateway
+  // manager registers slot 0 on `DISCORD_CLIENT_ID`, so a pool slot that reuses
+  // it is the same collision: `getClientForBotUserId` returns the first match
+  // and the self/peer filter can no longer distinguish the primary from that
+  // pool persona. Read the env directly (not the throwing `required()` getter)
+  // so this loader stays throw-free when the primary id is unset.
+  const primaryClientId = process.env.DISCORD_CLIENT_ID?.trim();
+  const seenSlots = new Set<string>();
+  const seenClientIds = new Set<string>();
+  if (primaryClientId) seenClientIds.add(primaryClientId);
   for (const bot of bots) {
-    if (seen.has(bot.slot)) {
+    if (seenSlots.has(bot.slot)) {
       fail(bot.slot, 'duplicate slot (each room bot must use a unique slot)');
     }
-    seen.add(bot.slot);
+    seenSlots.add(bot.slot);
+    if (bot.clientId === primaryClientId) {
+      fail(
+        bot.slot,
+        `clientId "${bot.clientId}" is the primary bot's DISCORD_CLIENT_ID — a room bot must ` +
+          'be a distinct Discord account from the primary (slot 0)',
+      );
+    }
+    if (seenClientIds.has(bot.clientId)) {
+      fail(
+        bot.slot,
+        `duplicate clientId "${bot.clientId}" — each room bot must be a distinct Discord account`,
+      );
+    }
+    seenClientIds.add(bot.clientId);
   }
 
   return bots;

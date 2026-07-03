@@ -35,11 +35,13 @@ import { maestro } from '../../../core/maestro';
 import type { MaestroAgent } from '../../../core/maestro';
 import { roomsDb, SlotConflictError } from '../../../core/room/roomsDb';
 import type { RoomStatus } from '../../../core/room/roomsDb';
+import { sanitizeHandle } from '../../../core/room/protocol';
 import {
   loadRoomBots,
   NO_FREE_ROOM_BOT_SLOT_ERROR,
   type RoomBotIdentity,
 } from '../roomBots';
+import { PRIMARY_SLOT } from '../roomGateways';
 
 const PROVIDER = 'discord';
 
@@ -59,6 +61,16 @@ async function resolveAgent(input: string): Promise<MaestroAgent | undefined> {
 /** The configured pool bot for a slot, or undefined if the slot is unknown. */
 function identityForSlot(slot: string): RoomBotIdentity | undefined {
   return loadRoomBots().find((b) => b.slot === slot);
+}
+
+/**
+ * A slot usable as a room persona: the primary bot (slot 0, always registered by
+ * the gateway manager and supported as a participant by the room listener) or
+ * any configured pool slot. Slot 0 has no pool persona config, so callers fall
+ * back to the agent's own name as its handle.
+ */
+function isUsableSlot(slot: string): boolean {
+  return slot === PRIMARY_SLOT || identityForSlot(slot) !== undefined;
 }
 
 export const data = new SlashCommandBuilder()
@@ -235,6 +247,18 @@ async function handleInvite(interaction: ChatInputCommandInteraction): Promise<v
   // (rejecting one that contradicts the binding), else allocate the next free slot.
   let slot: string;
   if (binding !== null) {
+    // A standing binding can point at a slot that has since been removed from the
+    // pool (shrunk `DISCORD_ROOM_BOT_*`). Reusing it would seat the agent on a
+    // slot with no bot client — the persona would render with the fallback agent
+    // name and every hop would hard-fail in `sendAs`. Reject and steer to rebind.
+    if (!isUsableSlot(binding)) {
+      await interaction.editReply(
+        `❌ Agent **${agent.name}** is globally bound to bot slot \`${binding}\`, which is no longer a ` +
+          `configured room bot. Use \`/room rebind\` to move it to an available slot. ` +
+          `${NO_FREE_ROOM_BOT_SLOT_ERROR}`,
+      );
+      return;
+    }
     if (explicitSlot !== null && explicitSlot !== binding) {
       await interaction.editReply(
         `❌ Agent **${agent.name}** is globally bound to bot slot \`${binding}\`, not \`${explicitSlot}\`. ` +
@@ -244,7 +268,7 @@ async function handleInvite(interaction: ChatInputCommandInteraction): Promise<v
     }
     slot = binding;
   } else if (explicitSlot !== null) {
-    if (!identityForSlot(explicitSlot)) {
+    if (!isUsableSlot(explicitSlot)) {
       await interaction.editReply(
         `❌ Bot slot \`${explicitSlot}\` is not a configured room bot. ${NO_FREE_ROOM_BOT_SLOT_ERROR}`,
       );
@@ -263,7 +287,11 @@ async function handleInvite(interaction: ChatInputCommandInteraction): Promise<v
 
   const identity = identityForSlot(slot);
   // The persona name IS the room handle (one bot = one persona = one handle).
-  const handle = identity?.name ?? agent.name;
+  // Slot 0 (primary bot) has no pool persona → fall back to the agent's name,
+  // but sanitize it first: the room protocol only parses `@[A-Za-z0-9_-]+`, so a
+  // raw name like "Code Reviewer" would be advertised as `@Code Reviewer` and be
+  // unaddressable. `sanitizeHandle` yields the same handle shape pool names use.
+  const handle = identity?.name ?? sanitizeHandle(agent.name);
 
   try {
     roomsDb.addParticipant({
@@ -300,16 +328,23 @@ async function handleRebind(interaction: ChatInputCommandInteraction): Promise<v
     return;
   }
 
-  const identity = identityForSlot(slot);
-  if (!identity) {
+  if (!isUsableSlot(slot)) {
     await interaction.editReply(
       `❌ Bot slot \`${slot}\` is not a configured room bot. ${NO_FREE_ROOM_BOT_SLOT_ERROR}`,
     );
     return;
   }
+  // Slot 0 (primary bot) has no pool persona config → fall back to the agent's
+  // name, sanitized to the addressable `@[A-Za-z0-9_-]+` handle shape (matching
+  // how pool handles are formed) so peers can actually mention it.
+  const identity = identityForSlot(slot);
+  const handle = identity?.name ?? sanitizeHandle(agent.name);
+  const avatarUrl = identity?.avatarUrl ?? null;
 
   try {
-    roomsDb.rebindAgent(agent.id, slot);
+    // Propagate the new persona's handle + avatar (not just the slot) to every
+    // participant row so the preamble and `@Handle` addressing follow the rebind.
+    roomsDb.rebindAgent(agent.id, slot, handle, avatarUrl);
   } catch (err) {
     if (err instanceof SlotConflictError) {
       await interaction.editReply(`❌ ${err.message}`);
@@ -319,7 +354,7 @@ async function handleRebind(interaction: ChatInputCommandInteraction): Promise<v
   }
 
   await interaction.editReply(
-    `✅ Rebound **${agent.name}** to bot slot \`${slot}\` (**@${identity.name}**). ` +
+    `✅ Rebound **${agent.name}** to bot slot \`${slot}\` (**@${handle}**). ` +
       '⚠️ This changes the persona in **every** room the agent is in.',
   );
 }
@@ -383,8 +418,22 @@ async function handleReset(interaction: ChatInputCommandInteraction): Promise<vo
   roomsDb.clearSessions(room.room_key);
   roomsDb.resetTurnCount(room.room_key);
   roomsDb.resetLifetimeTurnCount(room.room_key);
+  // Clear the spend ledger too. A room halted by the budget brake
+  // (`spent_usd >= budget_usd`) would immediately re-halt on its next turn if we
+  // reactivated it without zeroing the spend that tripped the brake — reset would
+  // then falsely report reactivation for a room that stays unusable. Zeroing
+  // spend alongside the turn counters keeps "unstick and start over" honest.
+  roomsDb.resetSpend(room.room_key);
+  // Reactivate the room. A room halted by a turn/budget brake stays `halted`,
+  // and the bus drops turns for any non-active room — so without this a `/room
+  // reset` would clear the counters but leave the room dead, forcing the user to
+  // additionally guess `/room resume`. Reset is the "unstick and start over"
+  // action, so it returns the room to `active` in lock-step with the counters.
+  roomsDb.setStatus(room.room_key, 'active');
   await interaction.reply({
-    content: '🔄 Cleared all participant sessions and reset the burst + lifetime turn counters.',
+    content:
+      '🔄 Cleared all participant sessions, reset the burst + lifetime turn counters, ' +
+      'zeroed the spend ledger, and reactivated the room.',
     ephemeral: true,
   });
 }

@@ -191,6 +191,35 @@ test('routes one send to the addressee and rewrites its reply to native <@id>, n
   assert.ok(!posts[0].text?.includes('@C'), 'literal @C should be rewritten away');
 });
 
+test('a paused room holds a submitted turn and nudge() flushes it on resume (P2 #59)', async () => {
+  const room = makeRoom({ status: 'paused' });
+  const b = makeParticipant({ agent_id: 'b', handle: 'B', bot_slot: 'slot-b', session_id: 'sess-b' });
+  const db = makeDb(room, [b], { 'slot-b': '222' });
+  const { maestro, calls } = makeMaestro([reply('B reply', 0.01)]);
+  const { provider, posts } = makeProvider();
+
+  const bus = createRoomBus({ db, maestro, getProvider: () => provider, logger: silentLogger });
+
+  // Submitting into a paused room enqueues but must not send — the turn is held.
+  bus.submitMessage('discord', 'chan1', 'human', 'ask B', { toAgentId: 'b', fromKind: 'human' });
+  await settle();
+  assert.equal(calls.length, 0, 'a paused room sends nothing');
+  assert.equal(posts.length, 0);
+
+  // A nudge while still paused is a no-op (processNext re-reads the status).
+  bus.nudge?.('discord', 'chan1');
+  await settle();
+  assert.equal(calls.length, 0, 'nudge on a still-paused room holds again');
+
+  // Resume, then nudge: the held turn drains without any new inbound message.
+  db.setStatus(room.room_key, 'active');
+  bus.nudge?.('discord', 'chan1');
+  await settle();
+  assert.equal(calls.length, 1, 'the held turn drains on resume');
+  assert.equal(calls[0].agentId, 'b');
+  assert.equal(posts.length, 1, 'and its reply is posted');
+});
+
 // --- mid-conversation onboarding (windowed transcript) ---------------------
 
 test('a persona invited mid-conversation is onboarded with a windowed transcript; a session-holder is not', async () => {

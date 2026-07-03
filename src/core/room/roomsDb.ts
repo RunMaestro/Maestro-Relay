@@ -151,6 +151,16 @@ export const roomsDb = {
     db.prepare('UPDATE rooms SET spent_usd = spent_usd + ? WHERE room_key = ?').run(usd, roomKey);
   },
 
+  /**
+   * Zero the accumulated spend ledger (leaving the budget cap intact). Called by
+   * `/room reset`: a room halted by the budget brake (`spent_usd >= budget_usd`)
+   * would otherwise re-halt on its very next turn, so "unstick and start over"
+   * must clear the spend that tripped the brake alongside the turn counters.
+   */
+  resetSpend(roomKey: string): void {
+    db.prepare('UPDATE rooms SET spent_usd = 0 WHERE room_key = ?').run(roomKey);
+  },
+
   /** Set (or clear, with `null`) the room's cost cap. Drives `/room budget`. */
   setBudget(roomKey: string, budgetUsd: number | null): void {
     db.prepare('UPDATE rooms SET budget_usd = ? WHERE room_key = ?').run(budgetUsd, roomKey);
@@ -313,8 +323,25 @@ export const roomsDb = {
     return row?.bot_slot ?? null;
   },
 
-  /** Upsert the global agent→bot binding (used on first invite and by rebind). */
+  /**
+   * Upsert the global agent→bot binding (used on first invite and by rebind).
+   * Enforces the global 1:1 persona rule: a bot slot renders exactly one agent
+   * *everywhere*, so binding a slot already held by a DIFFERENT agent is rejected
+   * with `SlotConflictError`. The same agent re-binding its own slot is a no-op
+   * upsert and always allowed. Without this guard two agents could both bind the
+   * same slot (e.g. after one is kicked from a room but keeps its global binding),
+   * collapsing two personas onto one bot account.
+   */
   setAgentBinding(agentId: string, slot: string): void {
+    const holder = db
+      .prepare('SELECT agent_id FROM agent_bot_bindings WHERE bot_slot = ? AND agent_id != ?')
+      .get(slot, agentId) as { agent_id: string } | undefined;
+    if (holder !== undefined) {
+      throw new SlotConflictError(
+        `Bot slot "${slot}" is already globally bound to agent ${holder.agent_id}; ` +
+          `a slot renders exactly one agent everywhere. Kick or rebind that agent first.`,
+      );
+    }
     db.prepare(
       `INSERT INTO agent_bot_bindings (agent_id, bot_slot) VALUES (?, ?)
        ON CONFLICT(agent_id) DO UPDATE SET bot_slot = excluded.bot_slot`,
@@ -323,13 +350,17 @@ export const roomsDb = {
 
   /**
    * The only sanctioned way to change an agent's global persona: rewrite the
-   * `agent_bot_bindings` row AND the denormalized `bot_slot` on every room this
-   * agent already participates in, so the global mapping and the per-room copies
-   * never drift. Pre-checks slot-uniqueness in each affected room and throws
-   * `SlotConflictError` (leaving everything unchanged) if the new slot is already
-   * held by another agent there. Drives `/room rebind`.
+   * `agent_bot_bindings` row AND the denormalized persona columns (`bot_slot`,
+   * `handle`, `avatar_url`) on every room this agent already participates in, so
+   * the global mapping and the per-room copies never drift. The `handle`/
+   * `avatar_url` of the new slot's persona are passed in by the provider (the
+   * kernel doesn't know provider-side persona config); updating them here keeps
+   * the preamble and `@Handle` addressing in sync with the new slot instead of
+   * showing the stale old handle. Pre-checks slot-uniqueness in each affected
+   * room and throws `SlotConflictError` (leaving everything unchanged) if the new
+   * slot is already held by another agent there. Drives `/room rebind`.
    */
-  rebindAgent(agentId: string, slot: string): void {
+  rebindAgent(agentId: string, slot: string, handle: string, avatarUrl: string | null): void {
     const rebind = db.transaction(() => {
       const rooms = db
         .prepare('SELECT room_key FROM room_participants WHERE agent_id = ?')
@@ -348,7 +379,9 @@ export const roomsDb = {
         }
       }
       this.setAgentBinding(agentId, slot);
-      db.prepare('UPDATE room_participants SET bot_slot = ? WHERE agent_id = ?').run(slot, agentId);
+      db.prepare(
+        'UPDATE room_participants SET bot_slot = ?, handle = ?, avatar_url = ? WHERE agent_id = ?',
+      ).run(slot, handle, avatarUrl, agentId);
     });
     rebind();
   },
@@ -368,7 +401,18 @@ export const roomsDb = {
           .all(roomKey) as Array<{ bot_slot: string }>
       ).map((r) => r.bot_slot),
     );
-    return configuredSlots.find((slot) => !used.has(slot)) ?? null;
+    // Also skip any slot already claimed by a GLOBAL binding (to any agent): a
+    // slot renders exactly one agent everywhere, so a slot owned by another
+    // agent — even one not present in this room, e.g. after a kick that keeps the
+    // binding — must not be auto-allocated to a new agent. `setAgentBinding` would
+    // reject it anyway; excluding it here means auto-invite gracefully picks the
+    // next truly-free slot instead of erroring.
+    const boundGlobally = new Set(
+      (db.prepare('SELECT bot_slot FROM agent_bot_bindings').all() as Array<{ bot_slot: string }>).map(
+        (r) => r.bot_slot,
+      ),
+    );
+    return configuredSlots.find((slot) => !used.has(slot) && !boundGlobally.has(slot)) ?? null;
   },
 
   // ---- gateway bot registry (slot → resolved bot user id) -------------------

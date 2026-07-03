@@ -220,6 +220,117 @@ test('a room message that mentions nobody routes to no bot', async () => {
   assert.equal(ben.submits.length, 0);
 });
 
+// --- listener: stall arming gated on room status (P2 #59) -------------------
+
+/** Spy stall detector recording every `expect` arm and every `observe` clear. */
+function makeStallSpy() {
+  const arms: Array<{ channelId: string; addressee: string }> = [];
+  const observes: Array<{ channelId: string; messageId: string; addressee?: string }> = [];
+  return {
+    arms,
+    observes,
+    detector: {
+      expect(channelId: string, addressee: string) {
+        arms.push({ channelId, addressee });
+      },
+      observe(channelId: string, messageId: string, addressee?: string) {
+        observes.push({ channelId, messageId, addressee });
+      },
+      clear() {},
+    },
+  };
+}
+
+/** A roomsDb stub identical to `makeRoomsDb` but with a caller-chosen status. */
+function makeRoomsDbWithStatus(status: RoomRecord['status']) {
+  const base = makeRoomsDb();
+  return {
+    ...base,
+    getRoomByChannel(_p: string, channelId: string): RoomRecord | undefined {
+      return channelId === CHANNEL ? { ...ROOM, status } : undefined;
+    },
+  };
+}
+
+test('an active room arms a stall watch after routing a mention', async () => {
+  const db = makeRoomsDbWithStatus('active');
+  const stall = makeStallSpy();
+  const handler = createRoomMessageHandler({
+    rooms: {
+      isRoom: (p: ProviderName, c: string) => p === PROVIDER && c === CHANNEL,
+      submitMessage: () => {},
+    },
+    roomsDb: db,
+    getBotUserId: () => 'bot-ben',
+    stall: stall.detector,
+    logger: noopLogger,
+  });
+
+  await handler(
+    makeMessage({ id: '300', authorId: 'user-1', content: '<@bot-ben> ping', mentions: ['bot-ben'] }),
+  );
+
+  assert.deepEqual(stall.arms, [{ channelId: CHANNEL, addressee: 'Ben' }]);
+});
+
+test('a peer reply passes the author handle to observe so only its own watch clears (P2 #59)', async () => {
+  const db = makeRoomsDbWithStatus('active');
+  const stall = makeStallSpy();
+  const handler = createRoomMessageHandler({
+    rooms: {
+      isRoom: (p: ProviderName, c: string) => p === PROVIDER && c === CHANNEL,
+      submitMessage: () => {},
+    },
+    roomsDb: db,
+    getBotUserId: () => 'bot-ben',
+    stall: stall.detector,
+    logger: noopLogger,
+  });
+
+  // Ada (a registered peer) posts, addressing Ben. On Ben's listener the author
+  // resolves to Ada, so `observe` is told the follow-up satisfies Ada's watch —
+  // not Ben's (which is freshly armed by this very mention).
+  await handler(
+    makeMessage({
+      id: '310',
+      authorId: 'bot-ada',
+      bot: true,
+      username: 'AdaBot',
+      content: '<@bot-ben> your turn',
+      mentions: ['bot-ben'],
+    }),
+  );
+
+  assert.deepEqual(stall.observes, [{ channelId: CHANNEL, messageId: '310', addressee: 'Ada' }]);
+});
+
+for (const status of ['paused', 'halted'] as const) {
+  test(`a ${status} room routes the turn but does NOT arm a stall watch`, async () => {
+    const db = makeRoomsDbWithStatus(status);
+    const stall = makeStallSpy();
+    const submits: unknown[] = [];
+    const handler = createRoomMessageHandler({
+      rooms: {
+        isRoom: (p: ProviderName, c: string) => p === PROVIDER && c === CHANNEL,
+        submitMessage: () => submits.push(true),
+      },
+      roomsDb: db,
+      getBotUserId: () => 'bot-ben',
+      stall: stall.detector,
+      logger: noopLogger,
+    });
+
+    await handler(
+      makeMessage({ id: '301', authorId: 'user-1', content: '<@bot-ben> ping', mentions: ['bot-ben'] }),
+    );
+
+    // The turn is still submitted (the bus holds a paused turn for later); only
+    // the bogus stall arming is suppressed.
+    assert.equal(submits.length, 1, 'the message is still routed');
+    assert.deepEqual(stall.arms, [], `no stall armed for a ${status} room`);
+  });
+}
+
 // --- listener: self / peer / third-party filter -----------------------------
 
 test("a bot's own post never routes on its own listener (self-filter)", async () => {

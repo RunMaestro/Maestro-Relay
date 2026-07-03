@@ -107,15 +107,6 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
       roomsDb.advanceRoomBotCursor(thisSlot, channelId, message.id);
     }
 
-    // The room is alive: a message (id !== the message that armed a pending
-    // expectation) clears any stall watch for this channel.
-    stall.observe(channelId, message.id);
-
-    // The CHANGED line vs `messageCreate.ts`: drop only *self* (the loop guard),
-    // never a blanket `author.bot` drop — a registered peer relay bot must pass
-    // through so agents can address one another.
-    if (message.author.id === thisBotUserId) return;
-
     const room = roomsDb.getRoomByChannel(PROVIDER, channelId);
     if (!room) return;
     const participants = roomsDb.getParticipants(room.room_key);
@@ -133,6 +124,19 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
       if (botId === thisBotUserId) selfParticipant = p;
       if (botId === message.author.id) authorParticipant = p;
     }
+
+    // Stall clear: this follow-up satisfies ONLY its author's expectation. Pass
+    // the author's participant handle (self or a peer bot) so a co-mentioned
+    // sibling that never answered keeps its watch; a human message carries no
+    // handle and clears nothing. The arming message shares its id and is ignored
+    // inside `observe`. Run this before the self-return so a bot clears its OWN
+    // expectation even when it is the only room bot in the channel.
+    stall.observe(channelId, message.id, authorParticipant?.handle);
+
+    // The CHANGED line vs `messageCreate.ts`: drop only *self* (the loop guard),
+    // never a blanket `author.bot` drop — a registered peer relay bot must pass
+    // through so agents can address one another.
+    if (message.author.id === thisBotUserId) return;
 
     // Peer filter: a real user always passes; a bot passes only if it is a
     // registered peer relay bot of this room. Third-party bots are dropped.
@@ -176,9 +180,14 @@ export function createRoomMessageHandler(deps: RoomMessageDeps) {
       messageId: message.id,
     });
 
-    // Arm the stall watch: we now expect a follow-up room message (the bot's
-    // reply, or a human) after this one. Keyed on this message id so peer bots'
-    // observations of the very same message do not clear it prematurely.
-    stall.expect(channelId, selfParticipant.handle, message.id);
+    // Arm the stall watch ONLY for an active room: we now expect a follow-up
+    // room message (the bot's reply, or a human) after this one. A paused or
+    // halted room won't reply — the bus holds the turn (paused) or drops it
+    // (halted) — so arming would fire a bogus "no response" warning after the
+    // timeout even though nothing actually stalled. Keyed on this message id so
+    // peer bots' observations of the very same message do not clear it early.
+    if (room.status === 'active') {
+      stall.expect(channelId, selfParticipant.handle, message.id);
+    }
   };
 }

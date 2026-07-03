@@ -209,6 +209,77 @@ test('invite surfaces the onboarding error when every configured slot is taken',
   assert.match(editReplyText(full), /No free room-bot slot/);
 });
 
+test('invite accepts the primary bot as slot 0, handle falls back to agent name (P2 #59)', async () => {
+  const agentId = newAgentId();
+  mockAgents([{ id: agentId, name: 'Prime-agent' }]);
+
+  const r = newRoom();
+  const invite = makeInteraction({
+    channelId: r.channelId,
+    sub: 'invite',
+    agent: agentId,
+    slot: '0',
+  });
+  await execute(invite);
+
+  const p = roomsDb.getParticipant(r.roomKey, agentId);
+  assert.equal(p?.bot_slot, '0', 'bound to the primary bot (slot 0)');
+  assert.equal(p?.handle, 'Prime-agent', 'slot 0 has no pool persona → handle is the agent name');
+  assert.equal(roomsDb.getAgentBinding(agentId), '0', 'global binding written to slot 0');
+  assert.match(editReplyText(invite), /slot `0`/);
+});
+
+test('slot-0 invite sanitizes an agent name with spaces/punctuation into an addressable handle (P2 #59)', async () => {
+  const agentId = newAgentId();
+  mockAgents([{ id: agentId, name: 'Code Reviewer!' }]);
+
+  const r = newRoom();
+  const invite = makeInteraction({
+    channelId: r.channelId,
+    sub: 'invite',
+    agent: agentId,
+    slot: '0',
+  });
+  await execute(invite);
+
+  const p = roomsDb.getParticipant(r.roomKey, agentId);
+  assert.equal(p?.bot_slot, '0');
+  // The raw name "Code Reviewer!" would advertise `@Code Reviewer!` which the
+  // protocol can never parse; the fallback must yield a safe `@[A-Za-z0-9_-]+`.
+  assert.equal(p?.handle, 'CodeReviewer', 'handle is sanitized');
+  assert.match(p!.handle, /^[A-Za-z0-9_-]+$/, 'handle is an addressable token');
+
+  // And a peer can actually address it: the parser resolves the sanitized handle.
+  const { parseMentions } = require('../core/room/protocol') as typeof import('../core/room/protocol');
+  const parsed = parseMentions(`hey @${p!.handle} take a look`, [{ handle: p!.handle }]);
+  assert.deepEqual(
+    parsed.targets.map((t) => t.handle),
+    ['CodeReviewer'],
+    'the sanitized handle is addressable by peers',
+  );
+});
+
+test('invite rejects a stale binding to a now-unconfigured slot, steering to rebind (P2 #59)', async () => {
+  const agentId = newAgentId();
+  mockAgents([{ id: agentId, name: 'Ghost-agent' }]);
+
+  const r = newRoom();
+  // Simulate a binding to a slot that used to be configured but no longer is.
+  roomsDb.setAgentBinding(agentId, 'Zz-gone');
+
+  const invite = makeInteraction({ channelId: r.channelId, sub: 'invite', agent: agentId });
+  await execute(invite);
+
+  const reply = editReplyText(invite);
+  assert.match(reply, /no longer a configured room bot/i);
+  assert.match(reply, /rebind/i);
+  assert.equal(
+    roomsDb.getParticipant(r.roomKey, agentId),
+    undefined,
+    'the rejected invite wrote no participant row',
+  );
+});
+
 // --- rebind: changes the global binding everywhere --------------------------
 
 test('rebind changes the agent global binding and the per-room slot', async () => {
@@ -228,11 +299,10 @@ test('rebind changes the agent global binding and the per-room slot', async () =
   await execute(rebind);
 
   assert.equal(roomsDb.getAgentBinding(agentId), 'Bo', 'global binding rewritten');
-  assert.equal(
-    roomsDb.getParticipant(r.roomKey, agentId)?.bot_slot,
-    'Bo',
-    'per-room slot rewritten in lock-step',
-  );
+  const participant = roomsDb.getParticipant(r.roomKey, agentId);
+  assert.equal(participant?.bot_slot, 'Bo', 'per-room slot rewritten in lock-step');
+  // Handle + avatar follow the new persona too, not just the slot (P2 #59).
+  assert.equal(participant?.handle, 'Bo', 'handle updated to the new persona name');
   const reply = editReplyText(rebind);
   assert.match(reply, /Bo/);
   assert.match(reply, /every/i, 'warns the change applies everywhere');
@@ -258,10 +328,17 @@ test('kick removes the participant and frees its slot for reuse', async () => {
   assert.equal(roomsDb.getParticipant(r.roomKey, first), undefined, 'participant removed');
   assert.match(editReplyText(kick), /free/i);
 
-  // The freed slot is re-allocatable: a fresh first-bind reclaims "Ada".
+  // Kick keeps the kicked agent's GLOBAL binding (Ada stays `first`'s persona
+  // everywhere), so a different agent must NOT reclaim Ada — it gets the next
+  // truly-free slot instead. This is the global 1:1 persona rule (P2 #59).
   const reinvite = makeInteraction({ channelId: r.channelId, sub: 'invite', agent: second });
   await execute(reinvite);
-  assert.equal(roomsDb.getParticipant(r.roomKey, second)?.bot_slot, 'Ada', 'freed slot reused');
+  assert.equal(
+    roomsDb.getParticipant(r.roomKey, second)?.bot_slot,
+    'Bo',
+    'a different agent gets the next free slot, not the kicked agent’s reserved slot',
+  );
+  assert.equal(roomsDb.getAgentBinding(first), 'Ada', 'kicked agent keeps its global persona');
 });
 
 // --- status: renders participants without ever leaking a token --------------
@@ -328,6 +405,36 @@ test('reset zeroes the turn counter and clears participant sessions', async () =
     'session cleared',
   );
   assert.match(reset.reply.mock.calls[0].arguments[0].content, /reset/i);
+});
+
+test('reset reactivates a halted room (P2 #59)', async () => {
+  const r = newRoom();
+  // Simulate a room halted by a turn/budget brake.
+  roomsDb.setStatus(r.roomKey, 'halted');
+  assert.equal(roomsDb.getRoom(r.roomKey)!.status, 'halted');
+
+  const reset = makeInteraction({ channelId: r.channelId, sub: 'reset' });
+  await execute(reset);
+
+  assert.equal(roomsDb.getRoom(r.roomKey)!.status, 'active', 'reset returns the room to active');
+  assert.match(reset.reply.mock.calls[0].arguments[0].content, /reactivat/i);
+});
+
+test('reset zeroes the spend ledger so a budget-halted room is usable again (P2 #59)', async () => {
+  const r = newRoom();
+  // Simulate a room that hit its budget cap and was halted by the budget brake.
+  roomsDb.setBudget(r.roomKey, 1);
+  roomsDb.addSpend(r.roomKey, 1.5);
+  roomsDb.setStatus(r.roomKey, 'halted');
+  assert.ok(roomsDb.getRoom(r.roomKey)!.spent_usd >= roomsDb.getRoom(r.roomKey)!.budget_usd!);
+
+  const reset = makeInteraction({ channelId: r.channelId, sub: 'reset' });
+  await execute(reset);
+
+  const room = roomsDb.getRoom(r.roomKey)!;
+  assert.equal(room.status, 'active', 'room reactivated');
+  assert.equal(room.spent_usd, 0, 'spend ledger zeroed so the budget brake no longer trips');
+  assert.equal(room.budget_usd, 1, 'the budget cap itself is preserved');
 });
 
 // --- pause / resume / stop set the room status ------------------------------
