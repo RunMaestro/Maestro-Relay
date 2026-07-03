@@ -193,14 +193,27 @@ export function loadRoomBots(): RoomBotIdentity[] {
     return [];
   }
 
-  // Enforce unique slots across the whole pool (indexed vars are inherently
-  // unique, but the JSON fallback can carry duplicates).
-  const seen = new Set<string>();
+  // Enforce unique slots AND unique bot accounts across the whole pool. Indexed
+  // vars have inherently-unique slots, but the JSON fallback can carry duplicate
+  // slots, and BOTH encodings can point two slots at the same `clientId` (the
+  // Discord bot account). Two personas on one account would share a bot user id,
+  // so native `@`-pings and the self/peer filter could no longer tell them apart
+  // — reject it at load so the misconfiguration surfaces at startup, not as
+  // silent cross-persona bleed at runtime.
+  const seenSlots = new Set<string>();
+  const seenClientIds = new Set<string>();
   for (const bot of bots) {
-    if (seen.has(bot.slot)) {
+    if (seenSlots.has(bot.slot)) {
       fail(bot.slot, 'duplicate slot (each room bot must use a unique slot)');
     }
-    seen.add(bot.slot);
+    seenSlots.add(bot.slot);
+    if (seenClientIds.has(bot.clientId)) {
+      fail(
+        bot.slot,
+        `duplicate clientId "${bot.clientId}" — each room bot must be a distinct Discord account`,
+      );
+    }
+    seenClientIds.add(bot.clientId);
   }
 
   return bots;

@@ -118,6 +118,23 @@ test('duplicate slot in the JSON fallback throws naming the slot', () => {
   });
 });
 
+test('duplicate clientId (same bot account on two slots) throws naming the slot (P2 #59)', () => {
+  withEnv(() => {
+    process.env.DISCORD_ROOM_BOTS = JSON.stringify([
+      { slot: 'one', token: 'tok-1', clientId: '111111111111111111', name: 'One' },
+      { slot: 'two', token: 'tok-2', clientId: '111111111111111111', name: 'Two' },
+    ]);
+
+    assert.throws(
+      () => loadRoomBots(),
+      (err: Error) =>
+        err.message.includes('"two"') &&
+        err.message.includes('111111111111111111') &&
+        /duplicate clientId/i.test(err.message),
+    );
+  });
+});
+
 test('malformed clientId throws naming the slot', () => {
   withEnv(() => {
     process.env.DISCORD_ROOM_BOT_COUNT = '1';
