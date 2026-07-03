@@ -62,12 +62,21 @@ interface Pending {
 const DEFAULT_TIMEOUT_MS = 120_000;
 
 /**
- * Timer-backed detector: one pending expectation per channel. Arming resets the
- * timer; a follow-up message (or shutdown) clears it; the timer firing logs the
- * suspected stall and runs the optional `onStall` side-effect.
+ * Timer-backed detector: one pending expectation **per (channel, addressee)**.
+ * A single room message can `@`-mention two bots at once, and each bot's
+ * listener arms its own expectation; keying only on channel would let the
+ * second arm cancel the first, so only the last-mentioned bot was ever watched
+ * and the first bot's stall went silently unreported. Keying per addressee arms
+ * both independently.
+ *
+ * Arming re-arms only that addressee's timer; a follow-up message (or shutdown)
+ * clears the channel's expectations; a fired timer logs the suspected stall and
+ * runs the optional `onStall` side-effect.
  */
 export class TimeoutStallDetector implements RoomStallDetector {
-  private readonly pending = new Map<string, Pending>();
+  // channelId → (addressee → pending). Nested so per-addressee arming never
+  // touches a sibling addressee's timer.
+  private readonly pending = new Map<string, Map<string, Pending>>();
   private readonly timeoutMs: number;
   private readonly log: KernelLogger;
   private readonly onStall?: (info: RoomStallInfo) => void | Promise<void>;
@@ -84,9 +93,11 @@ export class TimeoutStallDetector implements RoomStallDetector {
   }
 
   expect(channelId: string, addressee: string, armMessageId: string): void {
-    this.cancel(channelId);
+    // Re-arm ONLY this addressee's expectation; leave any sibling (a co-mentioned
+    // bot armed by the same message) untouched.
+    this.remove(channelId, addressee, true);
     const timer = setTimeout(() => {
-      this.pending.delete(channelId);
+      this.remove(channelId, addressee, false);
       void this.log.warn(
         'discord/roomStall',
         `room stall suspected: no response from @${addressee} in channel ${channelId} ` +
@@ -96,28 +107,41 @@ export class TimeoutStallDetector implements RoomStallDetector {
     }, this.timeoutMs);
     // Do not keep the process alive solely for a stall timer.
     if (typeof timer.unref === 'function') timer.unref();
-    this.pending.set(channelId, { addressee, armMessageId, timer });
+    const byAddressee = this.pending.get(channelId) ?? new Map<string, Pending>();
+    byAddressee.set(addressee, { addressee, armMessageId, timer });
+    this.pending.set(channelId, byAddressee);
   }
 
   observe(channelId: string, messageId: string): void {
-    const p = this.pending.get(channelId);
-    // Ignore the very message that armed the expectation (all peer bots observe
-    // it too); only a *later* message counts as the awaited follow-up.
-    if (!p || p.armMessageId === messageId) return;
-    this.cancel(channelId);
+    const byAddressee = this.pending.get(channelId);
+    if (!byAddressee) return;
+    // A message whose id differs from the arming message proves the room is
+    // alive — clear EVERY pending expectation for this channel. The arming
+    // message itself (all peer bots observe it too) shares its id, so it never
+    // clears the very expectations it armed.
+    for (const [addressee, p] of [...byAddressee.entries()]) {
+      if (p.armMessageId === messageId) continue;
+      clearTimeout(p.timer);
+      byAddressee.delete(addressee);
+    }
+    if (byAddressee.size === 0) this.pending.delete(channelId);
   }
 
   clear(): void {
-    for (const { timer } of this.pending.values()) clearTimeout(timer);
+    for (const byAddressee of this.pending.values()) {
+      for (const { timer } of byAddressee.values()) clearTimeout(timer);
+    }
     this.pending.clear();
   }
 
-  private cancel(channelId: string): void {
-    const p = this.pending.get(channelId);
-    if (p) {
-      clearTimeout(p.timer);
-      this.pending.delete(channelId);
-    }
+  /** Drop one (channel, addressee) expectation; optionally clear its timer. */
+  private remove(channelId: string, addressee: string, clearActiveTimer: boolean): void {
+    const byAddressee = this.pending.get(channelId);
+    const p = byAddressee?.get(addressee);
+    if (!p) return;
+    if (clearActiveTimer) clearTimeout(p.timer);
+    byAddressee!.delete(addressee);
+    if (byAddressee!.size === 0) this.pending.delete(channelId);
   }
 }
 
