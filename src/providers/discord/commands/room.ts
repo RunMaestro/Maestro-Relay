@@ -35,6 +35,7 @@ import { maestro } from '../../../core/maestro';
 import type { MaestroAgent } from '../../../core/maestro';
 import { roomsDb, SlotConflictError } from '../../../core/room/roomsDb';
 import type { RoomStatus } from '../../../core/room/roomsDb';
+import { sanitizeHandle } from '../../../core/room/protocol';
 import {
   loadRoomBots,
   NO_FREE_ROOM_BOT_SLOT_ERROR,
@@ -286,7 +287,11 @@ async function handleInvite(interaction: ChatInputCommandInteraction): Promise<v
 
   const identity = identityForSlot(slot);
   // The persona name IS the room handle (one bot = one persona = one handle).
-  const handle = identity?.name ?? agent.name;
+  // Slot 0 (primary bot) has no pool persona → fall back to the agent's name,
+  // but sanitize it first: the room protocol only parses `@[A-Za-z0-9_-]+`, so a
+  // raw name like "Code Reviewer" would be advertised as `@Code Reviewer` and be
+  // unaddressable. `sanitizeHandle` yields the same handle shape pool names use.
+  const handle = identity?.name ?? sanitizeHandle(agent.name);
 
   try {
     roomsDb.addParticipant({
@@ -329,9 +334,11 @@ async function handleRebind(interaction: ChatInputCommandInteraction): Promise<v
     );
     return;
   }
-  // Slot 0 (primary bot) has no pool persona config → fall back to the agent's name.
+  // Slot 0 (primary bot) has no pool persona config → fall back to the agent's
+  // name, sanitized to the addressable `@[A-Za-z0-9_-]+` handle shape (matching
+  // how pool handles are formed) so peers can actually mention it.
   const identity = identityForSlot(slot);
-  const handle = identity?.name ?? agent.name;
+  const handle = identity?.name ?? sanitizeHandle(agent.name);
   const avatarUrl = identity?.avatarUrl ?? null;
 
   try {

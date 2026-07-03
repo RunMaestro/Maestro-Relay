@@ -229,6 +229,36 @@ test('invite accepts the primary bot as slot 0, handle falls back to agent name 
   assert.match(editReplyText(invite), /slot `0`/);
 });
 
+test('slot-0 invite sanitizes an agent name with spaces/punctuation into an addressable handle (P2 #59)', async () => {
+  const agentId = newAgentId();
+  mockAgents([{ id: agentId, name: 'Code Reviewer!' }]);
+
+  const r = newRoom();
+  const invite = makeInteraction({
+    channelId: r.channelId,
+    sub: 'invite',
+    agent: agentId,
+    slot: '0',
+  });
+  await execute(invite);
+
+  const p = roomsDb.getParticipant(r.roomKey, agentId);
+  assert.equal(p?.bot_slot, '0');
+  // The raw name "Code Reviewer!" would advertise `@Code Reviewer!` which the
+  // protocol can never parse; the fallback must yield a safe `@[A-Za-z0-9_-]+`.
+  assert.equal(p?.handle, 'CodeReviewer', 'handle is sanitized');
+  assert.match(p!.handle, /^[A-Za-z0-9_-]+$/, 'handle is an addressable token');
+
+  // And a peer can actually address it: the parser resolves the sanitized handle.
+  const { parseMentions } = require('../core/room/protocol') as typeof import('../core/room/protocol');
+  const parsed = parseMentions(`hey @${p!.handle} take a look`, [{ handle: p!.handle }]);
+  assert.deepEqual(
+    parsed.targets.map((t) => t.handle),
+    ['CodeReviewer'],
+    'the sanitized handle is addressable by peers',
+  );
+});
+
 test('invite rejects a stale binding to a now-unconfigured slot, steering to rebind (P2 #59)', async () => {
   const agentId = newAgentId();
   mockAgents([{ id: agentId, name: 'Ghost-agent' }]);
