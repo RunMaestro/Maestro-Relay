@@ -60,6 +60,15 @@ export class DiscordProvider implements BridgeProvider {
   private client: Client | null = null;
   private roomGateways: RoomGatewayManager | null = null;
   private roomStall: TimeoutStallDetector | null = null;
+  /**
+   * The room-aware `messageCreate` listener, retained so it can be re-bound at
+   * runtime. Slot 0 (the primary bot) only receives it once it becomes a room
+   * participant — `/room invite` can make that true after `start()` has already
+   * run, so a re-bind after each `/room` command picks up the newly-participating
+   * slot 0. `bindRoomListeners` is idempotent, so re-binding is safe.
+   */
+  private handleRoomMessage: ((message: import('discord.js').Message) => void | Promise<void>) | null =
+    null;
   private pendingChannels = new Map<string, Promise<AgentChannelInfo>>();
   private pendingCategory: Promise<CategoryChannel> | null = null;
 
@@ -127,6 +136,13 @@ export class DiscordProvider implements BridgeProvider {
         } else {
           await interaction.reply(msg);
         }
+      } finally {
+        // A `/room` command (e.g. `invite`) may have just made slot 0 a room
+        // participant. Re-bind so the primary client starts routing room chat;
+        // `bindRoomListeners` is idempotent, so this is a no-op otherwise.
+        if (interaction.commandName === 'room' && this.roomGateways && this.handleRoomMessage) {
+          this.roomGateways.bindRoomListeners(this.handleRoomMessage);
+        }
       }
     });
 
@@ -187,6 +203,7 @@ export class DiscordProvider implements BridgeProvider {
           stall: roomStall,
           logger: ctx.logger,
         });
+        this.handleRoomMessage = handleRoomMessage;
         roomGateways.bindRoomListeners(handleRoomMessage);
       }
     } catch (err) {
@@ -203,6 +220,7 @@ export class DiscordProvider implements BridgeProvider {
       await this.roomGateways.stop();
       this.roomGateways = null;
     }
+    this.handleRoomMessage = null;
     if (this.client) {
       this.client.destroy();
       this.client = null;
