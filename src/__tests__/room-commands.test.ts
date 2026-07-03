@@ -258,10 +258,17 @@ test('kick removes the participant and frees its slot for reuse', async () => {
   assert.equal(roomsDb.getParticipant(r.roomKey, first), undefined, 'participant removed');
   assert.match(editReplyText(kick), /free/i);
 
-  // The freed slot is re-allocatable: a fresh first-bind reclaims "Ada".
+  // Kick keeps the kicked agent's GLOBAL binding (Ada stays `first`'s persona
+  // everywhere), so a different agent must NOT reclaim Ada — it gets the next
+  // truly-free slot instead. This is the global 1:1 persona rule (P2 #59).
   const reinvite = makeInteraction({ channelId: r.channelId, sub: 'invite', agent: second });
   await execute(reinvite);
-  assert.equal(roomsDb.getParticipant(r.roomKey, second)?.bot_slot, 'Ada', 'freed slot reused');
+  assert.equal(
+    roomsDb.getParticipant(r.roomKey, second)?.bot_slot,
+    'Bo',
+    'a different agent gets the next free slot, not the kicked agent’s reserved slot',
+  );
+  assert.equal(roomsDb.getAgentBinding(first), 'Ada', 'kicked agent keeps its global persona');
 });
 
 // --- status: renders participants without ever leaking a token --------------

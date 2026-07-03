@@ -213,3 +213,32 @@ test('setAgentBinding upserts and getAgentBinding reflects a deliberate rebind',
   roomsDb.setAgentBinding(a, 'Cy'); // deliberate rebind
   assert.equal(roomsDb.getAgentBinding(a), 'Cy');
 });
+
+test('a global bot slot cannot be bound to two different agents (P2 #59)', () => {
+  const a = agent();
+  const b = agent();
+  roomsDb.setAgentBinding(a, 'Ada');
+
+  assert.throws(
+    () => roomsDb.setAgentBinding(b, 'Ada'),
+    (err: unknown) => {
+      assert.ok(err instanceof SlotConflictError, 'expected SlotConflictError');
+      assert.match((err as Error).message, /already globally bound/i);
+      return true;
+    },
+  );
+  assert.equal(roomsDb.getAgentBinding(b), null, 'the rejected binding wrote nothing');
+  assert.equal(roomsDb.getAgentBinding(a), 'Ada', 'the existing owner is untouched');
+});
+
+test('allocateFreeSlot skips a slot globally bound to an agent not in this room (P2 #59)', () => {
+  const a = agent();
+  const roomA = room();
+  const roomB = room();
+  // `a` claims "Ada" globally via room A.
+  roomsDb.addParticipant({ roomKey: roomA.roomKey, agentId: a, handle: 'Ada', botSlot: 'Ada' });
+
+  // Room B is empty, but "Ada" is globally reserved for `a`, so allocation for a
+  // fresh agent there must skip it and hand out "Bo".
+  assert.equal(roomsDb.allocateFreeSlot(roomB.roomKey, ['Ada', 'Bo', 'Cy']), 'Bo');
+});

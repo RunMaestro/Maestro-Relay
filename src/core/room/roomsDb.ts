@@ -313,8 +313,25 @@ export const roomsDb = {
     return row?.bot_slot ?? null;
   },
 
-  /** Upsert the global agent→bot binding (used on first invite and by rebind). */
+  /**
+   * Upsert the global agent→bot binding (used on first invite and by rebind).
+   * Enforces the global 1:1 persona rule: a bot slot renders exactly one agent
+   * *everywhere*, so binding a slot already held by a DIFFERENT agent is rejected
+   * with `SlotConflictError`. The same agent re-binding its own slot is a no-op
+   * upsert and always allowed. Without this guard two agents could both bind the
+   * same slot (e.g. after one is kicked from a room but keeps its global binding),
+   * collapsing two personas onto one bot account.
+   */
   setAgentBinding(agentId: string, slot: string): void {
+    const holder = db
+      .prepare('SELECT agent_id FROM agent_bot_bindings WHERE bot_slot = ? AND agent_id != ?')
+      .get(slot, agentId) as { agent_id: string } | undefined;
+    if (holder !== undefined) {
+      throw new SlotConflictError(
+        `Bot slot "${slot}" is already globally bound to agent ${holder.agent_id}; ` +
+          `a slot renders exactly one agent everywhere. Kick or rebind that agent first.`,
+      );
+    }
     db.prepare(
       `INSERT INTO agent_bot_bindings (agent_id, bot_slot) VALUES (?, ?)
        ON CONFLICT(agent_id) DO UPDATE SET bot_slot = excluded.bot_slot`,
@@ -368,7 +385,18 @@ export const roomsDb = {
           .all(roomKey) as Array<{ bot_slot: string }>
       ).map((r) => r.bot_slot),
     );
-    return configuredSlots.find((slot) => !used.has(slot)) ?? null;
+    // Also skip any slot already claimed by a GLOBAL binding (to any agent): a
+    // slot renders exactly one agent everywhere, so a slot owned by another
+    // agent — even one not present in this room, e.g. after a kick that keeps the
+    // binding — must not be auto-allocated to a new agent. `setAgentBinding` would
+    // reject it anyway; excluding it here means auto-invite gracefully picks the
+    // next truly-free slot instead of erroring.
+    const boundGlobally = new Set(
+      (db.prepare('SELECT bot_slot FROM agent_bot_bindings').all() as Array<{ bot_slot: string }>).map(
+        (r) => r.bot_slot,
+      ),
+    );
+    return configuredSlots.find((slot) => !used.has(slot) && !boundGlobally.has(slot)) ?? null;
   },
 
   // ---- gateway bot registry (slot → resolved bot user id) -------------------
