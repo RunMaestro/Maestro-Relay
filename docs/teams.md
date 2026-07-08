@@ -164,6 +164,7 @@ A message that is not a recognized command flows through to the bound agent. If 
 - **Proactive `/api/send` requires a prior chat** — the HTTP API's `POST /api/send` and the `maestro-relay` CLI can only push to a Teams chat **after** that chat has been bound and a reference captured. Sending to a chat the bot has never seen fails with "No conversation reference found". If you need proactive delivery, **message the bot first**.
 - **No reactions** — Teams bots cannot add emoji reactions, so the `⏳` queued indicator used by Discord/Slack is **absent**. Instead the adapter sends a **typing indicator** while a turn is in flight (best-effort; a failure never breaks the turn).
 - **Markdown tables** in agent replies are rendered as aligned, fenced ASCII tables (Teams' markdown has no native table syntax). See [architecture.md → Output rendering](architecture.md#output-rendering).
+- **Callouts render as plain blockquotes** — GitHub alert callouts (`> [!NOTE]` etc.) that Discord and Slack render as colored embeds/attachments degrade on Teams to their reconstructed `> [!TYPE]` blockquote via the message's text fallback. A richer Adaptive Card rendering is a future enhancement.
 - **Usage stats** (tokens, cost, context %) are appended below each agent reply.
 - **Message splitting** — long replies are split by the kernel to fit Teams' per-message size limit before they are sent.
 - **Mentions** — when an API caller passes `mention=true` and `TEAMS_MENTION_USER_ID` is set, the reply is prefixed with an `<at>…</at>` tag.

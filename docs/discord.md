@@ -87,6 +87,22 @@ npm run deploy-commands
 - **Usage stats** are appended below each agent reply (tokens, cost, context %).
 - **Markdown tables** in agent replies are rendered as aligned, fenced ASCII tables so they display correctly (Discord has no native table syntax). See [architecture.md → Output rendering](architecture.md#output-rendering).
 
+## Callout embeds
+
+Outbound text (agent replies and `/api/send` pushes) is scanned for **GitHub alert callouts** — a blockquote whose first line is `> [!NOTE]` (or `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`). The marker must be **uppercase** and **alone on its line** (GitHub-exact syntax); a plain `> quote` stays a normal grey Discord blockquote. Each detected callout is rendered as a **colored Discord embed emitted as its own message**, in order with the surrounding prose, so it visually stands apart from ordinary text.
+
+The five variants map to a matching emoji and accent color (the embed's left stripe):
+
+| Callout          | Emoji | Color     |
+| ---------------- | ----- | --------- |
+| `> [!NOTE]`      | ℹ️    | `#1f6feb` |
+| `> [!TIP]`       | 💡    | `#238636` |
+| `> [!IMPORTANT]` | ❗    | `#8957e5` |
+| `> [!WARNING]`   | ⚠️    | `#d29922` |
+| `> [!CAUTION]`   | 🛑    | `#da3633` |
+
+The callout body becomes the embed **description** and the emoji + label (e.g. `ℹ️ Note`) becomes the **title**. Discord's embed limits apply: descriptions are clamped to 4096 characters and titles to 256 — a longer body is truncated with a trailing ellipsis. Markdown tables inside a callout body are rendered the same way as elsewhere (fenced ASCII). Because each callout is its own message, a **callout-heavy response fans out into multiple messages**.
+
 ## Multi-agent rooms — real bot accounts
 
 A **room** hosts several agents in a single Discord channel, each speaking as a genuine, separate
