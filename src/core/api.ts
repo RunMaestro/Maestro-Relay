@@ -4,6 +4,9 @@ import { config } from './config';
 import { logger } from './logger';
 import { splitMessage as defaultSplit } from './splitMessage';
 import { AgentNotFoundError, RateLimitError } from './errors';
+import { toOutgoing } from './callouts';
+import { renderTables } from './renderTables';
+import { sendWithRetry } from './sendRetry';
 
 export interface SendRequest {
   agentId: string;
@@ -130,49 +133,35 @@ export function createServerHandler(deps: ApiDeps) {
     }
 
     const target = { provider: providerName, channelId: info.channelId };
-    const parts = split(body.message);
+    // Table-render + length-split text and surface GitHub-style callouts as their
+    // own messages. `toOutgoing` applies `mention` to only the first message, so
+    // the old per-part `i === 0` mention logic is no longer needed. Applying
+    // `renderTables` to pushed text is an intentional behavior change (decision #6).
+    const messages = toOutgoing(body.message, { split, renderTables, mention: !!body.mention });
 
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      let lastError: Error | undefined;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          // Mention only on the first part; provider decides how to render.
-          await provider.send(target, { text: part, mention: i === 0 && !!body.mention });
-          lastError = undefined;
-          break;
-        } catch (err) {
-          lastError = err as Error;
-          if (err instanceof RateLimitError) {
-            // Clamp the in-request backoff: never spin with a zero delay, and
-            // never tie up the HTTP connection for more than a few seconds.
-            // Larger backoffs are surfaced to the caller via Retry-After below.
-            const waitMs = Math.min(Math.max(err.retryAfterMs, 100), 5000);
-            await new Promise((r) => setTimeout(r, waitMs));
-          } else {
-            break;
-          }
-        }
+    try {
+      for (const m of messages) {
+        await sendWithRetry((x) => provider.send(target, x), m);
       }
-      if (lastError) {
-        if (lastError instanceof RateLimitError) {
-          await log.error('api', 'Rate limited by provider after 3 retries');
-          // Round up to whole seconds; clamp to a minimum of 1 so we never
-          // advertise a zero-second backoff that the kernel already waited
-          // through and still hit the limit.
-          const retryAfterSec = Math.max(1, Math.ceil(lastError.retryAfterMs / 1000));
-          sendJson(
-            res,
-            429,
-            { success: false, error: 'Rate limited, retry later' },
-            { 'Retry-After': retryAfterSec },
-          );
-        } else {
-          await log.error('api', lastError.message);
-          sendJson(res, 500, { success: false, error: lastError.message });
-        }
-        return;
+    } catch (err) {
+      if (err instanceof RateLimitError) {
+        await log.error('api', 'Rate limited by provider after 3 retries');
+        // Round up to whole seconds; clamp to a minimum of 1 so we never
+        // advertise a zero-second backoff that the kernel already waited
+        // through and still hit the limit.
+        const retryAfterSec = Math.max(1, Math.ceil(err.retryAfterMs / 1000));
+        sendJson(
+          res,
+          429,
+          { success: false, error: 'Rate limited, retry later' },
+          { 'Retry-After': retryAfterSec },
+        );
+      } else {
+        const msg = (err as Error).message;
+        await log.error('api', msg);
+        sendJson(res, 500, { success: false, error: msg });
       }
+      return;
     }
 
     sendJson(res, 200, { success: true, channelId: info.channelId });

@@ -8,6 +8,8 @@ import type {
 } from './types';
 import { splitMessage as defaultSplitMessage } from './splitMessage';
 import { renderTables } from './renderTables';
+import { toOutgoing } from './callouts';
+import { sendWithRetry } from './sendRetry';
 import { downloadAttachments as defaultDownload, formatAttachmentRefs } from './attachments';
 
 interface QueueEntry {
@@ -192,9 +194,8 @@ export function createQueue(deps: QueueDeps) {
             `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${result.error}`,
           );
         }
-        const parts = split(renderTables(result.response));
-        for (const part of parts) {
-          await provider.send(target, { text: part });
+        for (const m of toOutgoing(result.response, { split, renderTables, mention: false })) {
+          await sendWithRetry((x) => provider.send(target, x), m);
         }
       } else {
         const hint = conv.readOnly
