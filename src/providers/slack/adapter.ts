@@ -13,6 +13,7 @@ import type {
 } from '../../core/types';
 import { maestro } from '../../core/maestro';
 import { logger } from '../../core/logger';
+import { CALLOUT_META } from '../../core/callouts';
 import { AgentNotFoundError, RateLimitError } from '../../core/errors';
 import { slackConfig } from './config';
 import { channelDb } from './channelsDb';
@@ -317,12 +318,35 @@ export class SlackProvider implements BridgeProvider {
   async send(target: ChannelTarget, msg: OutgoingMessage): Promise<void> {
     if (!this.client) throw new Error('Slack client not initialised');
 
-    let text = msg.text;
-    if (msg.mention && slackConfig.mentionUserId) {
-      text = `<@${slackConfig.mentionUserId}> ${text}`;
+    const mentionText =
+      msg.mention && slackConfig.mentionUserId ? `<@${slackConfig.mentionUserId}>` : '';
+
+    // Build the payload that differs between callout and plain posts. A callout
+    // becomes a single colored attachment (mrkdwn `text`, so a fenced table in
+    // the body renders as code) with the mention riding in the top-level `text`
+    // so the ping still fires; a plain message keeps today's `text` posting.
+    let payload: { text: string; attachments?: unknown[] };
+    if (msg.callout) {
+      const meta = CALLOUT_META[msg.callout.variant];
+      payload = {
+        text: mentionText,
+        attachments: [
+          {
+            color: meta.hex,
+            title: msg.callout.title ?? `${meta.emoji} ${meta.label}`,
+            text: msg.callout.body,
+          },
+        ],
+      };
+    } else {
+      payload = {
+        text: mentionText ? `${mentionText} ${msg.text}` : msg.text,
+      };
     }
 
     try {
+      // Resolve channel vs thread once; both branches share it and differ only
+      // in the postMessage payload.
       if (isThreadTs(target.channelId)) {
         // target is a thread_ts — look up parent channel
         const convo = conversationDb.get(target.channelId);
@@ -337,10 +361,10 @@ export class SlackProvider implements BridgeProvider {
         await this.client.chat.postMessage({
           channel: convo.channel_id,
           thread_ts: target.channelId,
-          text,
+          ...payload,
         });
       } else {
-        await this.client.chat.postMessage({ channel: target.channelId, text });
+        await this.client.chat.postMessage({ channel: target.channelId, ...payload });
       }
     } catch (err) {
       const rl = toRateLimitError(err);
