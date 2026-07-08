@@ -4,6 +4,7 @@ import {
   ChannelType,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
   GatewayIntentBits,
   Interaction,
   SendableChannels,
@@ -25,6 +26,8 @@ import { maestro } from '../../core/maestro';
 import { logger } from '../../core/logger';
 import { checkTranscriptionDependencies } from '../../core/transcription';
 import { AgentNotFoundError, RateLimitError } from '../../core/errors';
+import { CALLOUT_META } from '../../core/callouts';
+import { clampTitle, clampDescription } from './embed';
 import { discordConfig } from './config';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
@@ -276,6 +279,34 @@ export class DiscordProvider implements BridgeProvider {
 
   async send(target: ChannelTarget, msg: OutgoingMessage): Promise<void> {
     const channel = await this.fetchSendable(target.channelId);
+
+    // Callout messages render as a colored embed; the human mention (when any)
+    // rides in `content` so the ping fires alongside the embed. Plain messages
+    // keep the original mention-prefixed string behavior below.
+    if (msg.callout) {
+      const meta = CALLOUT_META[msg.callout.variant];
+      const embed = new EmbedBuilder()
+        .setTitle(clampTitle(msg.callout.title ?? `${meta.emoji} ${meta.label}`))
+        .setColor(parseInt(meta.hex.slice(1), 16));
+      // Discord requires a title OR description; only set description when the
+      // body is non-empty, leaving a valid title-only embed otherwise.
+      if (msg.callout.body.length > 0) {
+        embed.setDescription(clampDescription(msg.callout.body));
+      }
+      const content =
+        msg.mention && discordConfig.mentionUserId
+          ? `<@${discordConfig.mentionUserId}>`
+          : undefined;
+      try {
+        await channel.send({ content, embeds: [embed] });
+      } catch (err) {
+        const rl = toRateLimitError(err);
+        if (rl) throw rl;
+        throw err;
+      }
+      return;
+    }
+
     let text = msg.text;
     if (msg.mention && discordConfig.mentionUserId) {
       text = `<@${discordConfig.mentionUserId}> ${text}`;
@@ -360,6 +391,10 @@ export class DiscordProvider implements BridgeProvider {
     maskName?: string,
   ): Promise<void> {
     const channel = await this.fetchSendableFrom(client, target.threadId ?? target.channelId);
+    // NOTE: room `sendAs` callout rendering (colored embeds per persona) is a
+    // follow-up — rooms are out of scope for v1, so this path posts `msg.text`
+    // only and ignores `msg.callout`. `send()` posts directly (it does not share
+    // this helper), so its callout-embed construction is not factored here.
     let text = msg.text;
     if (maskName) {
       text = `**${maskName}:** ${text}`;
