@@ -335,6 +335,7 @@ export class SlackProvider implements BridgeProvider {
             color: meta.hex,
             title: msg.callout.title ?? `${meta.emoji} ${meta.label}`,
             text: msg.callout.body,
+            mrkdwn_in: ['text'],
           },
         ],
       };

@@ -40,9 +40,11 @@ function makeProvider(client: unknown): SlackProvider {
 const CHANNEL_TARGET: ChannelTarget = { provider: 'slack', channelId: 'C-test' };
 
 /** Narrow a recorded call's `attachments` to the shape we assert against. */
-function attachmentsOf(arg: Record<string, unknown>): { color: string; title: string; text: string }[] {
+function attachmentsOf(
+  arg: Record<string, unknown>,
+): { color: string; title: string; text: string; mrkdwn_in?: string[] }[] {
   assert.ok(Array.isArray(arg.attachments), 'callout post includes an attachments array');
-  return arg.attachments as { color: string; title: string; text: string }[];
+  return arg.attachments as { color: string; title: string; text: string; mrkdwn_in?: string[] }[];
 }
 
 test('a callout ⇒ one postMessage with a single colored attachment', async () => {
@@ -63,6 +65,10 @@ test('a callout ⇒ one postMessage with a single colored attachment', async () 
   assert.equal(attachments[0].color, '#1f6feb', 'NOTE hex anchor');
   assert.equal(attachments[0].title, `${meta.emoji} ${meta.label}`);
   assert.equal(attachments[0].text, 'hello world');
+  assert.ok(
+    Array.isArray(attachments[0].mrkdwn_in) && attachments[0].mrkdwn_in.includes('text'),
+    'attachment sets mrkdwn_in including "text" so body markdown renders',
+  );
   assert.equal(calls[0].channel, 'C-test', 'posts to the plain channel target');
 });
 
