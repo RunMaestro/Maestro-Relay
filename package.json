@@ -11,6 +11,7 @@
     "build": "rm -rf dist && tsc",
     "start": "node dist/index.js",
     "deploy-commands": "node dist/scripts/deploy-commands.js",
+    "build:plugin": "tsx src/scripts/build-plugin.ts",
     "deploy-teams": "tsx src/providers/teams/deploy.ts",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
     "maestro-relay": "tsx src/cli/maestro-relay.ts"
@@ -32,6 +33,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "@types/restify": "^8.5.12",
+    "esbuild": "^0.18.20",
     "eslint": "^10.2.0",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.8.2",

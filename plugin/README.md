@@ -14,9 +14,15 @@ Maestro source at `HOST_API 1.12.0`.
 | File | Status | Purpose |
 | --- | --- | --- |
 | `plugin.json` | ✅ present, validated | Manifest (tier 2, host API 1.12.0). Passes Maestro's own `validatePluginManifest` + `collectContributions`. |
-| `entry.js` | ⏳ pending | Sandbox-safe CommonJS bundle (esbuild of `src/plugin/`). The gateway clients + router. |
+| `entry.js` | ✅ built, sandbox-verified | Sandbox-safe CommonJS bundle (esbuild of `src/plugin/`). v1 ships the lifecycle, config, storage-backed channel↔agent registry, and the dispatch→reply router. The Discord/Slack gateway clients that feed the router are the next build step. Rebuild with `npm run build:plugin`. |
 | `panel.html` | ⏳ pending | Configuration UI (enter tokens, toggle providers, bind channels to agents). |
 | `signature.json` | ⏳ per-operator | ed25519 signature over the packaged folder. Required — see below. |
+
+## Building
+
+- `npm run build:plugin` bundles `src/plugin/entry.ts` into `plugin/entry.js` (esbuild, CommonJS). The build fails if the output contains anything the sandbox forbids — `require`, `process`, `Buffer`, dynamic `import()`, or Node builtins — so a regression can never ship a bundle that crashes on load.
+- Plugin sources live in `src/plugin/` (TypeScript): `sdk.ts` (typed brokered-SDK surface), `reply.ts` (the dispatch→transcript-poll reply loop), `registry.ts` (storage-backed bindings + settings config), `entry.ts` (lifecycle, commands, and the message router).
+- Tests: `npm test` (see `src/__tests__/plugin-*.test.ts`) covers the reply loop, the registry, the router, and a bare-`vm` sandbox load of the built `entry.js`.
 
 ## Prerequisites to run (not optional)
 

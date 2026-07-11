@@ -154,26 +154,31 @@ Relay's whole point is streaming the agent's reply back into the chat channel. T
 way to obtain reply text is **`transcripts:read`** — projected session content
 (`fullResponse`, `summary`, `timestamp`, `type`, …). Mechanism:
 
-1. On an inbound chat message, `agents.dispatch(agentId, prompt)`.
-2. Subscribe to `agent.statusChanged`; when the target session goes idle/awaiting, or on a short
-   poll interval, call `transcripts.read({ sessionId, fields: ['fullResponse','timestamp','type'] })`.
-3. Diff against the last-seen timestamp for that session; post new agent output to the channel via
-   `net.fetch`.
+1. On an inbound chat message, `agents.dispatch(agentId, prompt)` → `{ dispatched, sessionId }`
+   (source: `dispatchPromptToSession`, `src/main/index.ts`).
+2. Poll `transcripts.read({ sessionId, fields: ['id','type','timestamp','fullResponse','summary'], since })`
+   and finish on the `agent.completed` event for that `sessionId` (metadata-only, keyed on the same
+   id dispatch returns), an idle-grace fallback, or a hard timeout.
+3. `transcripts.read` filters with `timestamp >= since` (**inclusive**), so the boundary row re-appears
+   every poll; dedupe by entry `id` and post only new `fullResponse` text to the channel via `net.fetch`.
 
 Constraint chain that makes this legal: `transcripts:read` is **refused for an untrusted plugin
 that also holds `net:fetch`/`net:connect`** (the exfiltration combo). Since `net:connect` is
 already **trusted-only**, the plugin must be signed with a key in **Maestro's trusted set** anyway
 — which simultaneously unlocks `transcripts:read`. See §7.
 
-> [!WARNING]
-> **OPEN RISK — not yet validated.** This reply path is a *proposed* design, not a proven flow.
-> Unverified: (a) whether `transcripts.read`'s **project-path grant** can be satisfied for a
-> session the plugin did not create (the handler re-checks the session's real `projectPath`);
-> (b) reliable **completion detection** (when is the agent "done" so we don't post partial or
-> duplicate output?) given metadata-only events; (c) whether polling latency/rate limits are
-> acceptable. **Phase 2 must begin with a throwaway spike** proving dispatch→reply end-to-end
-> before the providers are built on top of it. If it fails, the fallback is a Maestro host change
-> (a reply event or a dispatch-with-result RPC) — tracked as the top project risk.
+> [!NOTE]
+> **Contract source-verified; live end-to-end still pending.** The reply-path *contract* is now
+> pinned to the 1.12.0 source, implemented in `src/plugin/reply.ts`, and unit-tested against a
+> faithful fake SDK (dispatch shape, inclusive-`since` dedupe by `id`, and `agent.completed` /
+> idle-grace / timeout completion). Grounded facts: `agents.dispatch` returns `{ dispatched, sessionId }`;
+> `transcripts.read` projects `TRANSCRIPT_PROJECTABLE_FIELDS` filtered by `timestamp >= since`;
+> `agent.completed` carries `sessionId` + `status` (no reply text).
+> Still unproven on a **live** install (needs the signed/trusted plugin running against a real agent
+> session): (a) whether `transcripts.read`'s **project-path grant** is satisfiable for a session the
+> plugin did not create (the handler re-checks the session's real `projectPath`); (b) real-world
+> completion timing/latency. This remains the top project risk; if the project-path grant fails, the
+> fallback is a Maestro host change (a reply event or a dispatch-with-result RPC).
 
 ## 6. What is impossible in v1 (and why)
 
@@ -230,8 +235,12 @@ inbound webhook the sandbox cannot host)**.
 ## 11. Iteration roadmap
 
 1. ✅ Ground-truth the plugin system; decide the architecture (this doc); scaffold manifest.
-2. Build system: `src/plugin/` + esbuild bundling to a sandbox-safe `entry.js`; SDK type wiring.
-3. State + config: `storage` KV registry (channel↔agent, thread map); the config panel.
+2. ✅ Build system: `src/plugin/` + esbuild → sandbox-verified `entry.js`; typed SDK surface
+   (`sdk.ts`); dispatch→reply loop (`reply.ts`); storage-backed channel↔agent registry + config
+   (`registry.ts`); lifecycle, commands, and message router (`entry.ts`). Unit + bare-`vm`
+   sandbox-load tests (`src/__tests__/plugin-*.test.ts`).
+3. Config panel (`panel.html`): enter tokens, toggle providers, bind channels to agents. (The
+   `storage` KV registry + config reader landed in step 2.)
 4. Discord: plain-JS Gateway client over `net.connect` (identify, heartbeat, `MESSAGE_CREATE`) +
    REST over `net.fetch`; dispatch + reply loop.
 5. Slack: `apps.connections.open` → Socket Mode over `net.connect`; Web API over `net.fetch`.
