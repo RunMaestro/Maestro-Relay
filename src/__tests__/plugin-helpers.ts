@@ -65,7 +65,13 @@ export interface FakeSdkCalls {
   subscriptions: string[][];
   eventHandlers: Map<string, Array<(payload: unknown) => void>>;
   storage: Map<string, string>;
+  connects: Array<{ url: string; opts: unknown; socketId: string }>;
+  sends: Array<{ socketId: string; data: string }>;
+  closes: Array<{ socketId: string; opts: unknown }>;
+  fetches: Array<{ url: string; init: unknown }>;
   emit(topic: string, payload: unknown): void;
+  /** Push a `net.connect:<socketId>` socket event to its registered handlers. */
+  emitSocket(socketId: string, event: Record<string, unknown>): void;
 }
 
 export interface FakeSdkOptions {
@@ -102,10 +108,21 @@ export function createFakeSdk(options: FakeSdkOptions = {}): {
     subscriptions: [],
     eventHandlers,
     storage,
+    connects: [],
+    sends: [],
+    closes: [],
+    fetches: [],
     emit(topic, payload): void {
       for (const handler of eventHandlers.get(topic) ?? []) handler(payload);
     },
+    emitSocket(socketId, event): void {
+      const topic = `net.connect:${socketId}`;
+      const payload = { socketId, ...event };
+      for (const handler of eventHandlers.get(topic) ?? []) handler(payload);
+    },
   };
+
+  let socketCounter = 0;
 
   let readIndex = 0;
 
@@ -133,10 +150,24 @@ export function createFakeSdk(options: FakeSdkOptions = {}): {
       },
     },
     net: {
-      fetch: notImplemented('net.fetch'),
-      connect: notImplemented('net.connect'),
-      send: notImplemented('net.send'),
-      close: notImplemented('net.close'),
+      fetch: async (url, init) => {
+        calls.fetches.push({ url, init });
+        return { ok: true, status: 200 };
+      },
+      connect: async (url, opts) => {
+        socketCounter += 1;
+        const socketId = `sock-${socketCounter}`;
+        calls.connects.push({ url, opts, socketId });
+        return { socketId };
+      },
+      send: async (socketId, data) => {
+        calls.sends.push({ socketId, data });
+        return { ok: true };
+      },
+      close: async (socketId, opts) => {
+        calls.closes.push({ socketId, opts });
+        return { ok: true };
+      },
     },
     storage: {
       get: async (key) => (storage.has(key) ? storage.get(key)! : null),

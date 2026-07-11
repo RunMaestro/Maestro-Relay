@@ -241,8 +241,12 @@ inbound webhook the sandbox cannot host)**.
    sandbox-load tests (`src/__tests__/plugin-*.test.ts`).
 3. Config panel (`panel.html`): enter tokens, toggle providers, bind channels to agents. (The
    `storage` KV registry + config reader landed in step 2.)
-4. Discord: plain-JS Gateway client over `net.connect` (identify, heartbeat, `MESSAGE_CREATE`) +
-   REST over `net.fetch`; dispatch + reply loop.
+4. ✅ Discord: plain-JS Gateway client (`src/plugin/providers/discord.ts`) over `net.connect`
+   — HELLO→IDENTIFY/RESUME, recursive-`setTimeout` heartbeat with zombie detection,
+   `MESSAGE_CREATE` normalization (bot/self skip, guild + allowed-user filters) → `routeInbound`,
+   and a `net.fetch` REST reply sink that reuses `splitMessage` for the 2000-char cap. Registered
+   in `activate()` behind an enabled-provider + KV-token gate; a `ProviderClient` registry makes
+   `status()` report real connection state. 8 unit tests drive the protocol over a fake socket.
 5. Slack: `apps.connections.open` → Socket Mode over `net.connect`; Web API over `net.fetch`.
 6. Resilience (`background:service`), status (`events`, `notifications`), rooms (masked mode).
 7. Sign, validate, pack; end-to-end install + configure + run in Maestro.

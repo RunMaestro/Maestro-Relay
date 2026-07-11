@@ -6,12 +6,12 @@
  * contributed commands, config/state wiring, and the message router that turns
  * an inbound chat message into a dispatched agent turn and a reply.
  *
- * v1 scope: lifecycle + config + binding registry + the dispatch/reply router
- * are implemented and tested here. The Discord Gateway and Slack Socket-Mode
- * clients that FEED `routeInbound` (and consume its reply via a {@link ReplySink})
- * are the next build steps — they open `net.connect` sockets and normalize
- * platform events into {@link InboundMessage}. Until they land, `status()`
- * reports zero connected providers rather than pretending a bridge is live.
+ * v1 scope: lifecycle + config + binding registry + the dispatch/reply router,
+ * plus the Discord Gateway client that FEEDS `routeInbound` (and posts the reply
+ * back via a {@link ReplySink} over Discord REST). A provider registry lets each
+ * gateway client report its own connection state, so `status()` reflects which
+ * bridges are actually live. The Slack Socket-Mode client is the next build step;
+ * until it lands, only Discord can register itself and connect.
  *
  * Sandbox-safe: imports only sibling plugin modules; no Node builtins, no
  * `require`, and only `setTimeout`/`clearTimeout`/`Promise`/`console` globals.
@@ -21,7 +21,8 @@ import type { MaestroSdk } from './sdk';
 import type { ReplyHandle, ReplyResult, ReplyScheduler } from './reply';
 import { collectAgentReply } from './reply';
 import type { RelayConfig } from './registry';
-import { conversationKey, getBinding, loadConfig } from './registry';
+import { conversationKey, getBinding, getSecret, loadConfig } from './registry';
+import { createDiscordClient } from './providers/discord';
 
 /** Contributed command ids (must match `plugin.json` `contributes.commands`). */
 export const COMMAND_IDS = [
@@ -53,6 +54,19 @@ export interface RouteOutcome {
   reply?: ReplyResult;
 }
 
+/**
+ * A gateway client for one chat platform. Opens its own `net.connect` socket,
+ * normalizes inbound events into {@link InboundMessage} + {@link routeInbound},
+ * and posts replies back over the platform's REST API. The runtime owns the
+ * registry; each client reports its own liveness for {@link RelayStatus}.
+ */
+export interface ProviderClient {
+  readonly name: string;
+  connect(): Promise<void>;
+  disconnect(): void;
+  connected(): boolean;
+}
+
 export interface RelayStatus {
   running: boolean;
   enabledProviders: string[];
@@ -69,6 +83,7 @@ export interface RelayRuntime {
   handleCommand(commandId: string, args?: unknown): Promise<string>;
   routeInbound(message: InboundMessage, sink: ReplySink): Promise<RouteOutcome>;
   onAgentCompleted(payload: unknown): void;
+  registerProvider(client: ProviderClient): void;
 }
 
 /**
@@ -83,25 +98,30 @@ export function createRuntime(
 ): RelayRuntime {
   // sessionId -> in-flight reply, so `agent.completed` can flush the right one.
   const activeReplies = new Map<string, ReplyHandle>();
+  const providers: ProviderClient[] = [];
   let running = false;
 
   const runtime: RelayRuntime = {
     config,
     start(): void {
       running = true;
+      for (const provider of providers) {
+        provider.connect().catch((error) => {
+          console.error(`[relay] provider "${provider.name}" failed to connect: ${String(error)}`);
+        });
+      }
     },
     stop(): void {
       running = false;
+      for (const provider of providers) provider.disconnect();
       for (const handle of activeReplies.values()) handle.cancel();
       activeReplies.clear();
     },
     status(): RelayStatus {
-      // No gateway provider is wired yet, so nothing is "connected". This stays
-      // honest until the Discord/Slack clients land and register themselves.
       return {
         running,
         enabledProviders: runtime.config.enabledProviders.slice(),
-        connectedProviders: [],
+        connectedProviders: providers.filter((provider) => provider.connected()).map((provider) => provider.name),
         activeReplies: activeReplies.size,
       };
     },
@@ -163,6 +183,9 @@ export function createRuntime(
       const handle = activeReplies.get(sessionId);
       if (handle) handle.markComplete();
     },
+    registerProvider(client: ProviderClient): void {
+      providers.push(client);
+    },
   };
 
   return runtime;
@@ -181,6 +204,18 @@ export async function activate(sdk: MaestroSdk): Promise<void> {
 
   sdk.events.on('agent.completed', (payload) => runtime.onAgentCompleted(payload));
   await sdk.events.subscribe(['agent.completed']);
+
+  const discordToken = await getSecret(sdk, 'discordToken');
+  if (config.enabledProviders.includes('discord') && discordToken) {
+    runtime.registerProvider(
+      createDiscordClient({
+        sdk,
+        token: discordToken,
+        config: config.discord,
+        route: (message, sink) => runtime.routeInbound(message, sink),
+      }),
+    );
+  }
 
   runtime.start();
   await sdk.notifications.toast(

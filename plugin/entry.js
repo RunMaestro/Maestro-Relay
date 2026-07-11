@@ -161,6 +161,7 @@ function collectAgentReply(sdk, options, hooks = {}, scheduler = DEFAULT_SCHEDUL
 
 // src/plugin/registry.ts
 var BINDINGS_KEY = "relay:bindings";
+var SECRET_PREFIX = "relay:secret:";
 function conversationKey(provider, channelId) {
   return `${provider}:${channelId}`;
 }
@@ -183,6 +184,10 @@ async function getBinding(sdk, key) {
   const bindings = await loadBindings(sdk);
   const agentId = bindings[key];
   return typeof agentId === "string" && agentId.length > 0 ? agentId : void 0;
+}
+async function getSecret(sdk, name) {
+  const value = await sdk.storage.get(SECRET_PREFIX + name);
+  return typeof value === "string" && value.length > 0 ? value : void 0;
 }
 function csv(value) {
   return value.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
@@ -213,6 +218,394 @@ async function loadConfig(sdk) {
   };
 }
 
+// src/core/fences.ts
+function parseFenceLine(line) {
+  const m = line.match(/^ {0,3}(`{3,}|~{3,})\s*(.*)$/);
+  if (!m)
+    return null;
+  const char = m[1][0];
+  const info = m[2].trim();
+  if (char === "`" && info.includes("`"))
+    return null;
+  return { char, len: m[1].length, info };
+}
+function closesFence(open, fence) {
+  return fence.char === open.char && fence.len >= open.len && fence.info === "";
+}
+function openLine(f) {
+  return f.char.repeat(f.len) + (f.info ? f.info : "");
+}
+function closeLine(f) {
+  return f.char.repeat(f.len);
+}
+function danglingFence(text) {
+  let open = null;
+  for (const line of text.split("\n")) {
+    const fence = parseFenceLine(line);
+    if (!fence)
+      continue;
+    if (open) {
+      if (closesFence(open, fence))
+        open = null;
+    } else {
+      open = fence;
+    }
+  }
+  return open;
+}
+
+// src/core/splitMessage.ts
+var DEFAULT_MAX_LENGTH = 1990;
+function fenceReserve(text) {
+  let maxPrepend = 0;
+  let maxAppend = 0;
+  for (const line of text.split("\n")) {
+    const f = parseFenceLine(line);
+    if (!f)
+      continue;
+    maxPrepend = Math.max(maxPrepend, openLine(f).length + 1);
+    maxAppend = Math.max(maxAppend, closeLine(f).length + 1);
+  }
+  return maxPrepend + maxAppend;
+}
+var MENTION_TOKEN = /<(?:@[!&]?|#)\d+>/g;
+function avoidMentionCut(text, splitAt) {
+  MENTION_TOKEN.lastIndex = 0;
+  let m;
+  while ((m = MENTION_TOKEN.exec(text)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (start >= splitAt)
+      break;
+    if (splitAt > start && splitAt < end) {
+      return start > 0 ? start : splitAt;
+    }
+  }
+  return splitAt;
+}
+function rawSplit(text, maxLength) {
+  if (text.length <= maxLength)
+    return [text];
+  const parts = [];
+  let remaining = text;
+  while (remaining.length > maxLength) {
+    let splitAt = remaining.lastIndexOf("\n", maxLength);
+    if (splitAt <= 0)
+      splitAt = maxLength;
+    splitAt = avoidMentionCut(remaining, splitAt);
+    parts.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+  if (remaining.length > 0)
+    parts.push(remaining);
+  return parts;
+}
+function repairFences(parts) {
+  const out = [];
+  let carry = null;
+  for (let part of parts) {
+    if (carry)
+      part = openLine(carry) + "\n" + part;
+    const open = danglingFence(part);
+    if (open) {
+      part = part + "\n" + closeLine(open);
+      carry = open;
+    } else {
+      carry = null;
+    }
+    out.push(part);
+  }
+  return out;
+}
+function splitMessage(text, maxLength = DEFAULT_MAX_LENGTH) {
+  if (text.length <= maxLength)
+    return [text];
+  const reserve = fenceReserve(text);
+  const budget = reserve > 0 ? Math.max(1, maxLength - reserve) : maxLength;
+  const parts = rawSplit(text, budget);
+  if (parts.length <= 1)
+    return parts;
+  return reserve > 0 ? repairFences(parts) : parts;
+}
+
+// src/plugin/providers/discord.ts
+var GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json";
+var API_BASE = "https://discord.com/api/v10";
+var MESSAGE_LIMIT = 1990;
+var DEFAULT_INTENTS = 1 << 0 | 1 << 9 | 1 << 12 | 1 << 15;
+var OP = {
+  DISPATCH: 0,
+  HEARTBEAT: 1,
+  IDENTIFY: 2,
+  RESUME: 6,
+  RECONNECT: 7,
+  INVALID_SESSION: 9,
+  HELLO: 10,
+  HEARTBEAT_ACK: 11
+};
+var MAX_BACKOFF_MS = 3e4;
+function createDiscordClient(options) {
+  const sdk = options.sdk;
+  const scheduler = options.scheduler ?? DEFAULT_SCHEDULER;
+  const gatewayUrl = options.gatewayUrl ?? GATEWAY_URL;
+  const apiBase = options.apiBase ?? API_BASE;
+  const intents = options.intents ?? DEFAULT_INTENTS;
+  const reconnectBaseMs = options.reconnectBaseMs ?? 1e3;
+  const allowedUsers = options.config.allowedUserIds ?? [];
+  const guildId = options.config.guildId;
+  let socketId;
+  let heartbeatIntervalMs = 0;
+  let heartbeatTimer;
+  let reconnectTimer;
+  let awaitingAck = false;
+  let lastSeq = null;
+  let sessionId;
+  let resumeUrl;
+  let botUserId;
+  let isConnected = false;
+  let closed = false;
+  let wantResume = false;
+  let backoffAttempt = 0;
+  function log(message) {
+    console.warn("[relay:discord] " + message);
+  }
+  async function send(frame) {
+    if (socketId === void 0)
+      return;
+    try {
+      await sdk.net.send(socketId, JSON.stringify(frame));
+    } catch (error) {
+      log("gateway send failed: " + String(error));
+    }
+  }
+  function sendIdentify() {
+    void send({
+      op: OP.IDENTIFY,
+      d: {
+        token: options.token,
+        intents,
+        properties: { os: "linux", browser: "maestro-relay", device: "maestro-relay" }
+      }
+    });
+  }
+  function sendResume() {
+    void send({
+      op: OP.RESUME,
+      d: { token: options.token, session_id: sessionId, seq: lastSeq }
+    });
+  }
+  function clearHeartbeat() {
+    if (heartbeatTimer !== void 0) {
+      scheduler.clearTimer(heartbeatTimer);
+      heartbeatTimer = void 0;
+    }
+  }
+  function beat() {
+    if (awaitingAck) {
+      reconnect(true);
+      return;
+    }
+    awaitingAck = true;
+    void send({ op: OP.HEARTBEAT, d: lastSeq });
+  }
+  function scheduleHeartbeat() {
+    clearHeartbeat();
+    heartbeatTimer = scheduler.setTimer(() => {
+      beat();
+      if (socketId !== void 0)
+        scheduleHeartbeat();
+    }, heartbeatIntervalMs);
+  }
+  function makeSink() {
+    return async (message, reply) => {
+      const text = reply.text.trim();
+      if (text.length === 0)
+        return;
+      for (const chunk of splitMessage(text, MESSAGE_LIMIT)) {
+        await postMessage(message.channelId, chunk);
+      }
+    };
+  }
+  async function postMessage(channelId, content) {
+    try {
+      await sdk.net.fetch(apiBase + "/channels/" + channelId + "/messages", {
+        method: "POST",
+        headers: {
+          Authorization: "Bot " + options.token,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ content })
+      });
+    } catch (error) {
+      log("reply post failed: " + String(error));
+    }
+  }
+  function handleMessageCreate(payload) {
+    const author = payload.author;
+    if (!author || typeof author.id !== "string")
+      return;
+    if (author.bot === true)
+      return;
+    if (botUserId !== void 0 && author.id === botUserId)
+      return;
+    const content = typeof payload.content === "string" ? payload.content : "";
+    if (content.trim().length === 0)
+      return;
+    if (guildId && payload.guild_id !== guildId)
+      return;
+    if (allowedUsers.length > 0 && !allowedUsers.includes(author.id))
+      return;
+    const channelId = payload.channel_id;
+    if (typeof channelId !== "string")
+      return;
+    const message = {
+      provider: "discord",
+      channelId,
+      userId: author.id,
+      text: content
+    };
+    void options.route(message, makeSink()).catch((error) => {
+      log("route failed: " + String(error));
+    });
+  }
+  function handleDispatch(eventName, data) {
+    const payload = data ?? {};
+    if (eventName === "READY") {
+      if (typeof payload.session_id === "string")
+        sessionId = payload.session_id;
+      if (typeof payload.resume_gateway_url === "string")
+        resumeUrl = payload.resume_gateway_url;
+      const user = payload.user;
+      if (user && typeof user.id === "string")
+        botUserId = user.id;
+      isConnected = true;
+      backoffAttempt = 0;
+    } else if (eventName === "RESUMED") {
+      isConnected = true;
+      backoffAttempt = 0;
+    } else if (eventName === "MESSAGE_CREATE") {
+      handleMessageCreate(payload);
+    }
+  }
+  function handleFrame(raw) {
+    let frame;
+    try {
+      frame = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (typeof frame.s === "number")
+      lastSeq = frame.s;
+    switch (frame.op) {
+      case OP.HELLO: {
+        const d = frame.d ?? {};
+        heartbeatIntervalMs = typeof d.heartbeat_interval === "number" ? d.heartbeat_interval : 45e3;
+        awaitingAck = false;
+        scheduleHeartbeat();
+        if (wantResume && sessionId !== void 0)
+          sendResume();
+        else
+          sendIdentify();
+        break;
+      }
+      case OP.DISPATCH:
+        handleDispatch(frame.t, frame.d);
+        break;
+      case OP.HEARTBEAT:
+        awaitingAck = false;
+        beat();
+        break;
+      case OP.RECONNECT:
+        reconnect(true);
+        break;
+      case OP.INVALID_SESSION:
+        reconnect(frame.d === true);
+        break;
+      case OP.HEARTBEAT_ACK:
+        awaitingAck = false;
+        break;
+      default:
+        break;
+    }
+  }
+  function onSocketEvent(event) {
+    if (event.type === "message") {
+      if (typeof event.data === "string")
+        handleFrame(event.data);
+      return;
+    }
+    isConnected = false;
+    reconnect(true);
+  }
+  function teardownSocket() {
+    clearHeartbeat();
+    awaitingAck = false;
+    isConnected = false;
+    const id = socketId;
+    socketId = void 0;
+    if (id !== void 0) {
+      void sdk.net.close(id).catch(() => {
+      });
+    }
+  }
+  function reconnect(resume) {
+    teardownSocket();
+    if (closed)
+      return;
+    if (!resume) {
+      sessionId = void 0;
+      resumeUrl = void 0;
+      lastSeq = null;
+    }
+    wantResume = resume && sessionId !== void 0;
+    if (reconnectTimer !== void 0)
+      scheduler.clearTimer(reconnectTimer);
+    const delay = Math.min(reconnectBaseMs * Math.pow(2, backoffAttempt), MAX_BACKOFF_MS);
+    backoffAttempt += 1;
+    reconnectTimer = scheduler.setTimer(() => {
+      reconnectTimer = void 0;
+      void connect();
+    }, delay);
+  }
+  async function connect() {
+    if (closed)
+      return;
+    if (socketId !== void 0)
+      return;
+    const url = wantResume && resumeUrl !== void 0 ? resumeUrl + "/?v=10&encoding=json" : gatewayUrl;
+    try {
+      const result = await sdk.net.connect(url);
+      socketId = result.socketId;
+      sdk.events.on("net.connect:" + result.socketId, (payload) => {
+        onSocketEvent(payload);
+      });
+    } catch (error) {
+      log("gateway connect failed: " + String(error));
+      isConnected = false;
+      if (!closed)
+        reconnect(false);
+    }
+  }
+  return {
+    name: "discord",
+    async connect() {
+      closed = false;
+      await connect();
+    },
+    disconnect() {
+      closed = true;
+      if (reconnectTimer !== void 0) {
+        scheduler.clearTimer(reconnectTimer);
+        reconnectTimer = void 0;
+      }
+      teardownSocket();
+    },
+    connected() {
+      return isConnected;
+    }
+  };
+}
+
 // src/plugin/entry.ts
 var COMMAND_IDS = [
   "relay-start",
@@ -222,14 +615,22 @@ var COMMAND_IDS = [
 ];
 function createRuntime(sdk, config, scheduler) {
   const activeReplies = /* @__PURE__ */ new Map();
+  const providers = [];
   let running = false;
   const runtime = {
     config,
     start() {
       running = true;
+      for (const provider of providers) {
+        provider.connect().catch((error) => {
+          console.error(`[relay] provider "${provider.name}" failed to connect: ${String(error)}`);
+        });
+      }
     },
     stop() {
       running = false;
+      for (const provider of providers)
+        provider.disconnect();
       for (const handle of activeReplies.values())
         handle.cancel();
       activeReplies.clear();
@@ -238,7 +639,7 @@ function createRuntime(sdk, config, scheduler) {
       return {
         running,
         enabledProviders: runtime.config.enabledProviders.slice(),
-        connectedProviders: [],
+        connectedProviders: providers.filter((provider) => provider.connected()).map((provider) => provider.name),
         activeReplies: activeReplies.size
       };
     },
@@ -302,6 +703,9 @@ function createRuntime(sdk, config, scheduler) {
       const handle = activeReplies.get(sessionId);
       if (handle)
         handle.markComplete();
+    },
+    registerProvider(client) {
+      providers.push(client);
     }
   };
   return runtime;
@@ -316,6 +720,17 @@ async function activate(sdk) {
   }
   sdk.events.on("agent.completed", (payload) => runtime.onAgentCompleted(payload));
   await sdk.events.subscribe(["agent.completed"]);
+  const discordToken = await getSecret(sdk, "discordToken");
+  if (config.enabledProviders.includes("discord") && discordToken) {
+    runtime.registerProvider(
+      createDiscordClient({
+        sdk,
+        token: discordToken,
+        config: config.discord,
+        route: (message, sink) => runtime.routeInbound(message, sink)
+      })
+    );
+  }
   runtime.start();
   await sdk.notifications.toast(
     `Maestro Relay loaded; providers enabled: ${config.enabledProviders.join(", ") || "(none)"}.`
