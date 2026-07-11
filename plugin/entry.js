@@ -21,7 +21,9 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 var entry_exports = {};
 __export(entry_exports, {
   COMMAND_IDS: () => COMMAND_IDS,
+  PANEL_COMMAND_IDS: () => PANEL_COMMAND_IDS,
   activate: () => activate,
+  buildConfiguredProviders: () => buildConfiguredProviders,
   createRuntime: () => createRuntime,
   deactivate: () => deactivate
 });
@@ -185,20 +187,36 @@ async function getBinding(sdk, key) {
   const agentId = bindings[key];
   return typeof agentId === "string" && agentId.length > 0 ? agentId : void 0;
 }
+async function setBinding(sdk, key, agentId) {
+  const bindings = await loadBindings(sdk);
+  bindings[key] = agentId;
+  await sdk.storage.set(BINDINGS_KEY, JSON.stringify(bindings));
+}
+async function removeBinding(sdk, key) {
+  const bindings = await loadBindings(sdk);
+  if (!Object.prototype.hasOwnProperty.call(bindings, key))
+    return false;
+  delete bindings[key];
+  await sdk.storage.set(BINDINGS_KEY, JSON.stringify(bindings));
+  return true;
+}
 async function getSecret(sdk, name) {
   const value = await sdk.storage.get(SECRET_PREFIX + name);
   return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+async function setSecret(sdk, name, value) {
+  await sdk.storage.set(SECRET_PREFIX + name, value);
 }
 function csv(value) {
   return value.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
 }
 async function readSetting(sdk, key, fallback) {
-  const bare = await sdk.settings.get(key);
-  if (typeof bare === "string" && bare.length > 0)
-    return bare;
   const namespaced = await sdk.settings.get(`plugins.${sdk.pluginId}.${key}`);
-  if (typeof namespaced === "string" && namespaced.length > 0)
+  if (typeof namespaced === "string")
     return namespaced;
+  const bare = await sdk.settings.get(key);
+  if (typeof bare === "string")
+    return bare;
   return fallback;
 }
 async function loadConfig(sdk) {
@@ -869,6 +887,7 @@ var COMMAND_IDS = [
   "relay-status",
   "relay-reload-config"
 ];
+var PANEL_COMMAND_IDS = ["relay-save-config", "relay-bind", "relay-unbind"];
 function createRuntime(sdk, config, scheduler) {
   const activeReplies = /* @__PURE__ */ new Map();
   const providers = [];
@@ -903,7 +922,7 @@ function createRuntime(sdk, config, scheduler) {
       runtime.config = await loadConfig(sdk);
       return runtime.config;
     },
-    async handleCommand(commandId, _args) {
+    async handleCommand(commandId, args) {
       switch (commandId) {
         case "relay-start": {
           runtime.start();
@@ -923,6 +942,57 @@ function createRuntime(sdk, config, scheduler) {
         case "relay-reload-config": {
           const next = await runtime.reloadConfig();
           const message = `Configuration reloaded; providers enabled: ${next.enabledProviders.join(", ") || "(none)"}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case "relay-save-config": {
+          const record = args ?? {};
+          const settings = record.settings && typeof record.settings === "object" ? record.settings : {};
+          const secrets = record.secrets && typeof record.secrets === "object" ? record.secrets : {};
+          let settingsCount = 0;
+          for (const key of Object.keys(settings)) {
+            await sdk.settings.set(`plugins.${sdk.pluginId}.${key}`, String(settings[key] ?? ""));
+            settingsCount += 1;
+          }
+          let secretCount = 0;
+          for (const name of Object.keys(secrets)) {
+            const value = secrets[name];
+            if (typeof value === "string" && value.trim().length > 0) {
+              await setSecret(sdk, name, value.trim());
+              secretCount += 1;
+            }
+          }
+          await runtime.reconnect();
+          const message = `Relay configuration saved (${settingsCount} setting(s), ${secretCount} secret(s)); providers enabled: ${runtime.config.enabledProviders.join(", ") || "(none)"}. Bridges (re)connecting.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case "relay-bind": {
+          const record = args ?? {};
+          const provider = typeof record.provider === "string" ? record.provider.trim() : "";
+          const channelId = typeof record.channelId === "string" ? record.channelId.trim() : "";
+          const agentId = typeof record.agentId === "string" ? record.agentId.trim() : "";
+          if (!provider || !channelId || !agentId) {
+            const message2 = "Relay bind failed: provider, channelId, and agentId are all required.";
+            await sdk.notifications.toast(message2);
+            return message2;
+          }
+          await setBinding(sdk, conversationKey(provider, channelId), agentId);
+          const message = `Bound ${provider}:${channelId} -> agent ${agentId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case "relay-unbind": {
+          const record = args ?? {};
+          const provider = typeof record.provider === "string" ? record.provider.trim() : "";
+          const channelId = typeof record.channelId === "string" ? record.channelId.trim() : "";
+          if (!provider || !channelId) {
+            const message2 = "Relay unbind failed: provider and channelId are required.";
+            await sdk.notifications.toast(message2);
+            return message2;
+          }
+          const removed = await removeBinding(sdk, conversationKey(provider, channelId));
+          const message = removed ? `Unbound ${provider}:${channelId}.` : `No binding found for ${provider}:${channelId}.`;
           await sdk.notifications.toast(message);
           return message;
         }
@@ -962,9 +1032,49 @@ function createRuntime(sdk, config, scheduler) {
     },
     registerProvider(client) {
       providers.push(client);
+    },
+    replaceProviders(clients) {
+      for (const provider of providers)
+        provider.disconnect();
+      providers.length = 0;
+      for (const client of clients)
+        providers.push(client);
+      if (running) {
+        for (const provider of providers) {
+          provider.connect().catch((error) => {
+            console.error(`[relay] provider "${provider.name}" failed to connect: ${String(error)}`);
+          });
+        }
+      }
+    },
+    async reconnect() {
+      runtime.stop();
+      await runtime.reloadConfig();
+      const clients = await buildConfiguredProviders(
+        sdk,
+        runtime.config,
+        (message, sink) => runtime.routeInbound(message, sink)
+      );
+      runtime.replaceProviders(clients);
+      runtime.start();
     }
   };
   return runtime;
+}
+async function buildConfiguredProviders(sdk, config, route) {
+  const clients = [];
+  const discordToken = await getSecret(sdk, "discordToken");
+  if (config.enabledProviders.includes("discord") && discordToken) {
+    clients.push(createDiscordClient({ sdk, token: discordToken, config: config.discord, route }));
+  }
+  const slackAppToken = await getSecret(sdk, "slackAppToken");
+  const slackBotToken = await getSecret(sdk, "slackBotToken");
+  if (config.enabledProviders.includes("slack") && slackAppToken && slackBotToken) {
+    clients.push(
+      createSlackClient({ sdk, appToken: slackAppToken, botToken: slackBotToken, config: config.slack, route })
+    );
+  }
+  return clients;
 }
 var current;
 async function activate(sdk) {
@@ -974,32 +1084,17 @@ async function activate(sdk) {
   for (const id of COMMAND_IDS) {
     sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
   }
+  for (const id of PANEL_COMMAND_IDS) {
+    sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
+  }
   sdk.events.on("agent.completed", (payload) => runtime.onAgentCompleted(payload));
   await sdk.events.subscribe(["agent.completed"]);
-  const discordToken = await getSecret(sdk, "discordToken");
-  if (config.enabledProviders.includes("discord") && discordToken) {
-    runtime.registerProvider(
-      createDiscordClient({
-        sdk,
-        token: discordToken,
-        config: config.discord,
-        route: (message, sink) => runtime.routeInbound(message, sink)
-      })
-    );
-  }
-  const slackAppToken = await getSecret(sdk, "slackAppToken");
-  const slackBotToken = await getSecret(sdk, "slackBotToken");
-  if (config.enabledProviders.includes("slack") && slackAppToken && slackBotToken) {
-    runtime.registerProvider(
-      createSlackClient({
-        sdk,
-        appToken: slackAppToken,
-        botToken: slackBotToken,
-        config: config.slack,
-        route: (message, sink) => runtime.routeInbound(message, sink)
-      })
-    );
-  }
+  const clients = await buildConfiguredProviders(
+    sdk,
+    config,
+    (message, sink) => runtime.routeInbound(message, sink)
+  );
+  runtime.replaceProviders(clients);
   runtime.start();
   await sdk.notifications.toast(
     `Maestro Relay loaded; providers enabled: ${config.enabledProviders.join(", ") || "(none)"}.`
@@ -1012,7 +1107,9 @@ function deactivate() {
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   COMMAND_IDS,
+  PANEL_COMMAND_IDS,
   activate,
+  buildConfiguredProviders,
   createRuntime,
   deactivate
 });

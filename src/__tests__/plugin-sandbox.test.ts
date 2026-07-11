@@ -9,8 +9,8 @@ import { createFakeSdk } from './plugin-helpers';
  *   1. static scan — the bundle contains no `require`, `process`, `Buffer`, etc.;
  *   2. dynamic load — evaluating it in a bare `vm` realm that exposes ONLY the
  *      sandbox globals (no require/process/Buffer) yields `activate`/`deactivate`,
- *      and `activate(sdk)` registers the four contributed commands, subscribes to
- *      `agent.completed`, and toasts — all through the brokered SDK.
+ *      and `activate(sdk)` registers the contributed + panel commands, subscribes
+ *      to `agent.completed`, and toasts — all through the brokered SDK.
  */
 
 interface PluginModule {
@@ -49,8 +49,16 @@ test('the bundle loads and activates in a bare sandbox realm', async () => {
 
   assert.deepEqual(
     [...calls.commands.keys()].sort(),
-    ['relay-reload-config', 'relay-start', 'relay-status', 'relay-stop'],
-    'registers all four contributed commands',
+    [
+      'relay-bind',
+      'relay-reload-config',
+      'relay-save-config',
+      'relay-start',
+      'relay-status',
+      'relay-stop',
+      'relay-unbind',
+    ],
+    'registers the four contributed commands plus the three panel commands',
   );
   assert.ok(
     calls.subscriptions.some((topics) => topics.includes('agent.completed')),

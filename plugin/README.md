@@ -14,14 +14,14 @@ Maestro source at `HOST_API 1.12.0`.
 | File | Status | Purpose |
 | --- | --- | --- |
 | `plugin.json` | ✅ present, validated | Manifest (tier 2, host API 1.12.0). Passes Maestro's own `validatePluginManifest` + `collectContributions`. |
-| `entry.js` | ✅ built, sandbox-verified | Sandbox-safe CommonJS bundle (esbuild of `src/plugin/`). v1 ships the lifecycle, config, storage-backed channel↔agent registry, and the dispatch→reply router. The Discord/Slack gateway clients that feed the router are the next build step. Rebuild with `npm run build:plugin`. |
-| `panel.html` | ⏳ pending | Configuration UI (enter tokens, toggle providers, bind channels to agents). |
+| `entry.js` | ✅ built, sandbox-verified | Sandbox-safe CommonJS bundle (esbuild of `src/plugin/`). Ships the lifecycle, config, storage-backed channel↔agent registry, the dispatch→reply router, the Discord Gateway + Slack Socket-Mode clients, and the panel command handlers (save config/secrets + rebuild providers, bind/unbind). Rebuild with `npm run build:plugin`. |
+| `panel.html` | ✅ present | Configuration UI (Settings placement). Write-only: enter the bot tokens, toggle providers + log level/ids, save (persists then reconnects the bridges), and bind channels to agents. It posts `maestro:invokeCommand` over the host bridge; every result surfaces as a Maestro toast (the panel has no reply channel). |
 | `signature.json` | ⏳ per-operator | ed25519 signature over the packaged folder. Required — see below. |
 
 ## Building
 
 - `npm run build:plugin` bundles `src/plugin/entry.ts` into `plugin/entry.js` (esbuild, CommonJS). The build fails if the output contains anything the sandbox forbids — `require`, `process`, `Buffer`, dynamic `import()`, or Node builtins — so a regression can never ship a bundle that crashes on load.
-- Plugin sources live in `src/plugin/` (TypeScript): `sdk.ts` (typed brokered-SDK surface), `reply.ts` (the dispatch→transcript-poll reply loop), `registry.ts` (storage-backed bindings + settings config), `entry.ts` (lifecycle, commands, and the message router).
+- Plugin sources live in `src/plugin/` (TypeScript): `sdk.ts` (typed brokered-SDK surface), `reply.ts` (the dispatch→transcript-poll reply loop), `registry.ts` (storage-backed bindings + settings config), `providers/{discord,slack}.ts` (the plain-JS gateway clients), and `entry.ts` (lifecycle, commands, message router, provider wiring, and the panel command handlers). The config UI is `plugin/panel.html`.
 - Tests: `npm test` (see `src/__tests__/plugin-*.test.ts`) covers the reply loop, the registry, the router, and a bare-`vm` sandbox load of the built `entry.js`.
 
 ## Prerequisites to run (not optional)
@@ -68,10 +68,16 @@ the architecture doc.
 
 ## Configuration model
 
-- **Secrets** (bot tokens, Slack app-level token) → the plugin's private **storage KV**, entered in
-  the config panel. Never in settings (Maestro rejects secret-looking setting keys).
+- **Secrets** (bot tokens, Slack app-level token) → the plugin's private **storage KV**
+  (`relay:secret:*`), entered in the config panel. Never in settings (Maestro rejects
+  secret-looking setting keys).
 - **Non-secret config** (enabled providers, log level, client/guild/team/app ids, allowed user ids)
   → plugin **settings** under `plugins.sh.maestro.relay.*`, declared in `plugin.json`.
+- **Channel↔agent bindings** → private **storage KV** (`relay:bindings`), one entry per
+  `provider:channelId`, added/removed from the panel's bind form.
+- The panel is **write-only** (Maestro's panel bridge is one-way): it posts `maestro:invokeCommand`
+  and cannot read state back, so saved/connected/bound results arrive as **toasts**. Saving config
+  persists the values and immediately rebuilds + reconnects the enabled bridges.
 
 ## Not available in v1
 

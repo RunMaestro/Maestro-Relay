@@ -102,17 +102,20 @@ function csv(value: string): string[] {
 }
 
 /**
- * Read one non-secret setting. The host stores contributed settings and accepts
- * both the bare declared key and the fully-qualified `plugins.<id>.<key>` form
- * on read, while confining writes to the namespaced form. We try the bare key
- * first, then the namespaced key, then fall back to `fallback`, so config reads
- * are correct regardless of which form the host persisted.
+ * Read one non-secret setting. Panel writes are namespace-confined by the host
+ * (`settings.set` rejects any key outside `plugins.<id>.*`), so the
+ * fully-qualified `plugins.<id>.<key>` form is authoritative and read FIRST;
+ * the bare declared key is next (some hosts surface a contributed default
+ * there), then the static `fallback`. A stored value of ANY string wins —
+ * including `''`, so a saved empty (e.g. `enabledProviders: ''` to disable every
+ * provider) is honored rather than snapping back to the fallback. The host
+ * returns `null` for an absent key, so `''` is unambiguously an explicit write.
  */
 async function readSetting(sdk: MaestroSdk, key: string, fallback: string): Promise<string> {
-  const bare = await sdk.settings.get(key);
-  if (typeof bare === 'string' && bare.length > 0) return bare;
   const namespaced = await sdk.settings.get(`plugins.${sdk.pluginId}.${key}`);
-  if (typeof namespaced === 'string' && namespaced.length > 0) return namespaced;
+  if (typeof namespaced === 'string') return namespaced;
+  const bare = await sdk.settings.get(key);
+  if (typeof bare === 'string') return bare;
   return fallback;
 }
 

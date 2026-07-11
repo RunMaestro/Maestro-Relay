@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      Belt-and-suspenders: the host also injects this exact policy via
+      withPanelCsp(). Panel UIs run inline (script/style 'unsafe-inline'); the
+      sandbox is otherwise default-deny. connect-src 'none' means the panel has
+      NO network of its own — every host action goes over the postMessage bridge
+      below. form-action 'none' means no <form> submits: buttons + JS only.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; child-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'"
+    />
+    <title>Maestro Relay</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #e8eaed;
+        --fg-dim: #9aa0a6;
+        --bg: #1b1c1f;
+        --card: #26282c;
+        --border: #3a3d42;
+        --accent: #5b8def;
+        --accent-fg: #ffffff;
+        --danger: #e5534b;
+        --ok: #57ab5a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 16px;
+        font: 13px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0 0 2px;
+      }
+      h2 {
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--fg-dim);
+        margin: 0 0 10px;
+      }
+      p {
+        margin: 0 0 12px;
+      }
+      .muted {
+        color: var(--fg-dim);
+      }
+      .banner {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 6px;
+        padding: 10px 12px;
+        margin: 12px 0 18px;
+        color: var(--fg-dim);
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px;
+        margin: 0 0 16px;
+      }
+      .field {
+        margin: 0 0 12px;
+      }
+      .field:last-child {
+        margin-bottom: 0;
+      }
+      label {
+        display: block;
+        margin: 0 0 4px;
+        font-weight: 600;
+      }
+      label .hint {
+        font-weight: 400;
+        color: var(--fg-dim);
+      }
+      input[type="text"],
+      input[type="password"],
+      select {
+        width: 100%;
+        padding: 7px 9px;
+        color: var(--fg);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font: inherit;
+      }
+      input:focus,
+      select:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .checks {
+        display: flex;
+        gap: 18px;
+        align-items: center;
+      }
+      .check {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        font-weight: 600;
+      }
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .row > .field {
+        flex: 1 1 140px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 4px;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        padding: 8px 14px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--accent-fg);
+      }
+      button.danger:hover {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+      code {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 0 4px;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 12px;
+      }
+      #panelStatus {
+        min-height: 18px;
+        margin-top: 10px;
+        color: var(--ok);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Maestro Relay</h1>
+    <p class="muted">Bridge Discord &amp; Slack bots to your Maestro agents.</p>
+
+    <div class="banner">
+      This panel is <strong>write-only</strong>: it sends changes to the plugin
+      and cannot read state back. Every result &mdash; saved, connected, bound,
+      or an error &mdash; appears as a <strong>Maestro toast</strong>, not here.
+      Token fields are blank on load; leave a token empty to keep the one already
+      stored.
+    </div>
+
+    <div class="card">
+      <h2>General</h2>
+      <div class="field">
+        <label>Enabled providers</label>
+        <div class="checks">
+          <label class="check"><input type="checkbox" id="prov-discord" checked /> Discord</label>
+          <label class="check"><input type="checkbox" id="prov-slack" checked /> Slack</label>
+        </div>
+      </div>
+      <div class="field">
+        <label for="logLevel">Log level</label>
+        <select id="logLevel">
+          <option value="debug">debug</option>
+          <option value="info" selected>info</option>
+          <option value="warn">warn</option>
+          <option value="error">error</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Discord</h2>
+      <div class="field">
+        <label for="discordToken">Bot token <span class="hint">(xxxxx.xxxxx.xxxxx — stored as a secret)</span></label>
+        <input type="password" id="discordToken" autocomplete="off" placeholder="leave blank to keep existing" />
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="discordClientId">Application (client) id</label>
+          <input type="text" id="discordClientId" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="discordGuildId">Guild (server) id</label>
+          <input type="text" id="discordGuildId" autocomplete="off" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="discordAllowedUserIds">Allowed user ids <span class="hint">(comma-separated; empty = all)</span></label>
+        <input type="text" id="discordAllowedUserIds" autocomplete="off" />
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Slack <span class="hint muted">(Socket Mode only)</span></h2>
+      <div class="field">
+        <label for="slackAppToken">App-level token <span class="hint">(xapp-… — stored as a secret)</span></label>
+        <input type="password" id="slackAppToken" autocomplete="off" placeholder="leave blank to keep existing" />
+      </div>
+      <div class="field">
+        <label for="slackBotToken">Bot token <span class="hint">(xoxb-… — stored as a secret)</span></label>
+        <input type="password" id="slackBotToken" autocomplete="off" placeholder="leave blank to keep existing" />
+      </div>
+      <div class="row">
+        <div class="field">
+          <label for="slackTeamId">Workspace (team) id</label>
+          <input type="text" id="slackTeamId" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="slackAppId">Application id</label>
+          <input type="text" id="slackAppId" autocomplete="off" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="slackAllowedUserIds">Allowed user ids <span class="hint">(comma-separated; empty = all)</span></label>
+        <input type="text" id="slackAllowedUserIds" autocomplete="off" />
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Save &amp; connect</h2>
+      <p class="muted">
+        Persists settings and any entered tokens, then (re)builds and connects
+        the enabled bridges.
+      </p>
+      <div class="actions">
+        <button type="button" id="save" class="primary">Save configuration &amp; connect</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Bind a channel to an agent</h2>
+      <p class="muted">
+        Route every message in a chat channel to a Maestro agent. The
+        <code>agents:dispatch</code> grant must already name that agent id (see
+        the plugin README).
+      </p>
+      <div class="row">
+        <div class="field">
+          <label for="bindProvider">Provider</label>
+          <select id="bindProvider">
+            <option value="discord">discord</option>
+            <option value="slack">slack</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="bindChannelId">Channel id</label>
+          <input type="text" id="bindChannelId" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="bindAgentId">Agent id</label>
+          <input type="text" id="bindAgentId" autocomplete="off" />
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" id="bind" class="primary">Bind</button>
+        <button type="button" id="unbind" class="danger">Unbind (provider + channel)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Bridge control</h2>
+      <div class="actions">
+        <button type="button" id="start">Start</button>
+        <button type="button" id="stop">Stop</button>
+        <button type="button" id="statusCommand">Status</button>
+        <button type="button" id="reload">Reload config</button>
+      </div>
+    </div>
+
+    <div id="panelStatus" role="status" aria-live="polite"></div>
+
+    <script>
+      (function () {
+        "use strict";
+        var byId = function (id) {
+          return document.getElementById(id);
+        };
+        var note = function (text) {
+          byId("panelStatus").textContent = text;
+        };
+        // The one bridge to the host: a fire-and-forget postMessage the panel
+        // preload forwards as `<pluginId>/<commandId>`. There is no reply
+        // channel, so success/failure surfaces only as a Maestro toast.
+        var invoke = function (commandId, args) {
+          parent.postMessage(
+            { type: "maestro:invokeCommand", commandId: commandId, args: args },
+            "*"
+          );
+          note('Sent "' + commandId + '" — check the Maestro toast for the result.');
+        };
+        var trimmed = function (id) {
+          return byId(id).value.trim();
+        };
+
+        byId("save").addEventListener("click", function () {
+          var providers = [];
+          if (byId("prov-discord").checked) providers.push("discord");
+          if (byId("prov-slack").checked) providers.push("slack");
+          var settings = {
+            enabledProviders: providers.join(","),
+            logLevel: byId("logLevel").value,
+            discordClientId: trimmed("discordClientId"),
+            discordGuildId: trimmed("discordGuildId"),
+            discordAllowedUserIds: trimmed("discordAllowedUserIds"),
+            slackTeamId: trimmed("slackTeamId"),
+            slackAppId: trimmed("slackAppId"),
+            slackAllowedUserIds: trimmed("slackAllowedUserIds")
+          };
+          var secrets = {};
+          var dt = trimmed("discordToken");
+          var sat = trimmed("slackAppToken");
+          var sbt = trimmed("slackBotToken");
+          if (dt) secrets.discordToken = dt;
+          if (sat) secrets.slackAppToken = sat;
+          if (sbt) secrets.slackBotToken = sbt;
+          invoke("relay-save-config", { settings: settings, secrets: secrets });
+          // Do not keep secrets sitting in the DOM after they are sent.
+          byId("discordToken").value = "";
+          byId("slackAppToken").value = "";
+          byId("slackBotToken").value = "";
+        });
+
+        byId("bind").addEventListener("click", function () {
+          invoke("relay-bind", {
+            provider: byId("bindProvider").value,
+            channelId: trimmed("bindChannelId"),
+            agentId: trimmed("bindAgentId")
+          });
+        });
+
+        byId("unbind").addEventListener("click", function () {
+          invoke("relay-unbind", {
+            provider: byId("bindProvider").value,
+            channelId: trimmed("bindChannelId")
+          });
+        });
+
+        byId("start").addEventListener("click", function () {
+          invoke("relay-start");
+        });
+        byId("stop").addEventListener("click", function () {
+          invoke("relay-stop");
+        });
+        byId("statusCommand").addEventListener("click", function () {
+          invoke("relay-status");
+        });
+        byId("reload").addEventListener("click", function () {
+          invoke("relay-reload-config");
+        });
+      })();
+    </script>
+  </body>
+</html>

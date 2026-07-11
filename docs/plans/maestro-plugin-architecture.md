@@ -239,8 +239,16 @@ inbound webhook the sandbox cannot host)**.
    (`sdk.ts`); dispatch→reply loop (`reply.ts`); storage-backed channel↔agent registry + config
    (`registry.ts`); lifecycle, commands, and message router (`entry.ts`). Unit + bare-`vm`
    sandbox-load tests (`src/__tests__/plugin-*.test.ts`).
-3. Config panel (`panel.html`): enter tokens, toggle providers, bind channels to agents. (The
-   `storage` KV registry + config reader landed in step 2.)
+3. ✅ Config panel (`plugin/panel.html`): a write-only Settings-placement UI that enters the bot
+   tokens (stored as `relay:secret:*` KV), toggles providers + log level/ids (namespaced settings),
+   binds/unbinds channels to agents, and saves — persisting then rebuilding + reconnecting the
+   bridges. It drives three panel-only commands (`relay-save-config`, `relay-bind`, `relay-unbind`)
+   over Maestro's **one-way** `maestro:invokeCommand` postMessage bridge (source-verified against the
+   host's `plugin-panel.ts` preload + `PluginPanelFrame.tsx`); with no reply channel, results surface
+   as toasts. `entry.ts` grew `buildConfiguredProviders` + `runtime.replaceProviders`/`reconnect` for
+   the save-and-connect path, and `settings.set` writes are host-confined to `plugins.<id>.*`
+   (readSetting reads namespaced-first, honoring a saved empty string). 5 unit tests + a browser
+   smoke-test of the bridge.
 4. ✅ Discord: plain-JS Gateway client (`src/plugin/providers/discord.ts`) over `net.connect`
    — HELLO→IDENTIFY/RESUME, recursive-`setTimeout` heartbeat with zombie detection,
    `MESSAGE_CREATE` normalization (bot/self skip, guild + allowed-user filters) → `routeInbound`,

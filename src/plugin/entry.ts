@@ -7,11 +7,14 @@
  * an inbound chat message into a dispatched agent turn and a reply.
  *
  * v1 scope: lifecycle + config + binding registry + the dispatch/reply router,
- * plus the Discord Gateway client that FEEDS `routeInbound` (and posts the reply
- * back via a {@link ReplySink} over Discord REST). A provider registry lets each
- * gateway client report its own connection state, so `status()` reflects which
- * bridges are actually live. The Slack Socket-Mode client is the next build step;
- * until it lands, only Discord can register itself and connect.
+ * plus the Discord Gateway and Slack Socket-Mode clients that FEED `routeInbound`
+ * (and post the reply back via a {@link ReplySink} over each platform's REST
+ * API). A provider registry lets each gateway client report its own connection
+ * state, so `status()` reflects which bridges are actually live. The config panel
+ * (`plugin/panel.html`) drives the {@link PANEL_COMMAND_IDS} — save tokens +
+ * settings then rebuild providers, and bind/unbind channels to agents — over the
+ * host's one-way `maestro:invokeCommand` postMessage bridge (no reply channel;
+ * results surface as toasts).
  *
  * Sandbox-safe: imports only sibling plugin modules; no Node builtins, no
  * `require`, and only `setTimeout`/`clearTimeout`/`Promise`/`console` globals.
@@ -21,7 +24,7 @@ import type { MaestroSdk } from './sdk';
 import type { ReplyHandle, ReplyResult, ReplyScheduler } from './reply';
 import { collectAgentReply } from './reply';
 import type { RelayConfig } from './registry';
-import { conversationKey, getBinding, getSecret, loadConfig } from './registry';
+import { conversationKey, getBinding, getSecret, loadConfig, removeBinding, setBinding, setSecret } from './registry';
 import { createDiscordClient } from './providers/discord';
 import { createSlackClient } from './providers/slack';
 
@@ -34,6 +37,16 @@ export const COMMAND_IDS = [
 ] as const;
 
 export type RelayCommandId = (typeof COMMAND_IDS)[number];
+
+/**
+ * Commands the config panel invokes over the `maestro:invokeCommand`
+ * postMessage bridge. Deliberately NOT in `contributes.commands`: they take
+ * args and are panel-only, never surfaced in the command palette — but they are
+ * registered so the sandbox routes their local ids to `handleCommand`.
+ */
+export const PANEL_COMMAND_IDS = ['relay-save-config', 'relay-bind', 'relay-unbind'] as const;
+
+export type RelayPanelCommandId = (typeof PANEL_COMMAND_IDS)[number];
 
 /** An inbound chat message, normalized across providers by the gateway clients. */
 export interface InboundMessage {
@@ -88,6 +101,13 @@ export interface RelayRuntime {
   routeInbound(message: InboundMessage, sink: ReplySink): Promise<RouteOutcome>;
   onAgentCompleted(payload: unknown): void;
   registerProvider(client: ProviderClient): void;
+  /** Swap in a fresh set of provider clients: disconnect + drop the current
+   * ones, register the new ones, and connect them if the runtime is running. */
+  replaceProviders(clients: ProviderClient[]): void;
+  /** Re-read config + secrets, rebuild every provider client, then start — the
+   * panel's save-and-connect path, so token/setting edits take effect without
+   * reloading the plugin. */
+  reconnect(): Promise<void>;
 }
 
 /**
@@ -133,7 +153,7 @@ export function createRuntime(
       runtime.config = await loadConfig(sdk);
       return runtime.config;
     },
-    async handleCommand(commandId: string, _args?: unknown): Promise<string> {
+    async handleCommand(commandId: string, args?: unknown): Promise<string> {
       switch (commandId) {
         case 'relay-start': {
           runtime.start();
@@ -153,6 +173,74 @@ export function createRuntime(
         case 'relay-reload-config': {
           const next = await runtime.reloadConfig();
           const message = `Configuration reloaded; providers enabled: ${next.enabledProviders.join(', ') || '(none)'}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case 'relay-save-config': {
+          const record = (args ?? {}) as {
+            settings?: Record<string, unknown>;
+            secrets?: Record<string, unknown>;
+          };
+          const settings =
+            record.settings && typeof record.settings === 'object' ? record.settings : {};
+          const secrets =
+            record.secrets && typeof record.secrets === 'object' ? record.secrets : {};
+          // Settings persist by property presence — an empty string is a valid
+          // value (clears a guild/team id or an allowed-user list).
+          let settingsCount = 0;
+          for (const key of Object.keys(settings)) {
+            // Writes are namespace-confined by the host (settings.set rejects any
+            // key outside `plugins.<id>.*`); loadConfig reads that form back.
+            await sdk.settings.set(`plugins.${sdk.pluginId}.${key}`, String(settings[key] ?? ''));
+            settingsCount += 1;
+          }
+          // Secrets skip blanks so a left-empty token field never clobbers a
+          // previously stored token.
+          let secretCount = 0;
+          for (const name of Object.keys(secrets)) {
+            const value = secrets[name];
+            if (typeof value === 'string' && value.trim().length > 0) {
+              await setSecret(sdk, name, value.trim());
+              secretCount += 1;
+            }
+          }
+          await runtime.reconnect();
+          const message = `Relay configuration saved (${settingsCount} setting(s), ${secretCount} secret(s)); providers enabled: ${runtime.config.enabledProviders.join(', ') || '(none)'}. Bridges (re)connecting.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case 'relay-bind': {
+          const record = (args ?? {}) as {
+            provider?: unknown;
+            channelId?: unknown;
+            agentId?: unknown;
+          };
+          const provider = typeof record.provider === 'string' ? record.provider.trim() : '';
+          const channelId = typeof record.channelId === 'string' ? record.channelId.trim() : '';
+          const agentId = typeof record.agentId === 'string' ? record.agentId.trim() : '';
+          if (!provider || !channelId || !agentId) {
+            const message = 'Relay bind failed: provider, channelId, and agentId are all required.';
+            await sdk.notifications.toast(message);
+            return message;
+          }
+          await setBinding(sdk, conversationKey(provider, channelId), agentId);
+          const message = `Bound ${provider}:${channelId} -> agent ${agentId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case 'relay-unbind': {
+          const record = (args ?? {}) as { provider?: unknown; channelId?: unknown };
+          const provider = typeof record.provider === 'string' ? record.provider.trim() : '';
+          const channelId = typeof record.channelId === 'string' ? record.channelId.trim() : '';
+          if (!provider || !channelId) {
+            const message = 'Relay unbind failed: provider and channelId are required.';
+            await sdk.notifications.toast(message);
+            return message;
+          }
+          const removed = await removeBinding(sdk, conversationKey(provider, channelId));
+          const message = removed
+            ? `Unbound ${provider}:${channelId}.`
+            : `No binding found for ${provider}:${channelId}.`;
           await sdk.notifications.toast(message);
           return message;
         }
@@ -190,9 +278,59 @@ export function createRuntime(
     registerProvider(client: ProviderClient): void {
       providers.push(client);
     },
+    replaceProviders(clients: ProviderClient[]): void {
+      for (const provider of providers) provider.disconnect();
+      providers.length = 0;
+      for (const client of clients) providers.push(client);
+      if (running) {
+        for (const provider of providers) {
+          provider.connect().catch((error) => {
+            console.error(`[relay] provider "${provider.name}" failed to connect: ${String(error)}`);
+          });
+        }
+      }
+    },
+    async reconnect(): Promise<void> {
+      runtime.stop();
+      await runtime.reloadConfig();
+      const clients = await buildConfiguredProviders(sdk, runtime.config, (message, sink) =>
+        runtime.routeInbound(message, sink),
+      );
+      runtime.replaceProviders(clients);
+      runtime.start();
+    },
   };
 
   return runtime;
+}
+
+/**
+ * Build the provider clients enabled by `config`, each gated on its required
+ * secret(s) in private KV. Construction is lazy — no socket opens until
+ * `connect()`. Shared by `activate()` (first wiring) and `reconnect()` (the
+ * panel's save-and-connect path).
+ */
+export async function buildConfiguredProviders(
+  sdk: MaestroSdk,
+  config: RelayConfig,
+  route: (message: InboundMessage, sink: ReplySink) => Promise<RouteOutcome>,
+): Promise<ProviderClient[]> {
+  const clients: ProviderClient[] = [];
+
+  const discordToken = await getSecret(sdk, 'discordToken');
+  if (config.enabledProviders.includes('discord') && discordToken) {
+    clients.push(createDiscordClient({ sdk, token: discordToken, config: config.discord, route }));
+  }
+
+  const slackAppToken = await getSecret(sdk, 'slackAppToken');
+  const slackBotToken = await getSecret(sdk, 'slackBotToken');
+  if (config.enabledProviders.includes('slack') && slackAppToken && slackBotToken) {
+    clients.push(
+      createSlackClient({ sdk, appToken: slackAppToken, botToken: slackBotToken, config: config.slack, route }),
+    );
+  }
+
+  return clients;
 }
 
 let current: RelayRuntime | undefined;
@@ -205,35 +343,17 @@ export async function activate(sdk: MaestroSdk): Promise<void> {
   for (const id of COMMAND_IDS) {
     sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
   }
+  for (const id of PANEL_COMMAND_IDS) {
+    sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
+  }
 
   sdk.events.on('agent.completed', (payload) => runtime.onAgentCompleted(payload));
   await sdk.events.subscribe(['agent.completed']);
 
-  const discordToken = await getSecret(sdk, 'discordToken');
-  if (config.enabledProviders.includes('discord') && discordToken) {
-    runtime.registerProvider(
-      createDiscordClient({
-        sdk,
-        token: discordToken,
-        config: config.discord,
-        route: (message, sink) => runtime.routeInbound(message, sink),
-      }),
-    );
-  }
-
-  const slackAppToken = await getSecret(sdk, 'slackAppToken');
-  const slackBotToken = await getSecret(sdk, 'slackBotToken');
-  if (config.enabledProviders.includes('slack') && slackAppToken && slackBotToken) {
-    runtime.registerProvider(
-      createSlackClient({
-        sdk,
-        appToken: slackAppToken,
-        botToken: slackBotToken,
-        config: config.slack,
-        route: (message, sink) => runtime.routeInbound(message, sink),
-      }),
-    );
-  }
+  const clients = await buildConfiguredProviders(sdk, config, (message, sink) =>
+    runtime.routeInbound(message, sink),
+  );
+  runtime.replaceProviders(clients);
 
   runtime.start();
   await sdk.notifications.toast(
