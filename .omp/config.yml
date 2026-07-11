@@ -1,0 +1,22 @@
+# Project-local omp settings for maestro-relay
+# Docs: omp://advisor-watchdog.md and omp://settings.md
+#
+# The advisor is a second model that reviews each completed primary turn,
+# inspects the workspace with its own (read-only) tools, and injects inline
+# advice back into this session (nit = batched aside, concern/blocker =
+# interrupting steering). It cannot approve actions or mutate session state.
+#
+# modelRoles is a record, so this deep-merges with the global config.yml:
+# the global `default` role is preserved; only `advisor` is added here.
+#
+# NOTE: gpt-5.5 is served by the `openai-codex` provider (ChatGPT/Codex OAuth,
+# which is the authed OpenAI credential on this machine) and by `zenmux`.
+# There is no plain `openai` provider registered, so the id is prefixed with
+# `openai-codex/` to deterministically pin the authenticated provider.
+# Thinking levels available for gpt-5.5: low, medium, high, xhigh.
+
+modelRoles:
+  advisor: openai-codex/gpt-5.5:medium
+
+advisor:
+  enabled: true
