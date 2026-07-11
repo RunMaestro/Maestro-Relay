@@ -247,6 +247,16 @@ inbound webhook the sandbox cannot host)**.
    and a `net.fetch` REST reply sink that reuses `splitMessage` for the 2000-char cap. Registered
    in `activate()` behind an enabled-provider + KV-token gate; a `ProviderClient` registry makes
    `status()` report real connection state. 8 unit tests drive the protocol over a fake socket.
-5. Slack: `apps.connections.open` → Socket Mode over `net.connect`; Web API over `net.fetch`.
+5. ✅ Slack: plain-JS Socket Mode client (`src/plugin/providers/slack.ts`). `apps.connections.open`
+   over `net.fetch` (Bearer app-level `xapp-` token) yields a `wss-*.slack.com` gateway URL, held
+   over `net.connect`; `hello` marks the socket OPEN. `events_api` envelopes are **acked immediately**
+   (`{ envelope_id }`) *before* routing so a long agent turn never trips Slack's retry/close, then the
+   `message`/`app_mention` event is normalized (bot/subtype skip, team + allowed-user filters,
+   `<@…>` mention-strip) → `routeInbound`. A twin `message`+`app_mention` for the same `ts` is deduped.
+   Replies post via `chat.postMessage` (Bearer bot `xoxb-` token) threaded under the message
+   (`thread_ts = thread_ts ?? ts`), reusing `splitMessage`. `disconnect` frames and socket close/error
+   reconnect with backoff (no session resume — each Socket Mode connection is fresh). Registered in
+   `activate()` behind an enabled-provider + KV-token gate (`slackAppToken` + `slackBotToken`). 9 unit
+   tests drive the protocol over a fake socket + fake `net.fetch`.
 6. Resilience (`background:service`), status (`events`, `notifications`), rooms (masked mode).
 7. Sign, validate, pack; end-to-end install + configure + run in Maestro.

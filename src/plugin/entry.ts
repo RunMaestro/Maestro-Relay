@@ -23,6 +23,7 @@ import { collectAgentReply } from './reply';
 import type { RelayConfig } from './registry';
 import { conversationKey, getBinding, getSecret, loadConfig } from './registry';
 import { createDiscordClient } from './providers/discord';
+import { createSlackClient } from './providers/slack';
 
 /** Contributed command ids (must match `plugin.json` `contributes.commands`). */
 export const COMMAND_IDS = [
@@ -40,6 +41,9 @@ export interface InboundMessage {
   channelId: string;
   userId: string;
   text: string;
+  /** Optional reply-thread anchor. Providers that thread replies (Slack) set
+   * this to the message's thread root; the sink posts the reply under it. */
+  threadId?: string;
 }
 
 /** Posts a completed agent reply back to the originating channel. A provider
@@ -212,6 +216,20 @@ export async function activate(sdk: MaestroSdk): Promise<void> {
         sdk,
         token: discordToken,
         config: config.discord,
+        route: (message, sink) => runtime.routeInbound(message, sink),
+      }),
+    );
+  }
+
+  const slackAppToken = await getSecret(sdk, 'slackAppToken');
+  const slackBotToken = await getSecret(sdk, 'slackBotToken');
+  if (config.enabledProviders.includes('slack') && slackAppToken && slackBotToken) {
+    runtime.registerProvider(
+      createSlackClient({
+        sdk,
+        appToken: slackAppToken,
+        botToken: slackBotToken,
+        config: config.slack,
         route: (message, sink) => runtime.routeInbound(message, sink),
       }),
     );

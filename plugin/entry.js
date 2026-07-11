@@ -606,6 +606,262 @@ function createDiscordClient(options) {
   };
 }
 
+// src/plugin/providers/slack.ts
+var WEB_API_BASE = "https://slack.com/api";
+var MESSAGE_LIMIT2 = 3900;
+var MAX_BACKOFF_MS2 = 3e4;
+var IGNORED_SUBTYPES = {
+  message_changed: true,
+  message_deleted: true,
+  message_replied: true,
+  bot_message: true,
+  tombstone: true,
+  channel_join: true,
+  channel_leave: true,
+  channel_topic: true,
+  channel_purpose: true,
+  channel_name: true,
+  channel_archive: true,
+  channel_unarchive: true
+};
+function parseJsonBody(result) {
+  const r = result;
+  const raw = r && typeof r.body === "string" ? r.body : void 0;
+  if (raw === void 0 || raw.length === 0)
+    return void 0;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function createSlackClient(options) {
+  const sdk = options.sdk;
+  const scheduler = options.scheduler ?? DEFAULT_SCHEDULER;
+  const apiBase = options.apiBase ?? WEB_API_BASE;
+  const reconnectBaseMs = options.reconnectBaseMs ?? 1e3;
+  const allowedUsers = options.config.allowedUserIds ?? [];
+  const teamId = options.config.teamId;
+  let socketId;
+  let reconnectTimer;
+  let isConnected = false;
+  let closed = false;
+  let backoffAttempt = 0;
+  const seenEventKeys = /* @__PURE__ */ new Set();
+  const seenLimit = 200;
+  function log(message) {
+    console.warn("[relay:slack] " + message);
+  }
+  async function send(frame) {
+    if (socketId === void 0)
+      return;
+    try {
+      await sdk.net.send(socketId, JSON.stringify(frame));
+    } catch (error) {
+      log("socket send failed: " + String(error));
+    }
+  }
+  function makeSink() {
+    return async (message, reply) => {
+      const text = reply.text.trim();
+      if (text.length === 0)
+        return;
+      for (const chunk of splitMessage(text, MESSAGE_LIMIT2)) {
+        await postMessage(message.channelId, chunk, message.threadId);
+      }
+    };
+  }
+  async function postMessage(channel, text, threadTs) {
+    const body = { channel, text };
+    if (threadTs !== void 0)
+      body.thread_ts = threadTs;
+    try {
+      await sdk.net.fetch(apiBase + "/chat.postMessage", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + options.botToken,
+          "Content-Type": "application/json; charset=utf-8"
+        },
+        body: JSON.stringify(body)
+      });
+    } catch (error) {
+      log("reply post failed: " + String(error));
+    }
+  }
+  function handleMessageEvent(payload, event) {
+    if (event.bot_id !== void 0)
+      return;
+    if (typeof event.subtype === "string" && IGNORED_SUBTYPES[event.subtype] === true)
+      return;
+    const user = typeof event.user === "string" ? event.user : "";
+    if (user.length === 0)
+      return;
+    const channel = typeof event.channel === "string" ? event.channel : "";
+    if (channel.length === 0)
+      return;
+    if (teamId && payload.team_id !== teamId)
+      return;
+    if (allowedUsers.length > 0 && !allowedUsers.includes(user))
+      return;
+    const rawText = typeof event.text === "string" ? event.text : "";
+    const text = rawText.replace(/<@[^>]+>/g, "").trim();
+    if (text.length === 0)
+      return;
+    const threadTs = typeof event.thread_ts === "string" ? event.thread_ts : typeof event.ts === "string" ? event.ts : void 0;
+    const ts = typeof event.ts === "string" ? event.ts : "";
+    if (ts.length > 0) {
+      const key = channel + ":" + ts;
+      if (seenEventKeys.has(key))
+        return;
+      seenEventKeys.add(key);
+      if (seenEventKeys.size > seenLimit) {
+        const oldest = seenEventKeys.values().next().value;
+        if (oldest !== void 0)
+          seenEventKeys.delete(oldest);
+      }
+    }
+    const message = {
+      provider: "slack",
+      channelId: channel,
+      userId: user,
+      text,
+      threadId: threadTs
+    };
+    void options.route(message, makeSink()).catch((error) => {
+      log("route failed: " + String(error));
+    });
+  }
+  function handleEnvelope(frame) {
+    if (typeof frame.envelope_id === "string")
+      void send({ envelope_id: frame.envelope_id });
+    const payload = frame.payload;
+    if (!payload)
+      return;
+    const event = payload.event;
+    if (!event)
+      return;
+    if (event.type !== "message" && event.type !== "app_mention")
+      return;
+    handleMessageEvent(payload, event);
+  }
+  function handleFrame(raw) {
+    let frame;
+    try {
+      frame = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    switch (frame.type) {
+      case "hello":
+        isConnected = true;
+        backoffAttempt = 0;
+        break;
+      case "disconnect":
+        isConnected = false;
+        reconnect();
+        break;
+      case "events_api":
+        handleEnvelope(frame);
+        break;
+      default:
+        if (typeof frame.envelope_id === "string")
+          void send({ envelope_id: frame.envelope_id });
+        break;
+    }
+  }
+  function onSocketEvent(event) {
+    if (event.type === "message") {
+      if (typeof event.data === "string")
+        handleFrame(event.data);
+      return;
+    }
+    isConnected = false;
+    reconnect();
+  }
+  function teardownSocket() {
+    isConnected = false;
+    const id = socketId;
+    socketId = void 0;
+    if (id !== void 0) {
+      void sdk.net.close(id).catch(() => {
+      });
+    }
+  }
+  function reconnect() {
+    teardownSocket();
+    if (closed)
+      return;
+    if (reconnectTimer !== void 0)
+      scheduler.clearTimer(reconnectTimer);
+    const delay = Math.min(reconnectBaseMs * Math.pow(2, backoffAttempt), MAX_BACKOFF_MS2);
+    backoffAttempt += 1;
+    reconnectTimer = scheduler.setTimer(() => {
+      reconnectTimer = void 0;
+      void openConnection();
+    }, delay);
+  }
+  async function openConnection() {
+    if (closed)
+      return;
+    if (socketId !== void 0)
+      return;
+    let wssUrl;
+    try {
+      const result = await sdk.net.fetch(apiBase + "/apps.connections.open", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + options.appToken,
+          "Content-Type": "application/x-www-form-urlencoded"
+        }
+      });
+      const body = parseJsonBody(result);
+      if (!body || body.ok !== true || typeof body.url !== "string") {
+        log("apps.connections.open rejected: " + JSON.stringify(body?.error ?? body ?? null));
+        if (!closed)
+          reconnect();
+        return;
+      }
+      wssUrl = body.url;
+    } catch (error) {
+      log("apps.connections.open failed: " + String(error));
+      if (!closed)
+        reconnect();
+      return;
+    }
+    try {
+      const connectResult = await sdk.net.connect(wssUrl);
+      socketId = connectResult.socketId;
+      sdk.events.on("net.connect:" + connectResult.socketId, (payload) => {
+        onSocketEvent(payload);
+      });
+    } catch (error) {
+      log("socket connect failed: " + String(error));
+      isConnected = false;
+      if (!closed)
+        reconnect();
+    }
+  }
+  return {
+    name: "slack",
+    async connect() {
+      closed = false;
+      await openConnection();
+    },
+    disconnect() {
+      closed = true;
+      if (reconnectTimer !== void 0) {
+        scheduler.clearTimer(reconnectTimer);
+        reconnectTimer = void 0;
+      }
+      teardownSocket();
+    },
+    connected() {
+      return isConnected;
+    }
+  };
+}
+
 // src/plugin/entry.ts
 var COMMAND_IDS = [
   "relay-start",
@@ -727,6 +983,19 @@ async function activate(sdk) {
         sdk,
         token: discordToken,
         config: config.discord,
+        route: (message, sink) => runtime.routeInbound(message, sink)
+      })
+    );
+  }
+  const slackAppToken = await getSecret(sdk, "slackAppToken");
+  const slackBotToken = await getSecret(sdk, "slackBotToken");
+  if (config.enabledProviders.includes("slack") && slackAppToken && slackBotToken) {
+    runtime.registerProvider(
+      createSlackClient({
+        sdk,
+        appToken: slackAppToken,
+        botToken: slackBotToken,
+        config: config.slack,
         route: (message, sink) => runtime.routeInbound(message, sink)
       })
     );

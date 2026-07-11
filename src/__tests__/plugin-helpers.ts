@@ -83,6 +83,9 @@ export interface FakeSdkOptions {
   settings?: Record<string, string>;
   /** Seed private KV storage. */
   storage?: Record<string, string>;
+  /** Response for each `net.fetch`, indexed by call number (0-based). Returns
+   *  the host-shaped `{ status, statusText, headers, body }`; `body` is a string. */
+  fetch?: (url: string, init: unknown, index: number) => unknown;
 }
 
 const notImplemented = (name: string) => (): never => {
@@ -125,6 +128,7 @@ export function createFakeSdk(options: FakeSdkOptions = {}): {
   let socketCounter = 0;
 
   let readIndex = 0;
+  let fetchIndex = 0;
 
   const sdk: MaestroSdk = {
     pluginId,
@@ -152,7 +156,11 @@ export function createFakeSdk(options: FakeSdkOptions = {}): {
     net: {
       fetch: async (url, init) => {
         calls.fetches.push({ url, init });
-        return { ok: true, status: 200 };
+        const result = options.fetch
+          ? options.fetch(url, init, fetchIndex)
+          : { status: 200, statusText: 'OK', headers: {}, body: '' };
+        fetchIndex++;
+        return result;
       },
       connect: async (url, opts) => {
         socketCounter += 1;
