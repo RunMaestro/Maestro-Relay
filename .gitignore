@@ -4,6 +4,11 @@ dist/
 *.db
 logs/
 
+# plugin packaging output (staged copy + signed .tgz) and any signing keys
+plugin-dist/
+*.pem
+*.key
+
 Auto Run Docs/
 models
 .maestro/

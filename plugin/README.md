@@ -16,13 +16,14 @@ Maestro source at `HOST_API 1.12.0`.
 | `plugin.json` | ✅ present, validated | Manifest (tier 2, host API 1.12.0). Passes Maestro's own `validatePluginManifest` + `collectContributions`. |
 | `entry.js` | ✅ built, sandbox-verified | Sandbox-safe CommonJS bundle (esbuild of `src/plugin/`). Ships the lifecycle, config, storage-backed channel↔agent registry, the dispatch→reply router, the Discord Gateway + Slack Socket-Mode clients, and the panel command handlers (save config/secrets + rebuild providers, bind/unbind). Rebuild with `npm run build:plugin`. |
 | `panel.html` | ✅ present | Configuration UI (Settings placement). Write-only: enter the bot tokens, toggle providers + log level/ids, save (persists then reconnects the bridges), and bind channels to agents. It posts `maestro:invokeCommand` over the host bridge; every result surfaces as a Maestro toast (the panel has no reply channel). |
-| `signature.json` | ⏳ per-operator | ed25519 signature over the packaged folder. Required — see below. |
+| `signature.json` | ⏳ per-operator | ed25519 signature over the packaged folder. Required — see below. Produced (on a staged copy) by `npm run pack:plugin`; never committed here. |
 
 ## Building
 
 - `npm run build:plugin` bundles `src/plugin/entry.ts` into `plugin/entry.js` (esbuild, CommonJS). The build fails if the output contains anything the sandbox forbids — `require`, `process`, `Buffer`, dynamic `import()`, or Node builtins — so a regression can never ship a bundle that crashes on load.
 - Plugin sources live in `src/plugin/` (TypeScript): `sdk.ts` (typed brokered-SDK surface), `reply.ts` (the dispatch→transcript-poll reply loop), `registry.ts` (storage-backed bindings + settings config), `providers/{discord,slack}.ts` (the plain-JS gateway clients), and `entry.ts` (lifecycle, commands, message router, provider wiring, and the panel command handlers). The config UI is `plugin/panel.html`.
 - Tests: `npm test` (see `src/__tests__/plugin-*.test.ts`) covers the reply loop, the registry, the router, and a bare-`vm` sandbox load of the built `entry.js`.
+- `npm run pack:plugin -- [--gen-key --key-out <pem> | --key <pem>] [--agents "<id,id>"]` produces the signed, installable `plugin-dist/*.tgz` (stage → inject allowlist → sign → trusted-validate → pack). See the per-operator section below.
 
 ## Prerequisites to run (not optional)
 
@@ -41,27 +42,30 @@ sign it. Therefore the base `plugin.json` here **omits `agents:dispatch`**, and 
 
 1. In Maestro, note the agent id(s) you want the relay to drive (the config panel lists them via
    `agents:read` once running, or use `maestro-cli`).
-2. Add a permission to `plugin.json` naming them exactly (comma-separated, no spaces/wildcards):
-
-   ```json
-   {
-     "capability": "agents:dispatch",
-     "scope": "<agent-id-1>,<agent-id-2>",
-     "reason": "Route chat messages to the bound Maestro agents."
-   }
-   ```
-
-3. Re-sign and pack (any manifest edit invalidates a prior signature):
+2. Build the signed, installable archive in one step. `npm run pack:plugin` stages a copy of this
+   folder (the committed source stays pristine — no `signature.json`, no agent ids leak into the
+   repo), injects the `agents:dispatch` allowlist, signs, validates the signature as **trusted**,
+   and packs the `.tgz` into `plugin-dist/`:
 
    ```bash
-   maestro plugin validate ./plugin
-   maestro plugin sign ./plugin --key <your-trusted-key.pem>
-   maestro plugin pack ./plugin
+   # first time: mint a signing key, then add the printed public key to Maestro's trusted set
+   npm run pack:plugin -- --gen-key --key-out plugin-dist/relay-key.pem \
+     --agents "<agent-id-1>,<agent-id-2>"
+
+   # thereafter: reuse your trusted key
+   npm run pack:plugin -- --key plugin-dist/relay-key.pem \
+     --agents "<agent-id-1>,<agent-id-2>"
    ```
 
-4. Install the `.tgz` from **Settings → Plugins**, enable it, approve the capabilities, add the
-   agent ids to the dispatch allowlist, and approve **unattended** dispatch (socket-driven dispatch
-   is never user-present).
+   Under the hood it drives Maestro's own `maestro-cli plugin sign|validate|pack`, so what it signs
+   is exactly what the desktop app verifies at install. If `maestro-cli.js` isn't at the default
+   install path, point at it with `--maestro-cli <path>` or `$MAESTRO_CLI`. `plugin-dist/` and
+   `*.pem`/`*.key` are gitignored — the private key never enters the repo or the archive. Omit
+   `--agents` to build the base package (connections + config only; message routing stays off until
+   you re-pack with `--agents`).
+3. Install the `plugin-dist/*.tgz` from **Settings → Plugins**, enable it, approve the capabilities,
+   add the agent ids to the dispatch allowlist, and approve **unattended** dispatch (socket-driven
+   dispatch is never user-present).
 
 A friendlier consent-time allowlist entry would be a Maestro host feature request; it is tracked in
 the architecture doc.

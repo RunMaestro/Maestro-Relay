@@ -12,6 +12,7 @@
  * plugin silently crashing on load.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { build } from 'esbuild';
 
@@ -70,4 +71,22 @@ export async function bundlePlugin(): Promise<PluginBundle> {
   const output = result.outputFiles?.[0];
   if (!output) throw new Error('esbuild produced no output for the plugin bundle');
   return { code: output.text };
+}
+
+/**
+ * Bundle the plugin, statically verify sandbox safety, and write the result to
+ * {@link PLUGIN_ENTRY_OUTPUT}. Throws if the bundle contains anything the sandbox
+ * forbids. Shared by `npm run build:plugin` and `npm run pack:plugin` so both
+ * produce byte-identical `plugin/entry.js`.
+ */
+export async function buildPluginEntry(): Promise<{ bytes: number; outPath: string }> {
+  const { code } = await bundlePlugin();
+  const violations = findSandboxViolations(code);
+  if (violations.length > 0) {
+    const detail = violations.map((v) => `  - ${v.token}: …${v.snippet}…`).join('\n');
+    throw new Error(`Sandbox-safety violations in bundled plugin/entry.js:\n${detail}`);
+  }
+  fs.mkdirSync(path.dirname(PLUGIN_ENTRY_OUTPUT), { recursive: true });
+  fs.writeFileSync(PLUGIN_ENTRY_OUTPUT, code, 'utf8');
+  return { bytes: code.length, outPath: PLUGIN_ENTRY_OUTPUT };
 }

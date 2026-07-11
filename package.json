@@ -12,6 +12,7 @@
     "start": "node dist/index.js",
     "deploy-commands": "node dist/scripts/deploy-commands.js",
     "build:plugin": "tsx src/scripts/build-plugin.ts",
+    "pack:plugin": "tsx src/scripts/pack-plugin.ts",
     "deploy-teams": "tsx src/providers/teams/deploy.ts",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
     "maestro-relay": "tsx src/cli/maestro-relay.ts"

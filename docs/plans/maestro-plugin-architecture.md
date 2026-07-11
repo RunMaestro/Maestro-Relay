@@ -267,4 +267,15 @@ inbound webhook the sandbox cannot host)**.
    `activate()` behind an enabled-provider + KV-token gate (`slackAppToken` + `slackBotToken`). 9 unit
    tests drive the protocol over a fake socket + fake `net.fetch`.
 6. Resilience (`background:service`), status (`events`, `notifications`), rooms (masked mode).
-7. Sign, validate, pack; end-to-end install + configure + run in Maestro.
+7. ✅ **Packaging pipeline** (`npm run pack:plugin`, `src/scripts/pack-plugin.ts` +
+   `src/plugin/packaging.ts`): stages a pristine copy of `plugin/`, optionally injects the
+   per-operator `agents:dispatch` allowlist (`--agents`, id-validated to the host's exact-name rule),
+   then drives Maestro's **own** `maestro-cli plugin sign|validate|pack` to sign, assert the signature
+   resolves **trusted**, and emit `plugin-dist/<id>-<version>.tgz`. Verified headlessly end-to-end
+   against host 1.12.0: build → stage → inject → `--gen-key` sign → trusted-validate → pack → unpack →
+   re-validate trusted, with the exact allowlist preserved, no signing key in the archive, and the
+   committed source manifest left pristine (7 unit tests for the pure inject/validate helpers).
+   **Still pending (needs the desktop GUI + real bot tokens, not automatable here):** the live
+   Settings→Plugins install, capability/allowlist consent, token entry, and a real Discord+Slack
+   message round-trip — plus the top open risk from §5, whether `transcripts.read`'s project-path
+   grant is satisfiable on a session the plugin did not create.
