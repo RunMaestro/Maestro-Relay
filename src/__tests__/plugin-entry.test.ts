@@ -178,3 +178,68 @@ test('replaceProviders disconnects the old clients and connects new ones when ru
 
   assert.deepEqual(events, ['connect:old', 'disconnect:old', 'connect:new']);
 });
+
+test('registerBackgroundService registers a supervised service; unregister clears it', async () => {
+  const { sdk, calls } = createFakeSdk();
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+  assert.equal(runtime.status().supervised, false);
+
+  await runtime.registerBackgroundService();
+  assert.deepEqual(calls.backgroundRegistrations, [{ id: 'relay-bridge', name: 'Maestro Relay bridge' }]);
+  assert.equal(runtime.status().supervised, true, 'status reports the child is supervised');
+
+  // Idempotent: a second call while registered does not double-register.
+  await runtime.registerBackgroundService();
+  assert.equal(calls.backgroundRegistrations.length, 1);
+
+  await runtime.unregisterBackgroundService();
+  assert.deepEqual(calls.backgroundUnregisters, ['relay-bridge']);
+  assert.equal(runtime.status().supervised, false);
+});
+
+test('onAgentStatusChanged records per-agent status surfaced by relay-status', async () => {
+  const { sdk } = createFakeSdk();
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+
+  runtime.onAgentStatusChanged({ agentId: 'agent-3', status: 'thinking' });
+  assert.deepEqual(runtime.status().agentStatuses, [{ agentId: 'agent-3', status: 'thinking' }]);
+
+  // Newest status wins for the same agent.
+  runtime.onAgentStatusChanged({ agentId: 'agent-3', status: 'idle' });
+  assert.deepEqual(runtime.status().agentStatuses, [{ agentId: 'agent-3', status: 'idle' }]);
+
+  const line = await runtime.handleCommand('relay-status');
+  assert.match(line, /agent-3=idle/);
+});
+
+test('onAgentStatusChanged ignores payloads missing agentId or status', async () => {
+  const { sdk } = createFakeSdk();
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+
+  runtime.onAgentStatusChanged({ status: 'thinking' });
+  runtime.onAgentStatusChanged({ agentId: 'agent-3' });
+  runtime.onAgentStatusChanged(null);
+  assert.deepEqual(runtime.status().agentStatuses, []);
+});
+
+test('onAgentError toasts and records an error status for the agent', async () => {
+  const { sdk, calls } = createFakeSdk();
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+
+  runtime.onAgentError({ agentId: 'agent-4', errorType: 'rate_limit', recoverable: true });
+  await flush();
+
+  assert.deepEqual(runtime.status().agentStatuses, [{ agentId: 'agent-4', status: 'error:rate_limit' }]);
+  assert.ok(
+    calls.toasts.some((t) => /agent-4.*error.*rate_limit.*recoverable=yes/i.test(t)),
+    'the error is surfaced as a toast',
+  );
+});
+
+test('onAgentCompleted records the terminal status for its agent', async () => {
+  const { sdk } = createFakeSdk();
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+
+  runtime.onAgentCompleted({ sessionId: 'S1', agentId: 'agent-5', status: 'failed' });
+  assert.deepEqual(runtime.status().agentStatuses, [{ agentId: 'agent-5', status: 'failed' }]);
+});

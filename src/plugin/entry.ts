@@ -48,6 +48,26 @@ export const PANEL_COMMAND_IDS = ['relay-save-config', 'relay-bind', 'relay-unbi
 
 export type RelayPanelCommandId = (typeof PANEL_COMMAND_IDS)[number];
 
+/**
+ * Stable id + label for the supervised background service. Registering it tells
+ * the host's background supervisor that this sandbox child holds long-lived work
+ * (the gateway sockets): if the child crashes while registered, the supervisor
+ * restarts it with bounded backoff, and the restart re-runs {@link activate},
+ * which re-registers the service and reconnects the bridges. There is no separate
+ * worker to spawn — the plugin child IS the service runtime.
+ */
+export const BACKGROUND_SERVICE_ID = 'relay-bridge';
+export const BACKGROUND_SERVICE_NAME = 'Maestro Relay bridge';
+
+/**
+ * Host event topics the relay subscribes to. `agent.completed` drives reply
+ * completion (see {@link RelayRuntime.onAgentCompleted}); `agent.statusChanged`
+ * and `agent.error` feed the per-agent status indicators surfaced by
+ * `relay-status`. All three need only `events:subscribe` (plus `agents:read` for
+ * `agent.completed`), both already in the manifest.
+ */
+export const STATUS_TOPICS = ['agent.completed', 'agent.statusChanged', 'agent.error'] as const;
+
 /** An inbound chat message, normalized across providers by the gateway clients. */
 export interface InboundMessage {
   provider: string;
@@ -89,6 +109,10 @@ export interface RelayStatus {
   enabledProviders: string[];
   connectedProviders: string[];
   activeReplies: number;
+  /** True once the host background supervisor is watching this child. */
+  supervised: boolean;
+  /** Last observed status per agent, newest wins (from status/error events). */
+  agentStatuses: Array<{ agentId: string; status: string }>;
 }
 
 export interface RelayRuntime {
@@ -100,6 +124,14 @@ export interface RelayRuntime {
   handleCommand(commandId: string, args?: unknown): Promise<string>;
   routeInbound(message: InboundMessage, sink: ReplySink): Promise<RouteOutcome>;
   onAgentCompleted(payload: unknown): void;
+  onAgentStatusChanged(payload: unknown): void;
+  onAgentError(payload: unknown): void;
+  /** Register this child with the host background supervisor (crash-restart).
+   * Idempotent: a second call while registered is a no-op. */
+  registerBackgroundService(): Promise<void>;
+  /** Drop the supervisor registration so an intentional stop is not treated as
+   * a crash. Swallows an "unknown service" the host may have cleared already. */
+  unregisterBackgroundService(): Promise<void>;
   registerProvider(client: ProviderClient): void;
   /** Swap in a fresh set of provider clients: disconnect + drop the current
    * ones, register the new ones, and connect them if the runtime is running. */
@@ -124,6 +156,9 @@ export function createRuntime(
   const activeReplies = new Map<string, ReplyHandle>();
   const providers: ProviderClient[] = [];
   let running = false;
+  // agentId -> last observed status string, for the chat status indicators.
+  const agentStatus = new Map<string, string>();
+  let backgroundServiceId: string | undefined;
 
   const runtime: RelayRuntime = {
     config,
@@ -147,6 +182,8 @@ export function createRuntime(
         enabledProviders: runtime.config.enabledProviders.slice(),
         connectedProviders: providers.filter((provider) => provider.connected()).map((provider) => provider.name),
         activeReplies: activeReplies.size,
+        supervised: backgroundServiceId !== undefined,
+        agentStatuses: [...agentStatus.entries()].map(([agentId, status]) => ({ agentId, status })),
       };
     },
     async reloadConfig(): Promise<RelayConfig> {
@@ -168,7 +205,8 @@ export function createRuntime(
         }
         case 'relay-status': {
           const s = runtime.status();
-          return `Relay ${s.running ? 'running' : 'stopped'} | enabled: ${s.enabledProviders.join(', ') || '(none)'} | connected: ${s.connectedProviders.join(', ') || '(none)'} | active replies: ${s.activeReplies}`;
+          const agents = s.agentStatuses.map((a) => `${a.agentId}=${a.status}`).join(', ') || '(none)';
+          return `Relay ${s.running ? 'running' : 'stopped'} | supervised: ${s.supervised ? 'yes' : 'no'} | enabled: ${s.enabledProviders.join(', ') || '(none)'} | connected: ${s.connectedProviders.join(', ') || '(none)'} | active replies: ${s.activeReplies} | agents: ${agents}`;
         }
         case 'relay-reload-config': {
           const next = await runtime.reloadConfig();
@@ -269,11 +307,32 @@ export function createRuntime(
       return { status: 'dispatched', agentId, reply };
     },
     onAgentCompleted(payload: unknown): void {
-      const record = payload as { sessionId?: unknown } | null;
+      const record = payload as { sessionId?: unknown; agentId?: unknown; status?: unknown } | null;
       const sessionId = record && typeof record.sessionId === 'string' ? record.sessionId : '';
+      const agentId = record && typeof record.agentId === 'string' ? record.agentId : '';
+      const status = record && typeof record.status === 'string' ? record.status : '';
+      if (agentId.length > 0 && status.length > 0) agentStatus.set(agentId, status);
       if (sessionId.length === 0) return;
       const handle = activeReplies.get(sessionId);
       if (handle) handle.markComplete();
+    },
+    onAgentStatusChanged(payload: unknown): void {
+      const record = payload as { agentId?: unknown; status?: unknown } | null;
+      const agentId = record && typeof record.agentId === 'string' ? record.agentId : '';
+      const status = record && typeof record.status === 'string' ? record.status : '';
+      if (agentId.length === 0 || status.length === 0) return;
+      agentStatus.set(agentId, status);
+    },
+    onAgentError(payload: unknown): void {
+      const record = payload as { agentId?: unknown; errorType?: unknown; recoverable?: unknown } | null;
+      const agentId = record && typeof record.agentId === 'string' ? record.agentId : '';
+      const errorType = record && typeof record.errorType === 'string' ? record.errorType : 'unknown';
+      const recoverable = record ? record.recoverable === true : false;
+      if (agentId.length > 0) agentStatus.set(agentId, `error:${errorType}`);
+      const target = agentId.length > 0 ? `agent ${agentId}` : 'an agent';
+      void sdk.notifications.toast(
+        `Relay: ${target} reported an error (${errorType}); recoverable=${recoverable ? 'yes' : 'no'}.`,
+      );
     },
     registerProvider(client: ProviderClient): void {
       providers.push(client);
@@ -298,6 +357,29 @@ export function createRuntime(
       );
       runtime.replaceProviders(clients);
       runtime.start();
+    },
+    async registerBackgroundService(): Promise<void> {
+      if (backgroundServiceId !== undefined) return;
+      const result = (await sdk.background.register({
+        id: BACKGROUND_SERVICE_ID,
+        name: BACKGROUND_SERVICE_NAME,
+      })) as { serviceId?: unknown } | undefined;
+      backgroundServiceId =
+        result && typeof result.serviceId === 'string' && result.serviceId.length > 0
+          ? result.serviceId
+          : BACKGROUND_SERVICE_ID;
+    },
+    async unregisterBackgroundService(): Promise<void> {
+      if (backgroundServiceId === undefined) return;
+      const id = backgroundServiceId;
+      backgroundServiceId = undefined;
+      try {
+        await sdk.background.unregister(id);
+      } catch (error) {
+        // The host clears registrations first on normal teardown, so an
+        // "unknown service" here is expected and harmless.
+        console.warn('[relay] background.unregister failed: ' + String(error));
+      }
     },
   };
 
@@ -348,7 +430,10 @@ export async function activate(sdk: MaestroSdk): Promise<void> {
   }
 
   sdk.events.on('agent.completed', (payload) => runtime.onAgentCompleted(payload));
-  await sdk.events.subscribe(['agent.completed']);
+  sdk.events.on('agent.statusChanged', (payload) => runtime.onAgentStatusChanged(payload));
+  sdk.events.on('agent.error', (payload) => runtime.onAgentError(payload));
+  await sdk.events.subscribe([...STATUS_TOPICS]);
+  await runtime.registerBackgroundService();
 
   const clients = await buildConfiguredProviders(sdk, config, (message, sink) =>
     runtime.routeInbound(message, sink),
@@ -363,5 +448,6 @@ export async function activate(sdk: MaestroSdk): Promise<void> {
 
 export function deactivate(): void {
   current?.stop();
+  void current?.unregisterBackgroundService();
   current = undefined;
 }

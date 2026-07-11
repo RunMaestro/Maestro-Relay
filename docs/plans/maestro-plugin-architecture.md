@@ -266,7 +266,17 @@ inbound webhook the sandbox cannot host)**.
    reconnect with backoff (no session resume — each Socket Mode connection is fresh). Registered in
    `activate()` behind an enabled-provider + KV-token gate (`slackAppToken` + `slackBotToken`). 9 unit
    tests drive the protocol over a fake socket + fake `net.fetch`.
-6. Resilience (`background:service`), status (`events`, `notifications`), rooms (masked mode).
+6. ⏳ **Resilience + status** (this iteration): `activate()` registers a supervised
+   background service (`background.register({ id: 'relay-bridge' })`, stable id) so the
+   host's crash-restart supervisor keeps the gateway-holding child alive — a crash re-runs
+   `activate()`, which re-registers and reconnects; `deactivate()` unregisters so an
+   intentional stop is never mistaken for a crash. Status indicators: the plugin now
+   subscribes to `agent.statusChanged` + `agent.error` (alongside `agent.completed`) and
+   tracks the last status per bound agent, surfaced through `relay-status` and toasted on
+   error (`notifications.toast`). `status()` gained `supervised` + `agentStatuses`. Verified
+   against the fake SDK + bare-`vm` sandbox load (register on activate, unregister on
+   deactivate, status recording, error toast). **Still pending in step 6:** masked-persona
+   rooms (single-socket `**Handle:**` mirroring) inside the plugin.
 7. ✅ **Packaging pipeline** (`npm run pack:plugin`, `src/scripts/pack-plugin.ts` +
    `src/plugin/packaging.ts`): stages a pristine copy of `plugin/`, optionally injects the
    per-operator `agents:dispatch` allowlist (`--agents`, id-validated to the host's exact-name rule),

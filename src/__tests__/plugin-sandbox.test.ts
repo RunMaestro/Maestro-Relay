@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as vm from 'node:vm';
 import { bundlePlugin, findSandboxViolations } from '../plugin/build';
-import { createFakeSdk } from './plugin-helpers';
+import { createFakeSdk, flush } from './plugin-helpers';
 
 /**
  * Proves the esbuild output is loadable in the real plugin sandbox model:
@@ -65,6 +65,14 @@ test('the bundle loads and activates in a bare sandbox realm', async () => {
     'subscribes to agent.completed for reply completion',
   );
   assert.ok(calls.toasts.length >= 1, 'toasts once on load');
+  assert.ok(
+    calls.subscriptions.some((topics) => topics.includes('agent.statusChanged')),
+    'subscribes to agent.statusChanged for status indicators',
+  );
+  assert.ok(
+    calls.backgroundRegistrations.some((s) => s.id === 'relay-bridge'),
+    'registers a supervised background service on activate',
+  );
 
   // A registered command handler runs inside the realm and reaches the SDK.
   const statusHandler = calls.commands.get('relay-status');
@@ -73,4 +81,6 @@ test('the bundle loads and activates in a bare sandbox realm', async () => {
   assert.match(String(result), /Relay/);
 
   mod.deactivate!();
+  await flush();
+  assert.deepEqual(calls.backgroundUnregisters, ['relay-bridge'], 'deactivate unregisters the supervised service');
 });

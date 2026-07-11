@@ -20,8 +20,11 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/plugin/entry.ts
 var entry_exports = {};
 __export(entry_exports, {
+  BACKGROUND_SERVICE_ID: () => BACKGROUND_SERVICE_ID,
+  BACKGROUND_SERVICE_NAME: () => BACKGROUND_SERVICE_NAME,
   COMMAND_IDS: () => COMMAND_IDS,
   PANEL_COMMAND_IDS: () => PANEL_COMMAND_IDS,
+  STATUS_TOPICS: () => STATUS_TOPICS,
   activate: () => activate,
   buildConfiguredProviders: () => buildConfiguredProviders,
   createRuntime: () => createRuntime,
@@ -888,10 +891,15 @@ var COMMAND_IDS = [
   "relay-reload-config"
 ];
 var PANEL_COMMAND_IDS = ["relay-save-config", "relay-bind", "relay-unbind"];
+var BACKGROUND_SERVICE_ID = "relay-bridge";
+var BACKGROUND_SERVICE_NAME = "Maestro Relay bridge";
+var STATUS_TOPICS = ["agent.completed", "agent.statusChanged", "agent.error"];
 function createRuntime(sdk, config, scheduler) {
   const activeReplies = /* @__PURE__ */ new Map();
   const providers = [];
   let running = false;
+  const agentStatus = /* @__PURE__ */ new Map();
+  let backgroundServiceId;
   const runtime = {
     config,
     start() {
@@ -915,7 +923,9 @@ function createRuntime(sdk, config, scheduler) {
         running,
         enabledProviders: runtime.config.enabledProviders.slice(),
         connectedProviders: providers.filter((provider) => provider.connected()).map((provider) => provider.name),
-        activeReplies: activeReplies.size
+        activeReplies: activeReplies.size,
+        supervised: backgroundServiceId !== void 0,
+        agentStatuses: [...agentStatus.entries()].map(([agentId, status]) => ({ agentId, status }))
       };
     },
     async reloadConfig() {
@@ -937,7 +947,8 @@ function createRuntime(sdk, config, scheduler) {
         }
         case "relay-status": {
           const s = runtime.status();
-          return `Relay ${s.running ? "running" : "stopped"} | enabled: ${s.enabledProviders.join(", ") || "(none)"} | connected: ${s.connectedProviders.join(", ") || "(none)"} | active replies: ${s.activeReplies}`;
+          const agents = s.agentStatuses.map((a) => `${a.agentId}=${a.status}`).join(", ") || "(none)";
+          return `Relay ${s.running ? "running" : "stopped"} | supervised: ${s.supervised ? "yes" : "no"} | enabled: ${s.enabledProviders.join(", ") || "(none)"} | connected: ${s.connectedProviders.join(", ") || "(none)"} | active replies: ${s.activeReplies} | agents: ${agents}`;
         }
         case "relay-reload-config": {
           const next = await runtime.reloadConfig();
@@ -1024,11 +1035,35 @@ function createRuntime(sdk, config, scheduler) {
     onAgentCompleted(payload) {
       const record = payload;
       const sessionId = record && typeof record.sessionId === "string" ? record.sessionId : "";
+      const agentId = record && typeof record.agentId === "string" ? record.agentId : "";
+      const status = record && typeof record.status === "string" ? record.status : "";
+      if (agentId.length > 0 && status.length > 0)
+        agentStatus.set(agentId, status);
       if (sessionId.length === 0)
         return;
       const handle = activeReplies.get(sessionId);
       if (handle)
         handle.markComplete();
+    },
+    onAgentStatusChanged(payload) {
+      const record = payload;
+      const agentId = record && typeof record.agentId === "string" ? record.agentId : "";
+      const status = record && typeof record.status === "string" ? record.status : "";
+      if (agentId.length === 0 || status.length === 0)
+        return;
+      agentStatus.set(agentId, status);
+    },
+    onAgentError(payload) {
+      const record = payload;
+      const agentId = record && typeof record.agentId === "string" ? record.agentId : "";
+      const errorType = record && typeof record.errorType === "string" ? record.errorType : "unknown";
+      const recoverable = record ? record.recoverable === true : false;
+      if (agentId.length > 0)
+        agentStatus.set(agentId, `error:${errorType}`);
+      const target = agentId.length > 0 ? `agent ${agentId}` : "an agent";
+      void sdk.notifications.toast(
+        `Relay: ${target} reported an error (${errorType}); recoverable=${recoverable ? "yes" : "no"}.`
+      );
     },
     registerProvider(client) {
       providers.push(client);
@@ -1057,6 +1092,26 @@ function createRuntime(sdk, config, scheduler) {
       );
       runtime.replaceProviders(clients);
       runtime.start();
+    },
+    async registerBackgroundService() {
+      if (backgroundServiceId !== void 0)
+        return;
+      const result = await sdk.background.register({
+        id: BACKGROUND_SERVICE_ID,
+        name: BACKGROUND_SERVICE_NAME
+      });
+      backgroundServiceId = result && typeof result.serviceId === "string" && result.serviceId.length > 0 ? result.serviceId : BACKGROUND_SERVICE_ID;
+    },
+    async unregisterBackgroundService() {
+      if (backgroundServiceId === void 0)
+        return;
+      const id = backgroundServiceId;
+      backgroundServiceId = void 0;
+      try {
+        await sdk.background.unregister(id);
+      } catch (error) {
+        console.warn("[relay] background.unregister failed: " + String(error));
+      }
     }
   };
   return runtime;
@@ -1088,7 +1143,10 @@ async function activate(sdk) {
     sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
   }
   sdk.events.on("agent.completed", (payload) => runtime.onAgentCompleted(payload));
-  await sdk.events.subscribe(["agent.completed"]);
+  sdk.events.on("agent.statusChanged", (payload) => runtime.onAgentStatusChanged(payload));
+  sdk.events.on("agent.error", (payload) => runtime.onAgentError(payload));
+  await sdk.events.subscribe([...STATUS_TOPICS]);
+  await runtime.registerBackgroundService();
   const clients = await buildConfiguredProviders(
     sdk,
     config,
@@ -1102,12 +1160,16 @@ async function activate(sdk) {
 }
 function deactivate() {
   current?.stop();
+  void current?.unregisterBackgroundService();
   current = void 0;
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
+  BACKGROUND_SERVICE_ID,
+  BACKGROUND_SERVICE_NAME,
   COMMAND_IDS,
   PANEL_COMMAND_IDS,
+  STATUS_TOPICS,
   activate,
   buildConfiguredProviders,
   createRuntime,

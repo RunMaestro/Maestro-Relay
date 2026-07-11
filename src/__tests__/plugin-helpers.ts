@@ -69,6 +69,8 @@ export interface FakeSdkCalls {
   sends: Array<{ socketId: string; data: string }>;
   closes: Array<{ socketId: string; opts: unknown }>;
   fetches: Array<{ url: string; init: unknown }>;
+  backgroundRegistrations: Array<{ id?: string; name?: string }>;
+  backgroundUnregisters: string[];
   emit(topic: string, payload: unknown): void;
   /** Push a `net.connect:<socketId>` socket event to its registered handlers. */
   emitSocket(socketId: string, event: Record<string, unknown>): void;
@@ -87,10 +89,6 @@ export interface FakeSdkOptions {
    *  the host-shaped `{ status, statusText, headers, body }`; `body` is a string. */
   fetch?: (url: string, init: unknown, index: number) => unknown;
 }
-
-const notImplemented = (name: string) => (): never => {
-  throw new Error(`fake sdk: ${name} not implemented`);
-};
 
 /** Build a fake `MaestroSdk` plus a `calls` record for assertions. */
 export function createFakeSdk(options: FakeSdkOptions = {}): {
@@ -115,6 +113,8 @@ export function createFakeSdk(options: FakeSdkOptions = {}): {
     sends: [],
     closes: [],
     fetches: [],
+    backgroundRegistrations: [],
+    backgroundUnregisters: [],
     emit(topic, payload): void {
       for (const handler of eventHandlers.get(topic) ?? []) handler(payload);
     },
@@ -220,9 +220,27 @@ export function createFakeSdk(options: FakeSdkOptions = {}): {
       },
     },
     background: {
-      register: notImplemented('background.register'),
-      unregister: notImplemented('background.unregister'),
-      list: notImplemented('background.list'),
+      register: async (service) => {
+        const s = (service ?? {}) as { id?: unknown; name?: unknown };
+        const id = typeof s.id === 'string' ? s.id : undefined;
+        const name = typeof s.name === 'string' ? s.name : undefined;
+        calls.backgroundRegistrations.push({ id, name });
+        return { serviceId: id ?? `bg_${calls.backgroundRegistrations.length}` };
+      },
+      unregister: async (serviceId) => {
+        calls.backgroundUnregisters.push(serviceId);
+        return { ok: true };
+      },
+      list: async () => ({
+        pluginId,
+        state: 'running',
+        restarts: 0,
+        services: calls.backgroundRegistrations.map((r, i) => ({
+          id: r.id ?? `bg_${i + 1}`,
+          name: r.name,
+          registeredAt: 0,
+        })),
+      }),
     },
   };
 
