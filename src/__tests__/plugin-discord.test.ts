@@ -337,3 +337,60 @@ test('disconnect stops reconnecting and closes the socket', async () => {
   await flush();
   assert.equal(calls.connects.length, 1, 'no reconnect after disconnect');
 });
+
+test('postAs masks a persona reply with a bold handle prefix', async () => {
+  const { sdk, calls } = createFakeSdk();
+  const client = createDiscordClient({
+    sdk,
+    token: 'tok',
+    config: openConfig,
+    route: async () => ({ status: 'unbound' }) as RouteOutcome,
+    scheduler: new ManualScheduler(),
+  });
+
+  assert.ok(client.postAs, 'the discord client exposes postAs for masked rooms');
+  await client.postAs!('chan-7', 'Ada', 'hello room');
+  await flush();
+
+  assert.equal(calls.fetches.length, 1, 'one REST post for the masked persona');
+  assert.equal(calls.fetches[0].url, 'https://discord.com/api/v10/channels/chan-7/messages');
+  assert.deepEqual(JSON.parse((calls.fetches[0].init as FetchInit).body), {
+    content: '**Ada:** hello room',
+  });
+});
+
+test('postAs splits a long masked reply with the prefix on every chunk', async () => {
+  const { sdk, calls } = createFakeSdk();
+  const client = createDiscordClient({
+    sdk,
+    token: 'tok',
+    config: openConfig,
+    route: async () => ({ status: 'unbound' }) as RouteOutcome,
+    scheduler: new ManualScheduler(),
+  });
+
+  await client.postAs!('c', 'Ada', 'y'.repeat(4000));
+  await flush();
+
+  assert.ok(calls.fetches.length >= 2, 'a >limit reply splits into multiple posts');
+  for (const f of calls.fetches) {
+    const { content } = JSON.parse((f.init as FetchInit).body) as { content: string };
+    assert.ok(content.startsWith('**Ada:** '), 'each chunk carries the handle mask');
+    assert.ok(content.length <= 2000, 'each masked chunk fits under the Discord cap');
+  }
+});
+
+test('postAs skips an empty reply', async () => {
+  const { sdk, calls } = createFakeSdk();
+  const client = createDiscordClient({
+    sdk,
+    token: 'tok',
+    config: openConfig,
+    route: async () => ({ status: 'unbound' }) as RouteOutcome,
+    scheduler: new ManualScheduler(),
+  });
+
+  await client.postAs!('c', 'Ada', '   ');
+  await flush();
+  assert.equal(calls.fetches.length, 0, 'a whitespace-only reply is never posted');
+});

@@ -14,14 +14,14 @@ Maestro source at `HOST_API 1.12.0`.
 | File | Status | Purpose |
 | --- | --- | --- |
 | `plugin.json` | ✅ present, validated | Manifest (tier 2, host API 1.12.0). Passes Maestro's own `validatePluginManifest` + `collectContributions`. |
-| `entry.js` | ✅ built, sandbox-verified | Sandbox-safe CommonJS bundle (esbuild of `src/plugin/`). Ships the lifecycle, config, storage-backed channel↔agent registry, the dispatch→reply router, the Discord Gateway + Slack Socket-Mode clients, and the panel command handlers (save config/secrets + rebuild providers, bind/unbind). Rebuild with `npm run build:plugin`. |
+| `entry.js` | ✅ built, sandbox-verified | Sandbox-safe CommonJS bundle (esbuild of `src/plugin/`). Ships the lifecycle, config, storage-backed channel↔agent registry, the dispatch→reply router, the Discord Gateway + Slack Socket-Mode clients, the panel command handlers (save config/secrets + rebuild providers, bind/unbind), and the masked-persona multi-agent room bus + `relay-room-*` commands. Rebuild with `npm run build:plugin`. |
 | `panel.html` | ✅ present | Configuration UI (Settings placement). Write-only: enter the bot tokens, toggle providers + log level/ids, save (persists then reconnects the bridges), and bind channels to agents. It posts `maestro:invokeCommand` over the host bridge; every result surfaces as a Maestro toast (the panel has no reply channel). |
 | `signature.json` | ⏳ per-operator | ed25519 signature over the packaged folder. Required — see below. Produced (on a staged copy) by `npm run pack:plugin`; never committed here. |
 
 ## Building
 
 - `npm run build:plugin` bundles `src/plugin/entry.ts` into `plugin/entry.js` (esbuild, CommonJS). The build fails if the output contains anything the sandbox forbids — `require`, `process`, `Buffer`, dynamic `import()`, or Node builtins — so a regression can never ship a bundle that crashes on load.
-- Plugin sources live in `src/plugin/` (TypeScript): `sdk.ts` (typed brokered-SDK surface), `reply.ts` (the dispatch→transcript-poll reply loop), `registry.ts` (storage-backed bindings + settings config), `providers/{discord,slack}.ts` (the plain-JS gateway clients), and `entry.ts` (lifecycle, commands, message router, provider wiring, and the panel command handlers). The config UI is `plugin/panel.html`.
+- Plugin sources live in `src/plugin/` (TypeScript): `sdk.ts` (typed brokered-SDK surface), `reply.ts` (the dispatch→transcript-poll reply loop), `registry.ts` (storage-backed bindings + settings config), `rooms.ts` (KV-backed multi-agent room registry + the masked-persona serial bus), `providers/{discord,slack}.ts` (the plain-JS gateway clients), and `entry.ts` (lifecycle, commands, message router, provider wiring, and the panel command handlers). The config UI is `plugin/panel.html`.
 - Tests: `npm test` (see `src/__tests__/plugin-*.test.ts`) covers the reply loop, the registry, the router, and a bare-`vm` sandbox load of the built `entry.js`.
 - `npm run pack:plugin -- [--gen-key --key-out <pem> | --key <pem>] [--agents "<id,id>"]` produces the signed, installable `plugin-dist/*.tgz` (stage → inject allowlist → sign → trusted-validate → pack). See the per-operator section below.
 
@@ -82,6 +82,29 @@ the architecture doc.
 - The panel is **write-only** (Maestro's panel bridge is one-way): it posts `maestro:invokeCommand`
   and cannot read state back, so saved/connected/bound results arrive as **toasts**. Saving config
   persists the values and immediately rebuilds + reconnects the enabled bridges.
+
+## Multi-agent rooms
+
+One provider channel can front many Maestro agents as addressable personas — the plugin port of
+the kernel's room feature. The sandbox caps outbound sockets (no room-bot pool is possible), so the
+plugin runs **masked-persona mode only**: the single provider bot mirrors every persona with a
+bold-handle prefix (`**Handle:**` on Discord, `*Handle:*` on Slack). Personas address one another
+with `@Handle`, `@all`, or `@human`; the bus serializes turns per room with burst-cap, echo-guard,
+and mention-cap safety brakes (reused from `src/core/room/protocol.ts`).
+
+Once a channel is a room, `routeInbound` routes it through the room bus instead of any 1:1 binding.
+Manage rooms with these commands (palette or `maestro-cli`; args are passed as an object):
+
+| Command | Args | Effect |
+| --- | --- | --- |
+| `relay-room-create` | `provider`, `channelId`, `name?` | Create (or return) a room. |
+| `relay-room-add` | `provider`, `channelId`, `agentId`, `displayName?` | Add an agent as a persona; the handle is derived from the display name. |
+| `relay-room-remove` | `provider`, `channelId`, `target` (agent id or handle) | Remove a persona. |
+| `relay-room-pause` / `relay-room-resume` | `provider`, `channelId` | Hold / release the room's turn backlog. |
+| `relay-room-delete` | `provider`, `channelId` | Delete the room and its personas. |
+| `relay-room-list` | — | List every room, its status, and its personas (the only room command surfaced in the palette). |
+
+Each persona's agent id still has to be in the packaged `agents:dispatch` allowlist (see above).
 
 ## Not available in v1
 

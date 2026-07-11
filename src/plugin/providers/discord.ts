@@ -194,6 +194,19 @@ export function createDiscordClient(options: DiscordClientOptions): ProviderClie
     }
   }
 
+  /** Post a masked persona message into a room's channel: a `**Handle:**` bold
+   * prefix (a plain bot message cannot override its username per-post the way a
+   * webhook can), then the split reply body. Consumed by the multi-agent room
+   * bus via {@link ProviderClient.postAs}. */
+  async function postAs(channelId: string, handle: string, text: string): Promise<void> {
+    const body = text.trim();
+    if (body.length === 0) return;
+    const prefix = `**${handle}:** `;
+    for (const chunk of splitMessage(body, MESSAGE_LIMIT - prefix.length)) {
+      await postMessage(channelId, prefix + chunk);
+    }
+  }
+
   function handleMessageCreate(payload: Record<string, unknown>): void {
     const author = payload.author as Record<string, unknown> | undefined;
     if (!author || typeof author.id !== 'string') return;
@@ -362,5 +375,6 @@ export function createDiscordClient(options: DiscordClientOptions): ProviderClie
     connected(): boolean {
       return isConnected;
     },
+    postAs,
   };
 }

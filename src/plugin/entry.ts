@@ -27,6 +27,19 @@ import type { RelayConfig } from './registry';
 import { conversationKey, getBinding, getSecret, loadConfig, removeBinding, setBinding, setSecret } from './registry';
 import { createDiscordClient } from './providers/discord';
 import { createSlackClient } from './providers/slack';
+import {
+  addParticipant,
+  createRoom,
+  createRoomBus,
+  deleteRoom,
+  listRooms,
+  removeParticipant,
+  setRoomStatus,
+  type RoomBus,
+  type RoomDispatch,
+  type RoomSendAs,
+  type RoomSubmitResult,
+} from './rooms';
 
 /** Contributed command ids (must match `plugin.json` `contributes.commands`). */
 export const COMMAND_IDS = [
@@ -47,6 +60,37 @@ export type RelayCommandId = (typeof COMMAND_IDS)[number];
 export const PANEL_COMMAND_IDS = ['relay-save-config', 'relay-bind', 'relay-unbind'] as const;
 
 export type RelayPanelCommandId = (typeof PANEL_COMMAND_IDS)[number];
+
+/**
+ * Multi-agent room CRUD commands. Registered like {@link PANEL_COMMAND_IDS} so
+ * the sandbox routes them to `handleCommand`; only the no-arg `relay-room-list`
+ * is surfaced in `contributes.commands` (the rest take args).
+ */
+export const ROOM_COMMAND_IDS = [
+  'relay-room-create',
+  'relay-room-delete',
+  'relay-room-add',
+  'relay-room-remove',
+  'relay-room-list',
+  'relay-room-pause',
+  'relay-room-resume',
+] as const;
+
+export type RelayRoomCommandId = (typeof ROOM_COMMAND_IDS)[number];
+
+/** Read a trimmed string field from a loosely-typed command args object. */
+function argString(args: unknown, key: string): string {
+  const record = (args ?? {}) as Record<string, unknown>;
+  const value = record[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/** Toast + return a uniform "missing args" message for a room command. */
+async function roomArgError(sdk: MaestroSdk, op: string, required: string): Promise<string> {
+  const message = `Relay room ${op} failed: ${required} are required.`;
+  await sdk.notifications.toast(message);
+  return message;
+}
 
 /**
  * Stable id + label for the supervised background service. Registering it tells
@@ -83,12 +127,14 @@ export interface InboundMessage {
  * supplies its own (REST post over `net.fetch`); tests inject one directly. */
 export type ReplySink = (message: InboundMessage, reply: ReplyResult) => void | Promise<void>;
 
-export type RouteStatus = 'dispatched' | 'unbound' | 'empty';
+export type RouteStatus = 'dispatched' | 'unbound' | 'empty' | 'room';
 
 export interface RouteOutcome {
   status: RouteStatus;
   agentId?: string;
   reply?: ReplyResult;
+  /** Present when `status === 'room'`: the multi-agent room submit result. */
+  room?: RoomSubmitResult;
 }
 
 /**
@@ -102,6 +148,10 @@ export interface ProviderClient {
   connect(): Promise<void>;
   disconnect(): void;
   connected(): boolean;
+  /** Post a masked persona message into a channel for multi-agent rooms. The
+   * provider applies its own bold-handle prefix. Absent on any provider without
+   * masked-room support (the room bus then silently skips the post). */
+  postAs?(channelId: string, handle: string, text: string): Promise<void>;
 }
 
 export interface RelayStatus {
@@ -159,6 +209,31 @@ export function createRuntime(
   // agentId -> last observed status string, for the chat status indicators.
   const agentStatus = new Map<string, string>();
   let backgroundServiceId: string | undefined;
+
+  // Multi-agent rooms: one channel fronting many personas, all masked onto the
+  // single provider bot. `roomDispatch` reuses the 1:1 reply loop (so
+  // `agent.completed` still flushes it via `activeReplies`); `roomSendAs` routes
+  // a masked post to the owning provider client's `postAs`.
+  const roomDispatch: RoomDispatch = async (agentId, prompt) => {
+    const handle = collectAgentReply(
+      sdk,
+      { agentId, prompt },
+      {
+        onSession(sessionId: string): void {
+          activeReplies.set(sessionId, handle);
+        },
+      },
+      scheduler,
+    );
+    const reply = await handle.promise;
+    activeReplies.delete(reply.sessionId);
+    return { text: reply.text, sessionId: reply.sessionId };
+  };
+  const roomSendAs: RoomSendAs = async (room, post) => {
+    const client = providers.find((provider) => provider.name === room.provider);
+    if (client?.postAs) await client.postAs(room.channelId, post.handle, post.text);
+  };
+  const bus: RoomBus = createRoomBus({ sdk, dispatch: roomDispatch, sendAs: roomSendAs });
 
   const runtime: RelayRuntime = {
     config,
@@ -282,12 +357,89 @@ export function createRuntime(
           await sdk.notifications.toast(message);
           return message;
         }
+        case 'relay-room-create': {
+          const provider = argString(args, 'provider');
+          const channelId = argString(args, 'channelId');
+          const name = argString(args, 'name');
+          if (!provider || !channelId) return roomArgError(sdk, 'create', 'provider and channelId');
+          const room = await createRoom(sdk, provider, channelId, name ? { name } : {});
+          const message = `Room ready: ${provider}:${channelId}${room.name ? ` ("${room.name}")` : ''}; ${room.participants.length} persona(s).`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case 'relay-room-delete': {
+          const provider = argString(args, 'provider');
+          const channelId = argString(args, 'channelId');
+          if (!provider || !channelId) return roomArgError(sdk, 'delete', 'provider and channelId');
+          const removed = await deleteRoom(sdk, provider, channelId);
+          const message = removed
+            ? `Room deleted: ${provider}:${channelId}.`
+            : `No room found for ${provider}:${channelId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case 'relay-room-add': {
+          const provider = argString(args, 'provider');
+          const channelId = argString(args, 'channelId');
+          const agentId = argString(args, 'agentId');
+          const displayName = argString(args, 'displayName') || agentId;
+          if (!provider || !channelId || !agentId) {
+            return roomArgError(sdk, 'add', 'provider, channelId, and agentId');
+          }
+          const participant = await addParticipant(sdk, provider, channelId, agentId, displayName);
+          const message = `Added @${participant.handle} (agent ${agentId}) to ${provider}:${channelId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case 'relay-room-remove': {
+          const provider = argString(args, 'provider');
+          const channelId = argString(args, 'channelId');
+          const target =
+            argString(args, 'target') || argString(args, 'agentId') || argString(args, 'handle');
+          if (!provider || !channelId || !target) {
+            return roomArgError(sdk, 'remove', 'provider, channelId, and target (agent id or handle)');
+          }
+          const removed = await removeParticipant(sdk, provider, channelId, target);
+          const message = removed
+            ? `Removed "${target}" from ${provider}:${channelId}.`
+            : `No persona "${target}" in ${provider}:${channelId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case 'relay-room-list': {
+          const rooms = await listRooms(sdk);
+          if (rooms.length === 0) return 'No rooms configured.';
+          return rooms
+            .map((room) => {
+              const personas = room.participants.map((p) => `@${p.handle}`).join(', ') || '(none)';
+              return `${room.roomKey} [${room.status}]${room.name ? ` "${room.name}"` : ''}: ${personas}`;
+            })
+            .join('\n');
+        }
+        case 'relay-room-pause':
+        case 'relay-room-resume': {
+          const provider = argString(args, 'provider');
+          const channelId = argString(args, 'channelId');
+          const op = commandId === 'relay-room-pause' ? 'pause' : 'resume';
+          if (!provider || !channelId) return roomArgError(sdk, op, 'provider and channelId');
+          const status = op === 'pause' ? 'paused' : 'active';
+          const ok = await setRoomStatus(sdk, provider, channelId, status);
+          const message = ok
+            ? `Room ${provider}:${channelId} ${status === 'paused' ? 'paused' : 'resumed'}.`
+            : `No room found for ${provider}:${channelId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
         default:
           throw new Error(`unknown relay command "${commandId}"`);
       }
     },
     async routeInbound(message: InboundMessage, sink: ReplySink): Promise<RouteOutcome> {
       if (message.text.trim().length === 0) return { status: 'empty' };
+      if (await bus.isRoom(message.provider, message.channelId)) {
+        const room = await bus.submitMessage(message.provider, message.channelId, 'human', message.text);
+        return { status: 'room', room };
+      }
       const agentId = await getBinding(sdk, conversationKey(message.provider, message.channelId));
       if (!agentId) return { status: 'unbound' };
 
@@ -426,6 +578,9 @@ export async function activate(sdk: MaestroSdk): Promise<void> {
     sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
   }
   for (const id of PANEL_COMMAND_IDS) {
+    sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
+  }
+  for (const id of ROOM_COMMAND_IDS) {
     sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
   }
 

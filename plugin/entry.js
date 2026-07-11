@@ -24,6 +24,7 @@ __export(entry_exports, {
   BACKGROUND_SERVICE_NAME: () => BACKGROUND_SERVICE_NAME,
   COMMAND_IDS: () => COMMAND_IDS,
   PANEL_COMMAND_IDS: () => PANEL_COMMAND_IDS,
+  ROOM_COMMAND_IDS: () => ROOM_COMMAND_IDS,
   STATUS_TOPICS: () => STATUS_TOPICS,
   activate: () => activate,
   buildConfiguredProviders: () => buildConfiguredProviders,
@@ -461,6 +462,15 @@ function createDiscordClient(options) {
       log("reply post failed: " + String(error));
     }
   }
+  async function postAs(channelId, handle, text) {
+    const body = text.trim();
+    if (body.length === 0)
+      return;
+    const prefix = `**${handle}:** `;
+    for (const chunk of splitMessage(body, MESSAGE_LIMIT - prefix.length)) {
+      await postMessage(channelId, prefix + chunk);
+    }
+  }
   function handleMessageCreate(payload) {
     const author = payload.author;
     if (!author || typeof author.id !== "string")
@@ -623,7 +633,8 @@ function createDiscordClient(options) {
     },
     connected() {
       return isConnected;
-    }
+    },
+    postAs
   };
 }
 
@@ -708,6 +719,15 @@ function createSlackClient(options) {
       });
     } catch (error) {
       log("reply post failed: " + String(error));
+    }
+  }
+  async function postAs(channel, handle, text) {
+    const body = text.trim();
+    if (body.length === 0)
+      return;
+    const prefix = `*${handle}:* `;
+    for (const chunk of splitMessage(body, MESSAGE_LIMIT2 - prefix.length)) {
+      await postMessage(channel, prefix + chunk);
     }
   }
   function handleMessageEvent(payload, event) {
@@ -879,6 +899,342 @@ function createSlackClient(options) {
     },
     connected() {
       return isConnected;
+    },
+    postAs
+  };
+}
+
+// src/core/room/protocol.ts
+var RESERVED = { all: "all", human: "human" };
+var HANDLE_TOKEN = /@([A-Za-z0-9_-]+)/g;
+var DEFAULT_MAX_MENTIONS = 2;
+function sanitizeHandle(name) {
+  let h = (name ?? "").trim().replace(/[^A-Za-z0-9_-]/g, "");
+  h = h.replace(/discord/gi, "").replace(/clyde/gi, "");
+  if (h.length > 80)
+    h = h.slice(0, 80);
+  if (h.length === 0)
+    h = "agent";
+  return h;
+}
+function buildPreamble(room, self, participants) {
+  const selfHandle = self.handle.toLowerCase();
+  const peers = participants.filter((p) => p.handle.toLowerCase() !== selfHandle).map((p) => `@${p.handle}`);
+  const roster = peers.length > 0 ? peers.join(", ") : "(none yet)";
+  const roomName = room.name ?? room.roomKey ?? "this room";
+  return [
+    `You are @${self.handle} in room "${roomName}".`,
+    `Other participants: ${roster}.`,
+    "Address a peer by writing @Handle; a message with no @mention is spoken to the room.",
+    "You are only invoked when you are addressed. Reply briefly.",
+    "Write @human to hand the conversation back to a person."
+  ].join("\n");
+}
+function parseMentions(text, participants, opts = {}) {
+  const maxMentions = opts.maxMentions ?? DEFAULT_MAX_MENTIONS;
+  const selfHandle = opts.self?.handle.toLowerCase();
+  const byHandle = new Map(participants.map((p) => [p.handle.toLowerCase(), p]));
+  let all = false;
+  let human = false;
+  const targets = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const match of text.matchAll(HANDLE_TOKEN)) {
+    const lower = match[1].toLowerCase();
+    if (lower === RESERVED.all) {
+      all = true;
+      continue;
+    }
+    if (lower === RESERVED.human) {
+      human = true;
+      continue;
+    }
+    if (selfHandle !== void 0 && lower === selfHandle)
+      continue;
+    if (seen.has(lower))
+      continue;
+    const participant = byHandle.get(lower);
+    if (participant === void 0)
+      continue;
+    seen.add(lower);
+    targets.push(participant);
+  }
+  return { targets: targets.slice(0, maxMentions), all, human };
+}
+
+// src/plugin/rooms.ts
+var ROOMS_KEY = "relay:rooms";
+var DEFAULT_MAX_MENTIONS2 = 2;
+var DEFAULT_MAX_BURST_TURNS = 6;
+function isRoomRecord(value) {
+  if (value === null || typeof value !== "object")
+    return false;
+  const r = value;
+  return typeof r.roomKey === "string" && typeof r.provider === "string" && typeof r.channelId === "string" && Array.isArray(r.participants);
+}
+function parseRooms(raw) {
+  if (!raw)
+    return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== "object")
+      return {};
+    const out = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (isRoomRecord(value))
+        out[key] = normalizeRoom(value);
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+function normalizeRoom(r) {
+  const participants = Array.isArray(r.participants) ? r.participants.filter(
+    (p) => p !== null && typeof p === "object" && typeof p.agentId === "string" && typeof p.handle === "string"
+  ).map((p) => ({ agentId: p.agentId, handle: p.handle })) : [];
+  return {
+    roomKey: r.roomKey,
+    provider: r.provider,
+    channelId: r.channelId,
+    name: typeof r.name === "string" && r.name.length > 0 ? r.name : void 0,
+    status: r.status === "paused" ? "paused" : "active",
+    maxMentions: typeof r.maxMentions === "number" && r.maxMentions > 0 ? Math.floor(r.maxMentions) : DEFAULT_MAX_MENTIONS2,
+    participants
+  };
+}
+async function loadRooms(sdk) {
+  return parseRooms(await sdk.storage.get(ROOMS_KEY));
+}
+async function saveRooms(sdk, rooms) {
+  await sdk.storage.set(ROOMS_KEY, JSON.stringify(rooms));
+}
+async function listRooms(sdk) {
+  const rooms = await loadRooms(sdk);
+  return Object.keys(rooms).sort().map((key) => rooms[key]);
+}
+async function getRoom(sdk, provider, channelId) {
+  const rooms = await loadRooms(sdk);
+  return rooms[conversationKey(provider, channelId)];
+}
+async function isRoomChannel(sdk, provider, channelId) {
+  return await getRoom(sdk, provider, channelId) !== void 0;
+}
+async function createRoom(sdk, provider, channelId, opts = {}) {
+  const rooms = await loadRooms(sdk);
+  const key = conversationKey(provider, channelId);
+  const existing = rooms[key];
+  if (existing)
+    return existing;
+  const record = {
+    roomKey: key,
+    provider,
+    channelId,
+    name: opts.name && opts.name.length > 0 ? opts.name : void 0,
+    status: "active",
+    maxMentions: typeof opts.maxMentions === "number" && opts.maxMentions > 0 ? Math.floor(opts.maxMentions) : DEFAULT_MAX_MENTIONS2,
+    participants: []
+  };
+  rooms[key] = record;
+  await saveRooms(sdk, rooms);
+  return record;
+}
+async function deleteRoom(sdk, provider, channelId) {
+  const rooms = await loadRooms(sdk);
+  const key = conversationKey(provider, channelId);
+  if (!rooms[key])
+    return false;
+  delete rooms[key];
+  await saveRooms(sdk, rooms);
+  return true;
+}
+function uniqueHandle(name, agentId, taken) {
+  const base = sanitizeHandle(name);
+  if (!taken.has(base.toLowerCase()))
+    return base;
+  const idSuffix = sanitizeHandle(agentId).slice(0, 4) || "x";
+  let candidate = `${base}-${idSuffix}`;
+  let n = 2;
+  while (taken.has(candidate.toLowerCase())) {
+    candidate = `${base}-${idSuffix}-${n}`;
+    n += 1;
+  }
+  return candidate;
+}
+async function addParticipant(sdk, provider, channelId, agentId, displayName) {
+  const rooms = await loadRooms(sdk);
+  const key = conversationKey(provider, channelId);
+  let room = rooms[key];
+  if (!room) {
+    room = {
+      roomKey: key,
+      provider,
+      channelId,
+      status: "active",
+      maxMentions: DEFAULT_MAX_MENTIONS2,
+      participants: []
+    };
+    rooms[key] = room;
+  }
+  const existing = room.participants.find((p) => p.agentId === agentId);
+  if (existing)
+    return existing;
+  const taken = new Set(room.participants.map((p) => p.handle.toLowerCase()));
+  const participant = {
+    agentId,
+    handle: uniqueHandle(displayName || agentId, agentId, taken)
+  };
+  room.participants.push(participant);
+  await saveRooms(sdk, rooms);
+  return participant;
+}
+async function removeParticipant(sdk, provider, channelId, agentIdOrHandle) {
+  const rooms = await loadRooms(sdk);
+  const key = conversationKey(provider, channelId);
+  const room = rooms[key];
+  if (!room)
+    return false;
+  const lower = agentIdOrHandle.toLowerCase();
+  const before = room.participants.length;
+  room.participants = room.participants.filter(
+    (p) => p.agentId !== agentIdOrHandle && p.handle.toLowerCase() !== lower
+  );
+  if (room.participants.length === before)
+    return false;
+  await saveRooms(sdk, rooms);
+  return true;
+}
+async function setRoomStatus(sdk, provider, channelId, status) {
+  const rooms = await loadRooms(sdk);
+  const key = conversationKey(provider, channelId);
+  const room = rooms[key];
+  if (!room)
+    return false;
+  room.status = status;
+  await saveRooms(sdk, rooms);
+  return true;
+}
+function createRoomBus(deps) {
+  const { sdk, dispatch, sendAs } = deps;
+  const logger = deps.logger ?? {
+    warn: (m) => console.warn("[relay:room] " + m),
+    error: (m) => console.error("[relay:room] " + m)
+  };
+  const maxBurstTurns = typeof deps.maxBurstTurns === "number" && deps.maxBurstTurns > 0 ? Math.floor(deps.maxBurstTurns) : DEFAULT_MAX_BURST_TURNS;
+  const queues = /* @__PURE__ */ new Map();
+  const processing = /* @__PURE__ */ new Set();
+  const burst = /* @__PURE__ */ new Map();
+  const sessions = /* @__PURE__ */ new Map();
+  const lastPost = /* @__PURE__ */ new Map();
+  async function drain(key) {
+    if (processing.has(key))
+      return 0;
+    processing.add(key);
+    let turns = 0;
+    try {
+      while (true) {
+        const rooms = await loadRooms(sdk);
+        const room = rooms[key];
+        if (!room)
+          break;
+        if (room.status === "paused")
+          break;
+        const backlog = queues.get(key);
+        if (!backlog || backlog.length === 0)
+          break;
+        if ((burst.get(key) ?? 0) >= maxBurstTurns) {
+          logger.warn(
+            `room ${key}: burst cap ${maxBurstTurns} reached; dropping ${backlog.length} queued turn(s)`
+          );
+          queues.set(key, []);
+          break;
+        }
+        const item = backlog.shift();
+        const participant = room.participants.find((p) => p.agentId === item.toAgentId);
+        if (!participant)
+          continue;
+        const preamble = buildPreamble(
+          { name: room.name, roomKey: room.roomKey },
+          participant,
+          room.participants
+        );
+        const prompt = `${preamble}
+
+[${item.fromHandle}]: ${item.text}`;
+        const sessKey = `${key}\0${participant.agentId}`;
+        let reply;
+        try {
+          reply = await dispatch(participant.agentId, prompt, sessions.get(sessKey));
+        } catch (error) {
+          logger.error(
+            `room ${key}: dispatch to ${participant.handle} (${participant.agentId}) failed: ${String(error)}`
+          );
+          continue;
+        }
+        burst.set(key, (burst.get(key) ?? 0) + 1);
+        turns += 1;
+        if (reply.sessionId)
+          sessions.set(sessKey, reply.sessionId);
+        const text = (reply.text ?? "").trim();
+        if (text.length === 0)
+          continue;
+        if (lastPost.get(sessKey) === text) {
+          logger.warn(`room ${key}: echo from ${participant.handle} suppressed`);
+          continue;
+        }
+        lastPost.set(sessKey, text);
+        try {
+          await sendAs(room, { handle: participant.handle, text });
+        } catch (error) {
+          logger.error(`room ${key}: sendAs for ${participant.handle} failed: ${String(error)}`);
+        }
+        const parsed = parseMentions(text, room.participants, {
+          self: participant,
+          maxMentions: room.maxMentions
+        });
+        const followups = parsed.all ? room.participants.filter((p) => p.agentId !== participant.agentId) : parsed.targets;
+        for (const target of followups) {
+          const agentId = target.agentId;
+          if (!agentId)
+            continue;
+          backlog.push({ fromHandle: participant.handle, text, toAgentId: agentId });
+        }
+      }
+    } finally {
+      processing.delete(key);
+    }
+    return turns;
+  }
+  return {
+    async isRoom(provider, channelId) {
+      return isRoomChannel(sdk, provider, channelId);
+    },
+    async submitMessage(provider, channelId, fromHandle, text) {
+      const key = conversationKey(provider, channelId);
+      const rooms = await loadRooms(sdk);
+      const room = rooms[key];
+      if (!room)
+        return { status: "no-room", targets: 0, turns: 0, human: false };
+      const parsed = parseMentions(text, room.participants, {
+        maxMentions: room.maxMentions
+      });
+      const targets = parsed.all ? room.participants.slice() : parsed.targets;
+      if (targets.length === 0) {
+        return { status: "no-target", targets: 0, turns: 0, human: parsed.human };
+      }
+      const backlog = queues.get(key) ?? [];
+      for (const target of targets) {
+        const agentId = target.agentId;
+        if (!agentId)
+          continue;
+        backlog.push({ fromHandle, text, toAgentId: agentId });
+      }
+      queues.set(key, backlog);
+      burst.set(key, 0);
+      if (processing.has(key)) {
+        return { status: "queued", targets: targets.length, turns: 0, human: parsed.human };
+      }
+      const turns = await drain(key);
+      return { status: "drained", targets: targets.length, turns, human: parsed.human };
     }
   };
 }
@@ -891,6 +1247,25 @@ var COMMAND_IDS = [
   "relay-reload-config"
 ];
 var PANEL_COMMAND_IDS = ["relay-save-config", "relay-bind", "relay-unbind"];
+var ROOM_COMMAND_IDS = [
+  "relay-room-create",
+  "relay-room-delete",
+  "relay-room-add",
+  "relay-room-remove",
+  "relay-room-list",
+  "relay-room-pause",
+  "relay-room-resume"
+];
+function argString(args, key) {
+  const record = args ?? {};
+  const value = record[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+async function roomArgError(sdk, op, required) {
+  const message = `Relay room ${op} failed: ${required} are required.`;
+  await sdk.notifications.toast(message);
+  return message;
+}
 var BACKGROUND_SERVICE_ID = "relay-bridge";
 var BACKGROUND_SERVICE_NAME = "Maestro Relay bridge";
 var STATUS_TOPICS = ["agent.completed", "agent.statusChanged", "agent.error"];
@@ -900,6 +1275,27 @@ function createRuntime(sdk, config, scheduler) {
   let running = false;
   const agentStatus = /* @__PURE__ */ new Map();
   let backgroundServiceId;
+  const roomDispatch = async (agentId, prompt) => {
+    const handle = collectAgentReply(
+      sdk,
+      { agentId, prompt },
+      {
+        onSession(sessionId) {
+          activeReplies.set(sessionId, handle);
+        }
+      },
+      scheduler
+    );
+    const reply = await handle.promise;
+    activeReplies.delete(reply.sessionId);
+    return { text: reply.text, sessionId: reply.sessionId };
+  };
+  const roomSendAs = async (room, post) => {
+    const client = providers.find((provider) => provider.name === room.provider);
+    if (client?.postAs)
+      await client.postAs(room.channelId, post.handle, post.text);
+  };
+  const bus = createRoomBus({ sdk, dispatch: roomDispatch, sendAs: roomSendAs });
   const runtime = {
     config,
     start() {
@@ -1007,6 +1403,74 @@ function createRuntime(sdk, config, scheduler) {
           await sdk.notifications.toast(message);
           return message;
         }
+        case "relay-room-create": {
+          const provider = argString(args, "provider");
+          const channelId = argString(args, "channelId");
+          const name = argString(args, "name");
+          if (!provider || !channelId)
+            return roomArgError(sdk, "create", "provider and channelId");
+          const room = await createRoom(sdk, provider, channelId, name ? { name } : {});
+          const message = `Room ready: ${provider}:${channelId}${room.name ? ` ("${room.name}")` : ""}; ${room.participants.length} persona(s).`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case "relay-room-delete": {
+          const provider = argString(args, "provider");
+          const channelId = argString(args, "channelId");
+          if (!provider || !channelId)
+            return roomArgError(sdk, "delete", "provider and channelId");
+          const removed = await deleteRoom(sdk, provider, channelId);
+          const message = removed ? `Room deleted: ${provider}:${channelId}.` : `No room found for ${provider}:${channelId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case "relay-room-add": {
+          const provider = argString(args, "provider");
+          const channelId = argString(args, "channelId");
+          const agentId = argString(args, "agentId");
+          const displayName = argString(args, "displayName") || agentId;
+          if (!provider || !channelId || !agentId) {
+            return roomArgError(sdk, "add", "provider, channelId, and agentId");
+          }
+          const participant = await addParticipant(sdk, provider, channelId, agentId, displayName);
+          const message = `Added @${participant.handle} (agent ${agentId}) to ${provider}:${channelId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case "relay-room-remove": {
+          const provider = argString(args, "provider");
+          const channelId = argString(args, "channelId");
+          const target = argString(args, "target") || argString(args, "agentId") || argString(args, "handle");
+          if (!provider || !channelId || !target) {
+            return roomArgError(sdk, "remove", "provider, channelId, and target (agent id or handle)");
+          }
+          const removed = await removeParticipant(sdk, provider, channelId, target);
+          const message = removed ? `Removed "${target}" from ${provider}:${channelId}.` : `No persona "${target}" in ${provider}:${channelId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
+        case "relay-room-list": {
+          const rooms = await listRooms(sdk);
+          if (rooms.length === 0)
+            return "No rooms configured.";
+          return rooms.map((room) => {
+            const personas = room.participants.map((p) => `@${p.handle}`).join(", ") || "(none)";
+            return `${room.roomKey} [${room.status}]${room.name ? ` "${room.name}"` : ""}: ${personas}`;
+          }).join("\n");
+        }
+        case "relay-room-pause":
+        case "relay-room-resume": {
+          const provider = argString(args, "provider");
+          const channelId = argString(args, "channelId");
+          const op = commandId === "relay-room-pause" ? "pause" : "resume";
+          if (!provider || !channelId)
+            return roomArgError(sdk, op, "provider and channelId");
+          const status = op === "pause" ? "paused" : "active";
+          const ok = await setRoomStatus(sdk, provider, channelId, status);
+          const message = ok ? `Room ${provider}:${channelId} ${status === "paused" ? "paused" : "resumed"}.` : `No room found for ${provider}:${channelId}.`;
+          await sdk.notifications.toast(message);
+          return message;
+        }
         default:
           throw new Error(`unknown relay command "${commandId}"`);
       }
@@ -1014,6 +1478,10 @@ function createRuntime(sdk, config, scheduler) {
     async routeInbound(message, sink) {
       if (message.text.trim().length === 0)
         return { status: "empty" };
+      if (await bus.isRoom(message.provider, message.channelId)) {
+        const room = await bus.submitMessage(message.provider, message.channelId, "human", message.text);
+        return { status: "room", room };
+      }
       const agentId = await getBinding(sdk, conversationKey(message.provider, message.channelId));
       if (!agentId)
         return { status: "unbound" };
@@ -1142,6 +1610,9 @@ async function activate(sdk) {
   for (const id of PANEL_COMMAND_IDS) {
     sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
   }
+  for (const id of ROOM_COMMAND_IDS) {
+    sdk.commands.register(id, (args) => runtime.handleCommand(id, args));
+  }
   sdk.events.on("agent.completed", (payload) => runtime.onAgentCompleted(payload));
   sdk.events.on("agent.statusChanged", (payload) => runtime.onAgentStatusChanged(payload));
   sdk.events.on("agent.error", (payload) => runtime.onAgentError(payload));
@@ -1169,6 +1640,7 @@ function deactivate() {
   BACKGROUND_SERVICE_NAME,
   COMMAND_IDS,
   PANEL_COMMAND_IDS,
+  ROOM_COMMAND_IDS,
   STATUS_TOPICS,
   activate,
   buildConfiguredProviders,

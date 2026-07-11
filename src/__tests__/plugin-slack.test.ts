@@ -392,3 +392,49 @@ test('disconnect() stops reconnecting and closes the socket', async () => {
   assert.equal(scheduler.pendingCount, 0, 'no reconnect scheduled after disconnect');
   assert.equal(calls.connects.length, connectsBefore, 'no new socket opened');
 });
+
+test('postAs masks a persona reply with a single-asterisk bold handle prefix', async () => {
+  const { sdk, calls } = createFakeSdk({ fetch: slackFetch });
+  const client = createSlackClient({
+    sdk,
+    appToken: 'xapp-1',
+    botToken: 'xoxb-1',
+    config: openConfig,
+    route: async () => ({ status: 'unbound' }) as RouteOutcome,
+    scheduler: new ManualScheduler(),
+  });
+
+  assert.ok(client.postAs, 'the slack client exposes postAs for masked rooms');
+  await client.postAs!('C7', 'Bob', 'hi there');
+  await flush();
+
+  const post = calls.fetches.find((f) => f.url.endsWith('/chat.postMessage'));
+  assert.ok(post, 'chat.postMessage was called');
+  const init = post.init as FetchInit;
+  assert.equal(init.headers.Authorization, 'Bearer xoxb-1');
+  // Masked personas post flat in the channel — no thread_ts.
+  assert.deepEqual(JSON.parse(init.body ?? '{}'), { channel: 'C7', text: '*Bob:* hi there' });
+});
+
+test('postAs splits a long masked reply with the prefix on every chunk', async () => {
+  const { sdk, calls } = createFakeSdk({ fetch: slackFetch });
+  const client = createSlackClient({
+    sdk,
+    appToken: 'xapp-1',
+    botToken: 'xoxb-1',
+    config: openConfig,
+    route: async () => ({ status: 'unbound' }) as RouteOutcome,
+    scheduler: new ManualScheduler(),
+  });
+
+  await client.postAs!('C1', 'Bob', 'z'.repeat(9000));
+  await flush();
+
+  const posts = calls.fetches.filter((f) => f.url.endsWith('/chat.postMessage'));
+  assert.ok(posts.length >= 2, 'a >limit reply splits into multiple posts');
+  for (const p of posts) {
+    const body = JSON.parse((p.init as FetchInit).body ?? '{}') as { text: string };
+    assert.ok(body.text.startsWith('*Bob:* '), 'each chunk carries the handle mask');
+    assert.ok(body.text.length <= 3900, 'each masked chunk fits within the Slack limit');
+  }
+});

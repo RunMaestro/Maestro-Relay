@@ -172,6 +172,19 @@ export function createSlackClient(options: SlackClientOptions): ProviderClient {
     }
   }
 
+  /** Post a masked persona message into a room's channel: a `*Handle:*` bold
+   * prefix (Slack bold uses single asterisks), then the split reply body, posted
+   * flat in the channel (no thread). Consumed by the multi-agent room bus via
+   * {@link ProviderClient.postAs}. */
+  async function postAs(channel: string, handle: string, text: string): Promise<void> {
+    const body = text.trim();
+    if (body.length === 0) return;
+    const prefix = `*${handle}:* `;
+    for (const chunk of splitMessage(body, MESSAGE_LIMIT - prefix.length)) {
+      await postMessage(channel, prefix + chunk);
+    }
+  }
+
   function handleMessageEvent(payload: Record<string, unknown>, event: Record<string, unknown>): void {
     // Ignore bots (including our own reply echoes) and non-user update events.
     if (event.bot_id !== undefined) return;
@@ -357,5 +370,6 @@ export function createSlackClient(options: SlackClientOptions): ProviderClient {
     connected(): boolean {
       return isConnected;
     },
+    postAs,
   };
 }

@@ -4,6 +4,7 @@ import { createRuntime, type InboundMessage } from '../plugin/entry';
 import type { RelayConfig } from '../plugin/registry';
 import { conversationKey, getBinding, getSecret, setBinding } from '../plugin/registry';
 import { ManualScheduler, createFakeSdk, flush } from './plugin-helpers';
+import { addParticipant, getRoom, listRooms } from '../plugin/rooms';
 
 /**
  * The runtime ties config + bindings + the reply loop together: an inbound chat
@@ -242,4 +243,108 @@ test('onAgentCompleted records the terminal status for its agent', async () => {
 
   runtime.onAgentCompleted({ sessionId: 'S1', agentId: 'agent-5', status: 'failed' });
   assert.deepEqual(runtime.status().agentStatuses, [{ agentId: 'agent-5', status: 'failed' }]);
+});
+
+test('routeInbound routes a room channel through the bus and posts masked personas via postAs', async () => {
+  const { sdk, calls } = createFakeSdk({
+    dispatchSessionId: 'S1',
+    read: () => [{ id: 'e1', timestamp: 1, fullResponse: 'Hi, I am Ada' }],
+  });
+  await addParticipant(sdk, 'discord', 'room-1', 'agent-a', 'Ada');
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+
+  const posts: Array<{ channelId: string; handle: string; text: string }> = [];
+  runtime.registerProvider({
+    name: 'discord',
+    connect: async () => {},
+    disconnect: () => {},
+    connected: () => true,
+    postAs: async (channelId, handle, text) => {
+      posts.push({ channelId, handle, text });
+    },
+  });
+
+  const routed = runtime.routeInbound(
+    { provider: 'discord', channelId: 'room-1', userId: 'u1', text: '@Ada hello' },
+    () => {},
+  );
+  await flush(40);
+  assert.equal(runtime.status().activeReplies, 1, 'the room turn is tracked as an in-flight reply');
+
+  runtime.onAgentCompleted({ sessionId: 'S1', status: 'completed' });
+  const outcome = await routed;
+
+  assert.equal(outcome.status, 'room');
+  assert.equal(outcome.room?.status, 'drained');
+  assert.equal(outcome.room?.targets, 1);
+  assert.deepEqual(calls.dispatched.map((d) => d.agentId), ['agent-a']);
+  assert.match(calls.dispatched[0].prompt, /You are @Ada in room/, 'the persona gets the room preamble');
+  assert.match(calls.dispatched[0].prompt, /\[human\]: @Ada hello/, 'and the human utterance');
+  assert.deepEqual(posts, [{ channelId: 'room-1', handle: 'Ada', text: 'Hi, I am Ada' }]);
+  assert.equal(runtime.status().activeReplies, 0, 'the room handle is cleared after the turn');
+});
+
+test('routeInbound prefers the room bus over a 1:1 binding for a room channel', async () => {
+  const { sdk, calls } = createFakeSdk({ dispatchSessionId: 'S1', read: () => [] });
+  await addParticipant(sdk, 'discord', 'room-2', 'agent-a', 'Ada');
+  // A stray 1:1 binding on the same channel must not fire once it is a room.
+  await setBinding(sdk, conversationKey('discord', 'room-2'), 'agent-legacy');
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+
+  // No @mention → the room has no target, so nothing dispatches at all.
+  const outcome = await runtime.routeInbound(
+    { provider: 'discord', channelId: 'room-2', userId: 'u1', text: 'just chatting' },
+    () => {},
+  );
+  assert.equal(outcome.status, 'room');
+  assert.equal(outcome.room?.status, 'no-target');
+  assert.deepEqual(calls.dispatched, [], 'the legacy binding never dispatched');
+});
+
+test('room commands create, add personas, list, pause, remove, and delete', async () => {
+  const { sdk } = createFakeSdk();
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+
+  await runtime.handleCommand('relay-room-create', { provider: 'slack', channelId: 'C9', name: 'Standup' });
+  let room = await getRoom(sdk, 'slack', 'C9');
+  assert.ok(room, 'the room was created');
+  assert.equal(room?.name, 'Standup');
+
+  await runtime.handleCommand('relay-room-add', { provider: 'slack', channelId: 'C9', agentId: 'agent-a', displayName: 'Ada' });
+  await runtime.handleCommand('relay-room-add', { provider: 'slack', channelId: 'C9', agentId: 'agent-b', displayName: 'Bob' });
+  room = await getRoom(sdk, 'slack', 'C9');
+  assert.deepEqual(room?.participants.map((p) => p.handle), ['Ada', 'Bob']);
+
+  const listing = await runtime.handleCommand('relay-room-list');
+  assert.match(listing, /slack:C9/);
+  assert.match(listing, /@Ada/);
+  assert.match(listing, /@Bob/);
+  assert.match(listing, /\[active\]/);
+
+  await runtime.handleCommand('relay-room-pause', { provider: 'slack', channelId: 'C9' });
+  assert.equal((await getRoom(sdk, 'slack', 'C9'))?.status, 'paused');
+  await runtime.handleCommand('relay-room-resume', { provider: 'slack', channelId: 'C9' });
+  assert.equal((await getRoom(sdk, 'slack', 'C9'))?.status, 'active');
+
+  const removed = await runtime.handleCommand('relay-room-remove', { provider: 'slack', channelId: 'C9', target: 'Ada' });
+  assert.match(removed, /Removed/);
+  assert.deepEqual((await getRoom(sdk, 'slack', 'C9'))?.participants.map((p) => p.handle), ['Bob']);
+
+  const deleted = await runtime.handleCommand('relay-room-delete', { provider: 'slack', channelId: 'C9' });
+  assert.match(deleted, /deleted/);
+  assert.equal(await getRoom(sdk, 'slack', 'C9'), undefined);
+});
+
+test('relay-room-list reports when no rooms are configured', async () => {
+  const { sdk } = createFakeSdk();
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+  assert.equal(await runtime.handleCommand('relay-room-list'), 'No rooms configured.');
+});
+
+test('relay-room-add rejects missing args without mutating the registry', async () => {
+  const { sdk } = createFakeSdk();
+  const runtime = createRuntime(sdk, baseConfig, new ManualScheduler());
+  const message = await runtime.handleCommand('relay-room-add', { provider: 'discord' });
+  assert.match(message, /failed/);
+  assert.deepEqual(await listRooms(sdk), [], 'no room was created by the rejected add');
 });

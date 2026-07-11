@@ -116,7 +116,8 @@
       { "id": "relay-start", "title": "Relay: Start bridges", "description": "Connect the configured Discord/Slack bots." },
       { "id": "relay-stop", "title": "Relay: Stop bridges", "description": "Disconnect all bots." },
       { "id": "relay-status", "title": "Relay: Show status", "description": "Report each bridge's connection state." },
-      { "id": "relay-reload-config", "title": "Relay: Reload configuration", "description": "Re-read tokens and settings, then reconnect." }
+      { "id": "relay-reload-config", "title": "Relay: Reload configuration", "description": "Re-read tokens and settings, then reconnect." },
+      { "id": "relay-room-list", "title": "Relay: List rooms", "description": "List multi-agent rooms and their masked personas." }
     ],
     "panels": [
       { "id": "config", "title": "Maestro Relay", "entry": "panel.html", "placement": "settings" }

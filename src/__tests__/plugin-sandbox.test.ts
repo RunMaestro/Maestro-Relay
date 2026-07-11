@@ -52,13 +52,20 @@ test('the bundle loads and activates in a bare sandbox realm', async () => {
     [
       'relay-bind',
       'relay-reload-config',
+      'relay-room-add',
+      'relay-room-create',
+      'relay-room-delete',
+      'relay-room-list',
+      'relay-room-pause',
+      'relay-room-remove',
+      'relay-room-resume',
       'relay-save-config',
       'relay-start',
       'relay-status',
       'relay-stop',
       'relay-unbind',
     ],
-    'registers the four contributed commands plus the three panel commands',
+    'registers the lifecycle + panel + room commands',
   );
   assert.ok(
     calls.subscriptions.some((topics) => topics.includes('agent.completed')),
