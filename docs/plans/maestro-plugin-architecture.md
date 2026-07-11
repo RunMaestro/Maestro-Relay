@@ -275,8 +275,17 @@ inbound webhook the sandbox cannot host)**.
    tracks the last status per bound agent, surfaced through `relay-status` and toasted on
    error (`notifications.toast`). `status()` gained `supervised` + `agentStatuses`. Verified
    against the fake SDK + bare-`vm` sandbox load (register on activate, unregister on
-   deactivate, status recording, error toast). **Still pending in step 6:** masked-persona
-   rooms (single-socket `**Handle:**` mirroring) inside the plugin.
+   deactivate, status recording, error toast). **Masked-persona rooms — core landed
+   (this iteration):** `src/plugin/rooms.ts` is a KV-backed room registry (`relay:rooms`
+   blob, no SQLite) plus a serial, self-terminating masked bus that reuses the kernel
+   room protocol (`src/core/room/protocol.ts`, bundled by esbuild): `parseMentions` routes
+   a message only to the personas it `@Handle`s, `buildPreamble` frames each persona turn,
+   replies re-route internally (single socket — masked `**Handle:**` mirroring, no
+   per-persona gateway), and two loop brakes stop A↔B runaway (a per-human-burst turn cap
+   + a verbatim-echo guard). Agent dispatch and the channel post are injected seams, so the
+   bus is provider-neutral and fully unit-tested (15 tests). **Still pending in step 6:**
+   wiring the room core into the runtime — `routeInbound` room check, the Discord/Slack
+   plugin clients' masked `sendAs` post sink, and room CRUD commands + a panel section.
 7. ✅ **Packaging pipeline** (`npm run pack:plugin`, `src/scripts/pack-plugin.ts` +
    `src/plugin/packaging.ts`): stages a pristine copy of `plugin/`, optionally injects the
    per-operator `agents:dispatch` allowlist (`--agents`, id-validated to the host's exact-name rule),
