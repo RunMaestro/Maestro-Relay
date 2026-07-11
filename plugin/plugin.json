@@ -1,0 +1,125 @@
+{
+  "id": "sh.maestro.relay",
+  "name": "Maestro Relay",
+  "version": "0.5.0-rc.2",
+  "tier": 2,
+  "maestro": { "minHostApi": "1.12.0" },
+  "description": "Bridge Discord and Slack bots to your Maestro agents, entirely inside Maestro. Base package: connections and config only — add an `agents:dispatch` permission naming your agent ids and re-sign before install to enable message routing (see plugin/README.md).",
+  "author": "Maestro Relay contributors",
+  "license": "MIT",
+  "category": "automation",
+  "entry": "entry.js",
+  "permissions": [
+    {
+      "capability": "net:connect",
+      "scope": "gateway.discord.gg",
+      "reason": "Hold the Discord Gateway websocket to receive messages."
+    },
+    {
+      "capability": "net:connect",
+      "scope": "slack.com",
+      "reason": "Hold the Slack Socket Mode websocket. Host comes from apps.connections.open at runtime; the slack.com scope covers every wss-*.slack.com gateway (dot-boundary suffix match)."
+    },
+    {
+      "capability": "net:fetch",
+      "scope": "discord.com",
+      "reason": "Call the Discord REST API (send messages, reactions, slash commands)."
+    },
+    {
+      "capability": "net:fetch",
+      "scope": "cdn.discordapp.com",
+      "reason": "Download Discord attachments referenced in messages."
+    },
+    {
+      "capability": "net:fetch",
+      "scope": "slack.com",
+      "reason": "Call the Slack Web API (open Socket Mode, post messages, reactions)."
+    },
+    {
+      "capability": "agents:read",
+      "reason": "List your agents so you can bind chat channels to them."
+    },
+    {
+      "capability": "transcripts:read",
+      "reason": "Read the bound agent's reply so it can be posted back to the chat channel."
+    },
+    { "capability": "storage:read", "reason": "Read bot tokens and the channel-to-agent registry." },
+    { "capability": "storage:write", "reason": "Persist bot tokens and the channel-to-agent registry." },
+    { "capability": "settings:read", "reason": "Read non-secret relay configuration." },
+    { "capability": "settings:write", "reason": "Persist non-secret relay configuration." },
+    { "capability": "events:subscribe", "reason": "React to agent status changes for chat status indicators." },
+    { "capability": "notifications:toast", "reason": "Surface bridge start/stop and connection errors." },
+    { "capability": "background:service", "reason": "Supervise and restart the gateway connections on crash." },
+    { "capability": "ui:panel", "reason": "Render the Maestro Relay configuration panel." },
+    { "capability": "ui:contribute", "reason": "Show a relay status item in Maestro's UI." }
+  ],
+  "contributes": {
+    "settings": [
+      {
+        "id": "enabled-providers",
+        "key": "enabledProviders",
+        "type": "string",
+        "default": "discord,slack",
+        "description": "Comma-separated providers to run (discord, slack)."
+      },
+      {
+        "id": "log-level",
+        "key": "logLevel",
+        "type": "string",
+        "default": "info",
+        "description": "Minimum log level: debug | info | warn | error."
+      },
+      {
+        "id": "discord-client-id",
+        "key": "discordClientId",
+        "type": "string",
+        "default": "",
+        "description": "Discord application (client) id."
+      },
+      {
+        "id": "discord-guild-id",
+        "key": "discordGuildId",
+        "type": "string",
+        "default": "",
+        "description": "Discord guild (server) id for slash-command registration."
+      },
+      {
+        "id": "discord-allowed-user-ids",
+        "key": "discordAllowedUserIds",
+        "type": "string",
+        "default": "",
+        "description": "Comma-separated Discord user ids allowed to run commands (empty = all)."
+      },
+      {
+        "id": "slack-team-id",
+        "key": "slackTeamId",
+        "type": "string",
+        "default": "",
+        "description": "Slack workspace (team) id."
+      },
+      {
+        "id": "slack-app-id",
+        "key": "slackAppId",
+        "type": "string",
+        "default": "",
+        "description": "Slack application id."
+      },
+      {
+        "id": "slack-allowed-user-ids",
+        "key": "slackAllowedUserIds",
+        "type": "string",
+        "default": "",
+        "description": "Comma-separated Slack user ids allowed to run commands (empty = all)."
+      }
+    ],
+    "commands": [
+      { "id": "relay-start", "title": "Relay: Start bridges", "description": "Connect the configured Discord/Slack bots." },
+      { "id": "relay-stop", "title": "Relay: Stop bridges", "description": "Disconnect all bots." },
+      { "id": "relay-status", "title": "Relay: Show status", "description": "Report each bridge's connection state." },
+      { "id": "relay-reload-config", "title": "Relay: Reload configuration", "description": "Re-read tokens and settings, then reconnect." }
+    ],
+    "panels": [
+      { "id": "config", "title": "Maestro Relay", "entry": "panel.html", "placement": "settings" }
+    ]
+  }
+}
