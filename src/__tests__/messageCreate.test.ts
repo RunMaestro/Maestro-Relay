@@ -58,6 +58,19 @@ test('handleMessageCreate ignores bot messages', async () => {
   assert.equal(enqueued, 0);
 });
 
+test('handleMessageCreate ignores system messages (e.g. thread rename)', async () => {
+  let enqueued = 0;
+  const handler = createMessageCreateHandler(
+    createDeps(() => {
+      enqueued += 1;
+    }),
+  );
+
+  // A thread rename arrives as a system message whose content is the new name.
+  await handler(makeMessage({ system: true, content: 'renamed-thread' }) as any);
+  assert.equal(enqueued, 0);
+});
+
 test('handleMessageCreate ignores DMs', async () => {
   let enqueued = 0;
   const handler = createMessageCreateHandler(

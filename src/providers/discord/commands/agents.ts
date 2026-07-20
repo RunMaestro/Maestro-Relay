@@ -70,9 +70,9 @@ export async function autocomplete(interaction: AutocompleteInteraction): Promis
 
   try {
     const agents = await maestro.listAgents();
-    const filtered = agents.filter(
-      (a) => a.name.toLowerCase().includes(focused) || a.id.toLowerCase().includes(focused),
-    );
+    const filtered = agents
+      .filter((a) => a.name.toLowerCase().includes(focused) || a.id.toLowerCase().includes(focused))
+      .sort((a, b) => a.name.localeCompare(b.name));
     await interaction.respond(
       filtered.slice(0, 25).map((a) => ({ name: `${a.name} (${a.toolType})`, value: a.id })),
     );
