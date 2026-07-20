@@ -387,3 +387,48 @@ test('auto-run autocomplete returns empty when channel is not registered', async
   await autocomplete(i as unknown as Parameters<typeof autocomplete>[0]);
   assert.deepEqual(responded[0], []);
 });
+
+test('auto-run autocomplete resolves the agent from the parent channel inside a thread', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'auto-run-thread-'));
+  try {
+    await fs.writeFile(path.join(tmp, 'plan.md'), '#');
+
+    // Only the parent channel is bound; the thread itself has no binding.
+    const { channelDb } = await import('../providers/discord/channelsDb');
+    mock.method(channelDb, 'get', (id: string) =>
+      id === 'parent-1'
+        ? { channel_id: 'parent-1', agent_id: 'agent-1', agent_name: 'TestBot' }
+        : undefined,
+    );
+
+    const { maestro } = await import('../core/maestro');
+    const showAgent = mock.method(maestro, 'showAgent', async () => ({
+      id: 'agent-1',
+      name: 'TestBot',
+      toolType: 'claude',
+      cwd: '/proj',
+      autoRunFolderPath: tmp,
+    }));
+
+    const responded: Array<Array<{ name: string; value: string }>> = [];
+    const i = {
+      channelId: 'thread-1',
+      channel: { isThread: () => true, parentId: 'parent-1' },
+      options: { getFocused: () => ({ name: 'doc', value: '' }) },
+      respond: mock.fn(async (items: Array<{ name: string; value: string }>) => {
+        responded.push(items);
+      }),
+    };
+
+    await autocomplete(i as unknown as Parameters<typeof autocomplete>[0]);
+
+    // Before the parent-channel fallback this returned [] because the thread
+    // id had no binding of its own.
+    assert.equal(showAgent.mock.callCount(), 1, 'should resolve the parent binding agent');
+    assert.equal(showAgent.mock.calls[0].arguments[0], 'agent-1');
+    const values = responded[0].map((x) => x.value);
+    assert.deepEqual(values, ['plan.md']);
+  } finally {
+    await fs.rm(tmp, { recursive: true, force: true });
+  }
+});
