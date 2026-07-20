@@ -519,6 +519,69 @@ test('autocomplete filters agents by name', async () => {
   assert.equal(items[0].value, 'a-1');
 });
 
+test('autocomplete returns agents sorted by name', async () => {
+  const { maestro } = await import('../core/maestro');
+  // Deliberately unsorted, and not sorted by id either.
+  mock.method(maestro, 'listAgents', async () => [
+    { id: 'a-3', name: 'Zulu', toolType: 'claude', cwd: '/' },
+    { id: 'a-1', name: 'Alpha', toolType: 'claude', cwd: '/' },
+    { id: 'a-2', name: 'Mike', toolType: 'openai', cwd: '/' },
+  ]);
+
+  const interaction = {
+    options: { getFocused: () => '' },
+    respond: mock.fn(async () => {}),
+  } as any;
+
+  await autocomplete(interaction);
+
+  const items = interaction.respond.mock.calls[0].arguments[0] as Array<{
+    name: string;
+    value: string;
+  }>;
+  assert.deepEqual(
+    items.map((i) => i.value),
+    ['a-1', 'a-2', 'a-3'],
+    'entries should be ordered by agent name, not by input order',
+  );
+});
+
+test('autocomplete sorts before truncating to the 25-item Discord limit', async () => {
+  const { maestro } = await import('../core/maestro');
+  // 30 agents supplied in reverse name order. Discord caps choices at 25, so
+  // if truncation happened before sorting the alphabetically-first agents
+  // would be dropped.
+  const agents = Array.from({ length: 30 }, (_, idx) => {
+    const n = 30 - idx;
+    return {
+      id: `a-${String(n).padStart(2, '0')}`,
+      name: `Agent-${String(n).padStart(2, '0')}`,
+      toolType: 'claude',
+      cwd: '/',
+    };
+  });
+  mock.method(maestro, 'listAgents', async () => agents);
+
+  const interaction = {
+    options: { getFocused: () => '' },
+    respond: mock.fn(async () => {}),
+  } as any;
+
+  await autocomplete(interaction);
+
+  const items = interaction.respond.mock.calls[0].arguments[0] as Array<{
+    name: string;
+    value: string;
+  }>;
+  assert.equal(items.length, 25, 'must respect the Discord 25-choice cap');
+  assert.equal(items[0].value, 'a-01', 'lowest-sorting agent must survive truncation');
+  assert.equal(items[24].value, 'a-25');
+  assert.ok(
+    !items.some((i) => i.value === 'a-30'),
+    'highest-sorting agents should be the ones truncated away',
+  );
+});
+
 test('autocomplete returns empty on error', async () => {
   const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'listAgents', async () => {
