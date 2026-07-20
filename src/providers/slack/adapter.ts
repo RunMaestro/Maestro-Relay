@@ -14,6 +14,7 @@ import type {
 import { maestro } from '../../core/maestro';
 import { logger } from '../../core/logger';
 import { CALLOUT_META } from '../../core/callouts';
+import { clampAttachmentText, clampAttachmentTitle, clampMessageText } from './attachment';
 import { AgentNotFoundError, RateLimitError } from '../../core/errors';
 import { slackConfig } from './config';
 import { channelDb } from './channelsDb';
@@ -325,52 +326,76 @@ export class SlackProvider implements BridgeProvider {
     // becomes a single colored attachment (mrkdwn `text`, so a fenced table in
     // the body renders as code) with the mention riding in the top-level `text`
     // so the ping still fires; a plain message keeps today's `text` posting.
+    // Every field is clamped to Slack's limits (see ./attachment): an
+    // over-length attachment is truncated server-side with no marker, so we cut
+    // it ourselves and leave a visible `…`.
+    const plainPayload = (): { text: string } => ({
+      text: clampMessageText(mentionText ? `${mentionText} ${msg.text}` : msg.text),
+    });
+
     let payload: { text: string; attachments?: unknown[] };
     if (msg.callout) {
       const meta = CALLOUT_META[msg.callout.variant];
       payload = {
-        text: mentionText,
+        text: clampMessageText(mentionText),
         attachments: [
           {
             color: meta.hex,
-            title: msg.callout.title ?? `${meta.emoji} ${meta.label}`,
-            text: msg.callout.body,
+            title: clampAttachmentTitle(msg.callout.title ?? `${meta.emoji} ${meta.label}`),
+            text: clampAttachmentText(msg.callout.body),
             mrkdwn_in: ['text'],
           },
         ],
       };
     } else {
-      payload = {
-        text: mentionText ? `${mentionText} ${msg.text}` : msg.text,
-      };
+      payload = plainPayload();
     }
 
-    try {
-      // Resolve channel vs thread once; both branches share it and differ only
-      // in the postMessage payload.
-      if (isThreadTs(target.channelId)) {
-        // target is a thread_ts — look up parent channel
-        const convo = conversationDb.get(target.channelId);
-        if (!convo) {
-          // The thread is orphaned — its row was likely removed when the
-          // bound channel was disconnected, or the DB was reset. Log the
-          // mismatch specifically so operators can distinguish it from
-          // generic Slack/network errors before surfacing to the kernel.
-          void logger.error('slack/send:orphan-thread', `thread_ts=${target.channelId}`);
-          throw new Error(`No conversation found for thread_ts ${target.channelId}`);
-        }
-        await this.client.chat.postMessage({
-          channel: convo.channel_id,
-          thread_ts: target.channelId,
-          ...payload,
-        });
-      } else {
-        await this.client.chat.postMessage({ channel: target.channelId, ...payload });
+    // Resolve channel vs thread once; the rich post and its plaintext fallback
+    // share the destination and differ only in the payload.
+    let destination: { channel: string; thread_ts?: string };
+    if (isThreadTs(target.channelId)) {
+      // target is a thread_ts — look up parent channel
+      const convo = conversationDb.get(target.channelId);
+      if (!convo) {
+        // The thread is orphaned — its row was likely removed when the
+        // bound channel was disconnected, or the DB was reset. Log the
+        // mismatch specifically so operators can distinguish it from
+        // generic Slack/network errors before surfacing to the kernel.
+        void logger.error('slack/send:orphan-thread', `thread_ts=${target.channelId}`);
+        throw new Error(`No conversation found for thread_ts ${target.channelId}`);
       }
+      destination = { channel: convo.channel_id, thread_ts: target.channelId };
+    } else {
+      destination = { channel: target.channelId };
+    }
+
+    const client = this.client;
+    const post = (p: { text: string; attachments?: unknown[] }): Promise<unknown> =>
+      client.chat.postMessage({ ...destination, ...p });
+
+    try {
+      await post(payload);
     } catch (err) {
       const rl = toRateLimitError(err);
       if (rl) throw rl;
-      throw err;
+      // A rich attachment can fail on grounds plain text won't hit (malformed
+      // payload, an attachment-related scope, a field Slack rejects). `msg.text`
+      // holds a lossless `> [!VARIANT]` blockquote of the same content (see
+      // core/callouts.ts `toOutgoing`), so degrade to it rather than drop the
+      // message. Rate limits are excluded above — those retry via sendRetry.
+      if (!msg.callout) throw err;
+      void logger.error(
+        'slack/send:callout-fallback',
+        err instanceof Error ? err.message : String(err),
+      );
+      try {
+        await post(plainPayload());
+      } catch (fallbackErr) {
+        const fallbackRl = toRateLimitError(fallbackErr);
+        if (fallbackRl) throw fallbackRl;
+        throw fallbackErr;
+      }
     }
   }
 
