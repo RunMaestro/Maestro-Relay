@@ -53,6 +53,7 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
 
   return async function handleMessageCreate(message: Message): Promise<void> {
     if (message.author.bot) return;
+    if (message.system) return;
     if (!message.guild) return;
 
     if (!message.content.trim() && message.attachments.size === 0) return;

@@ -5,7 +5,7 @@ import {
   ChatInputCommandInteraction,
   SlashCommandBuilder,
 } from 'discord.js';
-import { channelDb } from '../channelsDb';
+import { getChannelInfoForInteraction } from '../channelsDb';
 import { maestro } from '../../../core/maestro';
 
 export const data = new SlashCommandBuilder()
@@ -71,7 +71,7 @@ export async function autocomplete(interaction: AutocompleteInteraction): Promis
   const focused = interaction.options.getFocused(true);
   if (focused.name !== 'doc') return interaction.respond([]);
 
-  const channelInfo = channelDb.get(interaction.channelId);
+  const channelInfo = getChannelInfoForInteraction(interaction);
   if (!channelInfo) return interaction.respond([]);
 
   const folder = await getAgentFolder(channelInfo.agent_id);
@@ -103,7 +103,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const sub = interaction.options.getSubcommand();
   if (sub !== 'start') return;
 
-  const channelInfo = channelDb.get(interaction.channelId);
+  const channelInfo = getChannelInfoForInteraction(interaction);
   if (!channelInfo) {
     await interaction.reply({
       content: '❌ This channel is not connected to an agent. Use `/agents new` first.',
