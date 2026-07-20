@@ -58,6 +58,29 @@ export interface IncomingMessage {
   raw?: unknown;
 }
 
+/**
+ * The five canonical GitHub-style alert callout variants
+ * (`> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]`).
+ * Uppercase-only; no other tags are recognized.
+ */
+export type CalloutVariant = 'NOTE' | 'TIP' | 'IMPORTANT' | 'WARNING' | 'CAUTION';
+
+/**
+ * A parsed callout, provider-agnostic. Providers that understand callouts render
+ * this richly (Discord embed, Slack attachment); providers that don't fall back
+ * to the message's plain `text`.
+ */
+export interface CalloutPayload {
+  variant: CalloutVariant;
+  /**
+   * Reserved for a future custom-title syntax; NOT populated from GitHub
+   * callout syntax in v1 (GitHub callouts have no inline title).
+   */
+  title?: string;
+  /** The `>`-stripped callout markdown body (may be empty). */
+  body: string;
+}
+
 export interface OutgoingMessage {
   text: string;
   /**
@@ -66,6 +89,12 @@ export interface OutgoingMessage {
    * Slack would use SLACK_MENTION_USER_ID, etc.).
    */
   mention?: boolean;
+  /**
+   * When present, the provider renders this callout richly (colored embed /
+   * attachment). When a provider ignores it, the message degrades gracefully to
+   * `text`, which carries a lossless blockquote fallback.
+   */
+  callout?: CalloutPayload;
 }
 
 /**
