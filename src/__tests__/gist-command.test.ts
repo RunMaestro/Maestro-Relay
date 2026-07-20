@@ -43,6 +43,33 @@ test('gist rejects channels not connected to an agent', async () => {
   assert.ok(reply.content.includes('not connected to an agent'));
 });
 
+test('gist resolves the parent channel binding when run inside a thread', async () => {
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  mock.method(channelDb, 'get', (channelId: string) =>
+    channelId === 'parent-1'
+      ? { channel_id: 'parent-1', agent_id: 'agent-1', agent_name: 'TestBot' }
+      : undefined,
+  );
+
+  const { maestro } = await import('../core/maestro');
+  const createGist = mock.method(maestro, 'createGist', async () => ({
+    success: true,
+    agentId: 'agent-1',
+    gistUrl: 'https://gist.example/abc',
+  }));
+
+  const i = makeInteraction();
+  i.channelId = 'thread-1';
+  (i as unknown as { channel: unknown }).channel = {
+    isThread: () => true,
+    parentId: 'parent-1',
+  };
+  await execute(i as unknown as Parameters<typeof execute>[0]);
+
+  assert.equal(i.reply.mock.calls.length, 0);
+  assert.equal(createGist.mock.calls[0].arguments[0], 'agent-1');
+});
+
 test('gist publishes and renders an embed with the gist url', async () => {
   const { channelDb } = await import('../providers/discord/channelsDb');
   mock.method(channelDb, 'get', () => ({
@@ -53,8 +80,9 @@ test('gist publishes and renders an embed with the gist url', async () => {
 
   const { maestro } = await import('../core/maestro');
   mock.method(maestro, 'createGist', async () => ({
-    url: 'https://gist.example/abc',
-    id: 'abc',
+    success: true,
+    agentId: 'agent-1',
+    gistUrl: 'https://gist.example/abc',
   }));
 
   const i = makeInteraction({ description: 'desc', public: true });
