@@ -5,6 +5,12 @@ import { conversationDb } from '../providers/slack/conversationsDb';
 import { toOutgoing, CALLOUT_META } from '../core/callouts';
 import { splitMessage } from '../core/splitMessage';
 import { renderTables } from '../core/renderTables';
+import { RateLimitError } from '../core/errors';
+import {
+  ATTACHMENT_TEXT_MAX,
+  ATTACHMENT_TITLE_MAX,
+  MESSAGE_TEXT_MAX,
+} from '../providers/slack/attachment';
 import type { ChannelTarget, OutgoingMessage } from '../core/types';
 
 /**
@@ -154,6 +160,138 @@ test('N mixed segments ⇒ N postMessage calls in order (prose=text, callout=att
   assert.equal(attachments[0].color, meta.hex);
   assert.equal(attachments[0].title, `${meta.emoji} ${meta.label}`);
   assert.equal(attachments[0].text, 'hello world');
+});
+
+test('an over-length callout body is clamped to the attachment text limit', async () => {
+  const { client, calls } = makeClient();
+  const provider = makeProvider(client);
+
+  const huge = 'a'.repeat(ATTACHMENT_TEXT_MAX + 5000);
+  await provider.send(CHANNEL_TARGET, {
+    text: `> [!NOTE]\n> ${huge}`,
+    callout: { variant: 'NOTE', body: huge },
+  });
+
+  const attachments = attachmentsOf(calls[0]);
+  assert.ok(
+    attachments[0].text.length <= ATTACHMENT_TEXT_MAX,
+    `body clamped to ${ATTACHMENT_TEXT_MAX} (got ${attachments[0].text.length})`,
+  );
+  assert.ok(attachments[0].text.endsWith('…'), 'clamped body is marked with an ellipsis');
+});
+
+test('an over-length callout title is clamped to the attachment title limit', async () => {
+  const { client, calls } = makeClient();
+  const provider = makeProvider(client);
+
+  const huge = 'T'.repeat(ATTACHMENT_TITLE_MAX + 500);
+  await provider.send(CHANNEL_TARGET, {
+    text: '> [!TIP]\n> body',
+    callout: { variant: 'TIP', title: huge, body: 'body' },
+  });
+
+  const attachments = attachmentsOf(calls[0]);
+  assert.ok(
+    attachments[0].title.length <= ATTACHMENT_TITLE_MAX,
+    `title clamped to ${ATTACHMENT_TITLE_MAX} (got ${attachments[0].title.length})`,
+  );
+  assert.ok(attachments[0].title.endsWith('…'), 'clamped title is marked with an ellipsis');
+});
+
+test('an over-length plain message text is clamped to the message limit', async () => {
+  const { client, calls } = makeClient();
+  const provider = makeProvider(client);
+
+  await provider.send(CHANNEL_TARGET, { text: 'x'.repeat(MESSAGE_TEXT_MAX + 5000) });
+
+  const text = calls[0].text as string;
+  assert.ok(text.length <= MESSAGE_TEXT_MAX, `text clamped to ${MESSAGE_TEXT_MAX}`);
+  assert.ok(text.endsWith('…'), 'clamped text is marked with an ellipsis');
+});
+
+test('bodies at exactly the limit are left untouched', async () => {
+  const { client, calls } = makeClient();
+  const provider = makeProvider(client);
+
+  const exact = 'b'.repeat(ATTACHMENT_TEXT_MAX);
+  await provider.send(CHANNEL_TARGET, {
+    text: '> [!NOTE]\n> body',
+    callout: { variant: 'NOTE', body: exact },
+  });
+
+  const attachments = attachmentsOf(calls[0]);
+  assert.equal(attachments[0].text, exact, 'a body exactly at the limit is not clamped');
+});
+
+test('a failing attachment post degrades to the plaintext blockquote fallback', async () => {
+  const calls: Record<string, unknown>[] = [];
+  // Reject only the rich post; the plaintext retry succeeds.
+  const client = {
+    chat: {
+      async postMessage(arg: Record<string, unknown>) {
+        calls.push(arg);
+        if (arg.attachments) throw new Error('invalid_attachments');
+        return { ok: true };
+      },
+    },
+  };
+  const provider = makeProvider(client);
+
+  const msg: OutgoingMessage = {
+    text: '> [!NOTE]\n> hello world',
+    callout: { variant: 'NOTE', body: 'hello world' },
+  };
+  await provider.send(CHANNEL_TARGET, msg);
+
+  assert.equal(calls.length, 2, 'rich post attempted, then the plaintext fallback');
+  assert.ok(calls[0].attachments, 'first attempt carried the attachment');
+  assert.equal(calls[1].attachments, undefined, 'fallback is a plain text post');
+  assert.equal(calls[1].text, msg.text, 'fallback posts the lossless blockquote');
+});
+
+test('a rate-limited callout post propagates instead of degrading', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const client = {
+    chat: {
+      async postMessage(arg: Record<string, unknown>) {
+        calls.push(arg);
+        throw Object.assign(new Error('ratelimited'), {
+          code: 'slack_webapi_rate_limited_error',
+          retryAfter: 3,
+        });
+      },
+    },
+  };
+  const provider = makeProvider(client);
+
+  await assert.rejects(
+    provider.send(CHANNEL_TARGET, {
+      text: '> [!NOTE]\n> hi',
+      callout: { variant: 'NOTE', body: 'hi' },
+    }),
+    (err: unknown) => err instanceof RateLimitError,
+    'rate limits surface to sendWithRetry rather than degrading',
+  );
+  assert.equal(calls.length, 1, 'no plaintext fallback attempted on a rate limit');
+});
+
+test('a fallback that also fails surfaces the fallback error', async () => {
+  const client = {
+    chat: {
+      async postMessage() {
+        throw new Error('channel_not_found');
+      },
+    },
+  };
+  const provider = makeProvider(client);
+
+  await assert.rejects(
+    provider.send(CHANNEL_TARGET, {
+      text: '> [!NOTE]\n> hi',
+      callout: { variant: 'NOTE', body: 'hi' },
+    }),
+    /channel_not_found/,
+  );
 });
 
 test('a mention rides in the top-level text beside the attachment', async () => {

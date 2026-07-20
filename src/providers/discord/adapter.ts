@@ -302,7 +302,23 @@ export class DiscordProvider implements BridgeProvider {
       } catch (err) {
         const rl = toRateLimitError(err);
         if (rl) throw rl;
-        throw err;
+        // The embed can fail on grounds plain text won't hit (a rejected field,
+        // missing Embed Links in this channel). `msg.text` holds a lossless
+        // `> [!VARIANT]` blockquote of the same content (see core/callouts.ts
+        // `toOutgoing`), so degrade to it rather than drop the message. Rate
+        // limits are excluded above — those retry via sendRetry.
+        void logger.error(
+          'discord/send:callout-fallback',
+          err instanceof Error ? err.message : String(err),
+        );
+        const fallback = content ? `${content} ${msg.text}` : msg.text;
+        try {
+          await channel.send(fallback);
+        } catch (fallbackErr) {
+          const fallbackRl = toRateLimitError(fallbackErr);
+          if (fallbackRl) throw fallbackRl;
+          throw fallbackErr;
+        }
       }
       return;
     }
