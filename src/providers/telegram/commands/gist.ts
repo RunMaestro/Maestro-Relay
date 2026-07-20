@@ -31,7 +31,7 @@ export async function execute(ctx: TelegramCommandContext): Promise<void> {
   const visibility = isPublic ? 'public' : 'private';
   await ctx.reply(
     `📎 Gist published — ${ctx.boundAgentName}\n` +
-      `${result.url}\n` +
+      `${result.gistUrl}\n` +
       `Visibility: ${visibility}`,
   );
 }
