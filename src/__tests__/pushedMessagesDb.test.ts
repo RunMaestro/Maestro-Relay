@@ -1,0 +1,148 @@
+import test, { afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { db } from '../core/db';
+import {
+  PUSHED_MESSAGE_RETENTION_DAYS,
+  pushedMessagesDb,
+  resolveAnchorOwner,
+} from '../providers/discord/pushedMessagesDb';
+
+let testId = 0;
+function uid(prefix: string) {
+  testId++;
+  return `${prefix}-test-${testId}-${Date.now()}`;
+}
+
+const created: string[] = [];
+function track(id: string) {
+  created.push(id);
+  return id;
+}
+
+afterEach(() => {
+  for (const id of created) {
+    try {
+      db.prepare('DELETE FROM discord_pushed_messages WHERE message_id = ?').run(id);
+    } catch {
+      /* ignore */
+    }
+  }
+  created.length = 0;
+});
+
+/** Backdate a row so retention can be exercised without waiting 30 days. */
+function ageRow(messageId: string, days: number) {
+  db.prepare('UPDATE discord_pushed_messages SET created_at = ? WHERE message_id = ?').run(
+    Math.floor(Date.now() / 1000) - days * 24 * 60 * 60,
+    messageId,
+  );
+}
+
+test('pushedMessagesDb.record and get round-trip', () => {
+  const msgId = track(uid('msg'));
+  const chId = uid('ch');
+
+  pushedMessagesDb.record(msgId, chId, 'agent-1', 'session-1', 'user-1');
+  const row = pushedMessagesDb.get(msgId);
+
+  assert.ok(row);
+  assert.equal(row.message_id, msgId);
+  assert.equal(row.channel_id, chId);
+  assert.equal(row.agent_id, 'agent-1');
+  assert.equal(row.session_id, 'session-1');
+  assert.equal(row.owner_user_id, 'user-1');
+  assert.equal(typeof row.created_at, 'number');
+});
+
+test('pushedMessagesDb.record defaults session_id and owner_user_id to null', () => {
+  const msgId = track(uid('msg'));
+  pushedMessagesDb.record(msgId, uid('ch'), 'agent-1');
+  const row = pushedMessagesDb.get(msgId)!;
+  assert.equal(row.session_id, null);
+  assert.equal(row.owner_user_id, null, 'no owner unless one was recorded');
+});
+
+test('pushedMessagesDb.record re-recording replaces the owner too', () => {
+  const msgId = track(uid('msg'));
+  pushedMessagesDb.record(msgId, 'ch-a', 'agent-a', 'session-a', 'user-a');
+  pushedMessagesDb.record(msgId, 'ch-a', 'agent-a', 'session-b', null);
+  assert.equal(
+    pushedMessagesDb.get(msgId)!.owner_user_id,
+    null,
+    're-record must not leave a stale owner behind',
+  );
+});
+
+test('pushedMessagesDb.record re-recording the same message id overwrites the binding', () => {
+  const msgId = track(uid('msg'));
+  pushedMessagesDb.record(msgId, 'ch-a', 'agent-a', 'session-a');
+  pushedMessagesDb.record(msgId, 'ch-b', 'agent-b', 'session-b');
+
+  const row = pushedMessagesDb.get(msgId)!;
+  assert.equal(row.agent_id, 'agent-b');
+  assert.equal(row.session_id, 'session-b');
+});
+
+test('pushedMessagesDb.get returns undefined for an unknown message', () => {
+  assert.equal(pushedMessagesDb.get('no-such-message'), undefined);
+});
+
+test('pushedMessagesDb.purgeOlderThan drops aged rows and keeps fresh ones', () => {
+  const oldId = track(uid('msg-old'));
+  const freshId = track(uid('msg-fresh'));
+  pushedMessagesDb.record(oldId, uid('ch'), 'agent-1', 'session-1');
+  pushedMessagesDb.record(freshId, uid('ch'), 'agent-1', 'session-1');
+  ageRow(oldId, PUSHED_MESSAGE_RETENTION_DAYS + 1);
+
+  const removed = pushedMessagesDb.purgeOlderThan(PUSHED_MESSAGE_RETENTION_DAYS);
+
+  assert.ok(removed >= 1);
+  assert.equal(pushedMessagesDb.get(oldId), undefined);
+  assert.ok(pushedMessagesDb.get(freshId), 'a fresh anchor must survive the purge');
+});
+
+test('pushedMessagesDb.purgeOlderThan keeps a row exactly at the retention edge', () => {
+  const edgeId = track(uid('msg-edge'));
+  pushedMessagesDb.record(edgeId, uid('ch'), 'agent-1', 'session-1');
+  ageRow(edgeId, PUSHED_MESSAGE_RETENTION_DAYS - 1);
+
+  pushedMessagesDb.purgeOlderThan(PUSHED_MESSAGE_RETENTION_DAYS);
+
+  assert.ok(pushedMessagesDb.get(edgeId));
+});
+
+test('pushedMessagesDb.removeByChannel clears every anchor for a channel', () => {
+  const chId = uid('ch');
+  const a = track(uid('msg'));
+  const b = track(uid('msg'));
+  const other = track(uid('msg'));
+  pushedMessagesDb.record(a, chId, 'agent-1', 'session-1');
+  pushedMessagesDb.record(b, chId, 'agent-1', 'session-1');
+  pushedMessagesDb.record(other, uid('ch-other'), 'agent-1', 'session-1');
+
+  pushedMessagesDb.removeByChannel(chId);
+
+  assert.equal(pushedMessagesDb.get(a), undefined);
+  assert.equal(pushedMessagesDb.get(b), undefined);
+  assert.ok(pushedMessagesDb.get(other), 'other channels are untouched');
+});
+
+// --- who may inherit a push's session ---
+
+test('resolveAnchorOwner prefers the caller-supplied user over the mention user', () => {
+  assert.equal(resolveAnchorOwner('u-1', 'mention-user'), 'u-1');
+});
+
+test('resolveAnchorOwner falls back to the configured mention user', () => {
+  assert.equal(resolveAnchorOwner(null, 'mention-user'), 'mention-user');
+  assert.equal(resolveAnchorOwner(undefined, 'mention-user'), 'mention-user');
+});
+
+test('resolveAnchorOwner collapses blank ids to null rather than a bogus owner', () => {
+  // `DISCORD_MENTION_USER_ID` is '' when unset; an empty id must never read as
+  // an owner, or every replier would match it.
+  assert.equal(resolveAnchorOwner(null, ''), null);
+  assert.equal(resolveAnchorOwner('  ', '  '), null);
+  assert.equal(resolveAnchorOwner('  ', 'mention-user'), 'mention-user');
+  assert.equal(resolveAnchorOwner(undefined, undefined), null);
+});

@@ -19,6 +19,9 @@ import type Database from 'better-sqlite3';
  *     per-client low-water mark that reconnect-gap reconciliation replays from
  * 11. Add `max_lifetime_turns` / `lifetime_turn_count` to `rooms` — the hard
  *     loop backstop that (unlike the burst counter) only resets on `/room reset`
+ * 12. Create `discord_pushed_messages` (message_id → channel/agent/session plus
+ *     the `owner_user_id` allowed to inherit it): the anchor registry that lets
+ *     a thread started on an agent-pushed message inherit that message's session
  */
 export function runMigrations(db: Database.Database): void {
   ensureReadOnlyColumn(db);
@@ -33,6 +36,45 @@ export function runMigrations(db: Database.Database): void {
   ensureRoomLifetimeTurnColumns(db);
   ensureRoomBotsRegistryTable(db);
   ensureRoomBotCursorsTable(db);
+  ensureDiscordPushedMessagesTable(db);
+}
+
+/**
+ * Anchor registry for agent-initiated pushes (migration 12).
+ *
+ * `/api/send` records every message it posts here, keyed on the platform
+ * message id. Discord gives a thread created *from* a message the same
+ * snowflake as that message, so when an inbound thread message arrives for a
+ * thread the bridge has never registered, its channel id can be looked up here
+ * directly: a hit means the human replied to an agent push, and the thread is
+ * adopted with the pushed message's agent and session (see
+ * `providers/discord/messageCreate.ts`). Rows are purged after 30 days —
+ * `providers/discord/pushedMessagesDb.ts`. Stores ids only, never content.
+ */
+export function ensureDiscordPushedMessagesTable(database: Database.Database): void {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS discord_pushed_messages (
+      message_id    TEXT PRIMARY KEY,
+      channel_id    TEXT NOT NULL,
+      agent_id      TEXT NOT NULL,
+      session_id    TEXT,
+      owner_user_id TEXT,
+      created_at    INTEGER NOT NULL DEFAULT (unixepoch())
+    )
+  `);
+  // Additive for databases created before the ownership gate existed. A row
+  // without an owner is treated as "nobody vetted" at adoption time, so
+  // backfilling is neither possible nor needed.
+  try {
+    database.exec('ALTER TABLE discord_pushed_messages ADD COLUMN owner_user_id TEXT');
+  } catch (error) {
+    if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
+  }
+  // The retention purge scans by age; keep it from degrading into a table scan.
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_discord_pushed_messages_created_at
+      ON discord_pushed_messages (created_at)
+  `);
 }
 
 /**

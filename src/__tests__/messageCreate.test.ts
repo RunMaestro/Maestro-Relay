@@ -35,7 +35,9 @@ function createDeps(enqueue: (...args: any[]) => void) {
     threadDb: {
       get: () => ({ thread_id: 'thread-1' }) as any,
       register: () => undefined,
+      adopt: () => undefined,
     },
+    pushedMessagesDb: { get: () => undefined as any },
     getBotUserId: () => 'bot-1',
     enqueue,
     isVoiceMessage: () => true,
@@ -550,4 +552,274 @@ test('handleMessageCreate reports transcription failures and falls back to enque
   assert.equal(enqueued, 1, 'should enqueue original message as fallback on transcription error');
   assert.ok(reactions.includes('🎧'), 'should have 🎧 reaction even on failure');
   assert.ok(replies.some((r) => r.includes('Failed to transcribe this voice message')));
+});
+
+// --- adopt-on-miss: replying in a thread started on an agent push ---
+//
+// A thread created from a message carries that message's snowflake, so the
+// thread id is the lookup key into the push-anchor table. These cover the
+// happy path, the ownership binding, and every reason to refuse an adoption.
+
+/** A thread message whose thread id equals the anchored root message id. */
+function makeAdoptMessage(overrides: Record<string, unknown> = {}) {
+  return makeMessage({
+    channel: {
+      id: 'pushed-msg-1',
+      parentId: 'channel-1',
+      isThread: () => true,
+      sendTyping: async () => undefined,
+    },
+    ...overrides,
+  });
+}
+
+function createAdoptDeps(enqueue: (...args: any[]) => void, anchor: any) {
+  const deps = createDeps(enqueue);
+  const registered = new Map<string, any>();
+  deps.pushedMessagesDb.get = ((id: string) =>
+    anchor && id === anchor.message_id ? anchor : undefined) as any;
+  deps.threadDb.get = ((id: string) => registered.get(id)) as any;
+  deps.threadDb.adopt = ((
+    threadId: string,
+    channelId: string,
+    agentId: string,
+    ownerUserId: string | null,
+    sessionId: string | null,
+  ) => {
+    // Mirrors INSERT OR IGNORE: first writer wins.
+    if (registered.has(threadId)) return;
+    registered.set(threadId, {
+      thread_id: threadId,
+      channel_id: channelId,
+      agent_id: agentId,
+      owner_user_id: ownerUserId,
+      session_id: sessionId,
+    });
+  }) as any;
+  return { deps, registered };
+}
+
+test('handleMessageCreate adopts a thread opened on an agent-pushed message', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+      owner_user_id: 'user-1',
+    },
+  );
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 1, 'the reply should be routed, not dropped');
+  const row = registered.get('pushed-msg-1');
+  assert.ok(row, 'thread should now be registered');
+  assert.equal(row.channel_id, 'channel-1');
+  assert.equal(row.agent_id, 'agent-push', 'inherits the pushing agent');
+  assert.equal(row.session_id, 'session-push', 'inherits the pushed session');
+  assert.equal(row.owner_user_id, 'user-1', 'binds to the first replier');
+});
+
+test('handleMessageCreate adopts with a null session when the push carried none', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: null,
+      owner_user_id: 'user-1',
+    },
+  );
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 1);
+  assert.equal(registered.get('pushed-msg-1').session_id, null);
+});
+
+// --- the ownership gate on session inheritance ---
+//
+// Continuing a session means reading and extending its context, so an anchor
+// only hands `session_id` to the user it was addressed to. Everyone else either
+// gets a fresh session (unowned anchor) or nothing at all (wrong user).
+
+test('handleMessageCreate refuses a session handover to a user who is not the anchor owner', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+      owner_user_id: 'owner-7',
+    },
+  );
+  const handler = createMessageCreateHandler(deps as any);
+
+  // `makeAdoptMessage` authors as `user-1`, a bystander here.
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 0, 'a bystander must not drive the pushed session');
+  assert.equal(registered.size, 0, 'and the thread stays claimable by its real owner');
+});
+
+test('handleMessageCreate adopts an unowned anchor into a fresh session', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+      owner_user_id: null,
+    },
+  );
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 1, 'the reply still reaches the agent');
+  const row = registered.get('pushed-msg-1');
+  assert.equal(row.agent_id, 'agent-push', 'routed to the pushing agent');
+  assert.equal(
+    row.session_id,
+    null,
+    'but with no vetted owner it must not inherit the pushed session',
+  );
+  assert.equal(row.owner_user_id, 'user-1');
+});
+
+test('handleMessageCreate treats a blank anchor owner as unvetted', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+      owner_user_id: '   ',
+    },
+  );
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 1);
+  assert.equal(registered.get('pushed-msg-1').session_id, null);
+});
+
+test('handleMessageCreate refuses to adopt when the thread parent is not the anchor channel', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+    },
+  );
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(
+    makeAdoptMessage({
+      channel: {
+        id: 'pushed-msg-1',
+        parentId: 'some-other-channel',
+        isThread: () => true,
+        sendTyping: async () => undefined,
+      },
+    }) as any,
+  );
+
+  assert.equal(enqueued, 0);
+  assert.equal(registered.size, 0);
+});
+
+test('handleMessageCreate leaves an already-registered thread binding untouched', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+    },
+  );
+  // A first reply already adopted this thread and bound it to another user.
+  registered.set('pushed-msg-1', {
+    thread_id: 'pushed-msg-1',
+    channel_id: 'channel-1',
+    agent_id: 'agent-existing',
+    owner_user_id: 'owner-9',
+    session_id: 'session-existing',
+  });
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 0, 'non-owner is still filtered out');
+  assert.equal(registered.get('pushed-msg-1').agent_id, 'agent-existing');
+  assert.equal(registered.get('pushed-msg-1').session_id, 'session-existing');
+});
+
+test('handleMessageCreate drops unregistered thread messages with no push anchor', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(() => {
+    enqueued += 1;
+  }, null);
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 0);
+  assert.equal(registered.size, 0);
+});
+
+test('handleMessageCreate does not enqueue when adopt fails to persist', async () => {
+  let enqueued = 0;
+  const { deps } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+    },
+  );
+  deps.threadDb.adopt = (() => {
+    throw new Error('db is locked');
+  }) as any;
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 0, 'a failed adopt must not route the turn to a fresh session');
 });

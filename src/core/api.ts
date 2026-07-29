@@ -14,6 +14,20 @@ export interface SendRequest {
   mention?: boolean;
   /** Optional provider name; defaults to 'discord' for back-compat. */
   provider?: string;
+  /**
+   * Optional maestro session the push belongs to. When present (and the
+   * provider supports anchoring), the posted messages are recorded so a reply
+   * thread started on one of them continues *this* session instead of opening a
+   * fresh one.
+   */
+  sessionId?: string;
+  /**
+   * Optional platform user id allowed to continue `sessionId` by replying in a
+   * thread on this push. Without it the provider falls back to its configured
+   * mention user, and failing that a reply thread starts a *fresh* session —
+   * an anchor never hands an existing session to an unvetted replier.
+   */
+  userId?: string;
 }
 
 export type ApiDeps = {
@@ -100,6 +114,18 @@ export function createServerHandler(deps: ApiDeps) {
       return;
     }
 
+    if (body.sessionId !== undefined && typeof body.sessionId !== 'string') {
+      sendJson(res, 400, { success: false, error: 'sessionId must be a string when provided' });
+      return;
+    }
+    const sessionId = body.sessionId?.trim() || null;
+
+    if (body.userId !== undefined && typeof body.userId !== 'string') {
+      sendJson(res, 400, { success: false, error: 'userId must be a string when provided' });
+      return;
+    }
+    const userId = body.userId?.trim() || null;
+
     const providerName = body.provider ?? 'discord';
     const provider = deps.providers.get(providerName);
     if (!provider) {
@@ -139,9 +165,15 @@ export function createServerHandler(deps: ApiDeps) {
     // `renderTables` to pushed text is an intentional behavior change (decision #6).
     const messages = toOutgoing(body.message, { split, renderTables, mention: !!body.mention });
 
+    // Message ids of this push, so a reply-thread on any of them can be routed
+    // back into the agent session that produced it. Every part is recorded, not
+    // just the first: a long push splits into several messages and the human
+    // may well answer the last one.
+    const messageIds: string[] = [];
     try {
       for (const m of messages) {
-        await sendWithRetry((x) => provider.send(target, x), m);
+        const result = await sendWithRetry((x) => provider.send(target, x), m);
+        if (result?.messageId) messageIds.push(result.messageId);
       }
     } catch (err) {
       if (err instanceof RateLimitError) {
@@ -164,7 +196,29 @@ export function createServerHandler(deps: ApiDeps) {
       return;
     }
 
-    sendJson(res, 200, { success: true, channelId: info.channelId });
+    // Bookkeeping only — the push already succeeded, so a failure here must not
+    // turn a delivered message into a 500 for the caller.
+    if (provider.recordPushedMessage) {
+      for (const messageId of messageIds) {
+        try {
+          provider.recordPushedMessage({
+            messageId,
+            channelId: info.channelId,
+            agentId: info.agentId,
+            sessionId,
+            ownerUserId: userId,
+          });
+        } catch (err) {
+          await log.error('api/recordPushedMessage', (err as Error).message);
+        }
+      }
+    }
+
+    sendJson(res, 200, {
+      success: true,
+      channelId: info.channelId,
+      messageIds,
+    });
   }
 
   return function handler(req: http.IncomingMessage, res: http.ServerResponse) {

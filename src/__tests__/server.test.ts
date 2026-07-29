@@ -515,3 +515,222 @@ test('parseBody rejects invalid JSON', async () => {
   req.destroy = () => {};
   await assert.rejects(mod.parseBody!(req), /Invalid JSON/);
 });
+
+// --- push anchors: recording pushed messages so replies can find the session ---
+
+interface AnchorRecord {
+  messageId: string;
+  channelId: string;
+  agentId: string;
+  sessionId?: string | null;
+  ownerUserId?: string | null;
+}
+
+/**
+ * A provider that reports message ids from `send` (like Discord) and captures
+ * what the API asks it to record.
+ */
+function makeAnchoringProvider(opts: {
+  anchors: AnchorRecord[];
+  sentMessages?: string[];
+  recordThrows?: Error;
+}): BridgeProvider {
+  const sent = opts.sentMessages ?? [];
+  let counter = 0;
+  return {
+    name: 'discord',
+    isReady: () => true,
+    async start() {},
+    async stop() {},
+    resolveConversation: () => null,
+    send: async (_target, msg) => {
+      sent.push(msg.text);
+      counter += 1;
+      return { messageId: `msg-${counter}` };
+    },
+    recordPushedMessage: (record) => {
+      if (opts.recordThrows) throw opts.recordThrows;
+      opts.anchors.push(record);
+    },
+    findOrCreateAgentChannel: async (agentId) => ({
+      channelId: 'ch-1',
+      agentId,
+      agentName: 'Test',
+    }),
+  };
+}
+
+test('POST /api/send records a push anchor per posted message with the given sessionId', async () => {
+  const anchors: AnchorRecord[] = [];
+  const server = await startTestServer(
+    makeDeps({
+      providers: new Map([['discord', makeAnchoringProvider({ anchors })]]),
+      // Two parts: a human may reply to either, so both must be anchored.
+      splitMessage: () => ['part-0', 'part-1'],
+    }),
+  );
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', sessionId: 'session-42', userId: 'u-9' },
+    });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.messageIds, ['msg-1', 'msg-2']);
+    assert.deepEqual(anchors, [
+      {
+        messageId: 'msg-1',
+        channelId: 'ch-1',
+        agentId: 'a-1',
+        sessionId: 'session-42',
+        ownerUserId: 'u-9',
+      },
+      {
+        messageId: 'msg-2',
+        channelId: 'ch-1',
+        agentId: 'a-1',
+        sessionId: 'session-42',
+        ownerUserId: 'u-9',
+      },
+    ]);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send records an anchor with a null session when sessionId is omitted', async () => {
+  const anchors: AnchorRecord[] = [];
+  const server = await startTestServer(
+    makeDeps({ providers: new Map([['discord', makeAnchoringProvider({ anchors })]]) }),
+  );
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello' },
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(anchors.length, 1);
+    assert.equal(anchors[0].sessionId, null);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send treats a blank sessionId as absent', async () => {
+  const anchors: AnchorRecord[] = [];
+  const server = await startTestServer(
+    makeDeps({ providers: new Map([['discord', makeAnchoringProvider({ anchors })]]) }),
+  );
+  try {
+    await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', sessionId: '   ' },
+    });
+    assert.equal(anchors[0].sessionId, null);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send records a null owner when userId is omitted or blank', async () => {
+  const anchors: AnchorRecord[] = [];
+  const server = await startTestServer(
+    makeDeps({ providers: new Map([['discord', makeAnchoringProvider({ anchors })]]) }),
+  );
+  try {
+    await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', sessionId: 'session-42' },
+    });
+    await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', sessionId: 'session-42', userId: '  ' },
+    });
+    // Null, never a bogus owner — the provider decides the fallback, and an
+    // unowned anchor hands out no session.
+    assert.deepEqual(
+      anchors.map((a) => a.ownerUserId),
+      [null, null],
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send returns 400 for a non-string userId', async () => {
+  const server = await startTestServer(makeDeps());
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', userId: 42 },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /userId/);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send returns 400 for a non-string sessionId', async () => {
+  const server = await startTestServer(makeDeps());
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', sessionId: 42 },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /sessionId/);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send still succeeds when the provider cannot anchor messages', async () => {
+  // The stock mock provider has no recordPushedMessage and returns no ids.
+  const server = await startTestServer(makeDeps());
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', sessionId: 'session-42' },
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body.messageIds, []);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send still returns 200 when recording the anchor throws', async () => {
+  const anchors: AnchorRecord[] = [];
+  const server = await startTestServer(
+    makeDeps({
+      providers: new Map([
+        [
+          'discord',
+          makeAnchoringProvider({ anchors, recordThrows: new Error('db is locked') }),
+        ],
+      ]),
+    }),
+  );
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', sessionId: 'session-42' },
+    });
+    // The message was delivered; bookkeeping failure must not mask that.
+    assert.equal(res.status, 200);
+    assert.equal(res.body.success, true);
+  } finally {
+    server.close();
+  }
+});

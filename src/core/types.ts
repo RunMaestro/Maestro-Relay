@@ -174,6 +174,32 @@ export interface ReactionHandle {
   remove(): Promise<void>;
 }
 
+/** What a provider can report back about a message it just posted. */
+export interface SendResult {
+  /** Platform message id of the posted message, when the provider exposes one. */
+  messageId?: string;
+}
+
+/**
+ * A message the bridge pushed into a channel on an agent's behalf, recorded so
+ * an inbound reply anchored on it can be routed back to the originating agent
+ * session instead of being dropped.
+ */
+export interface PushedMessage {
+  messageId: string;
+  channelId: string;
+  agentId: string;
+  /** The maestro session the push belongs to; null when the caller sent none. */
+  sessionId?: string | null;
+  /**
+   * Platform user id authorized to continue `sessionId` from a reply thread on
+   * this message. Null means "nobody vetted": the provider must then route such
+   * a reply into a *fresh* session rather than handing over this one, so an
+   * anchor can never leak an existing session's context to a bystander.
+   */
+  ownerUserId?: string | null;
+}
+
 export interface AgentChannelInfo {
   channelId: string;
   agentId: string;
@@ -195,8 +221,16 @@ export interface BridgeProvider {
    */
   resolveConversation(message: IncomingMessage): ConversationRecord | null;
 
-  /** Send a message into a conversation. */
-  send(target: ChannelTarget, msg: OutgoingMessage): Promise<void>;
+  /**
+   * Send a message into a conversation.
+   *
+   * Returning a `SendResult` is optional: providers that can surface the id of
+   * the message they just posted do so (Discord), and callers that need an
+   * anchor — e.g. the push API, which records the pushed message so a later
+   * reply-thread on it can inherit the agent session — use it. Providers with
+   * nothing useful to report keep returning `void`.
+   */
+  send(target: ChannelTarget, msg: OutgoingMessage): Promise<SendResult | void>;
 
   /**
    * Optional: send a message under a distinct per-message identity (multi-agent
@@ -214,6 +248,15 @@ export interface BridgeProvider {
    * Used by the HTTP API for agent-initiated messages.
    */
   findOrCreateAgentChannel(agentId: string): Promise<AgentChannelInfo>;
+
+  /**
+   * Optional: remember that `record.messageId` was pushed into `record.channelId`
+   * on behalf of `record.agentId` / `record.sessionId`. The push API calls this
+   * after a successful `/api/send` so the provider can later adopt a reply
+   * anchored on that message into the right session. Providers that cannot
+   * anchor replies simply omit it.
+   */
+  recordPushedMessage?(record: PushedMessage): void;
 
   /** Optional: react to a message (used as a "queued" indicator). */
   react?(target: MessageTarget, emoji: string): Promise<ReactionHandle>;

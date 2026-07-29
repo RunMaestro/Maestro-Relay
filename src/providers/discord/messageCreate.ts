@@ -14,13 +14,15 @@ import { logger as defaultLogger } from '../../core/logger';
 import { splitMessage } from '../../core/splitMessage';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
+import { pushedMessagesDb } from './pushedMessagesDb';
 import { discordAttachmentToIncoming, isVoiceAttachment, isVoiceMessage } from './voice';
 
 type Enqueue = (msg: IncomingMessage, options?: EnqueueOptions) => void;
 
 export type MessageCreateDeps = {
   channelDb: Pick<typeof channelDb, 'get'>;
-  threadDb: Pick<typeof threadDb, 'get' | 'register'>;
+  threadDb: Pick<typeof threadDb, 'get' | 'register' | 'adopt'>;
+  pushedMessagesDb: Pick<typeof pushedMessagesDb, 'get'>;
   getBotUserId: (message: Message) => string | undefined;
   enqueue: Enqueue;
   isVoiceMessage: typeof isVoiceMessage;
@@ -46,6 +48,98 @@ function toIncoming(message: Message, attachmentSource?: IncomingAttachment[]): 
     isThread: message.channel.isThread(),
     raw: message,
   };
+}
+
+/**
+ * Adopt-on-miss: bind a thread the bridge never created to the agent session
+ * that produced the message the thread hangs off.
+ *
+ * When an agent pushes autonomously (`POST /api/send`) and a human starts a
+ * thread on that message to answer it, the thread is unknown to
+ * `discord_agent_threads` and the turn used to be dropped on the floor. Discord
+ * gives such a thread the *same snowflake as its root message*, so the thread id
+ * is a direct key into the push-anchor table: a hit means this thread is a reply
+ * to that push, and it is registered on the spot with the pushed message's agent
+ * and session. The turn then flows through the normal thread path and lands in
+ * the originating session rather than a fresh one.
+ *
+ * Thread-only by design (v1): an *inline* reply stays in the parent channel, and
+ * routing it to the push's session would make the windup session and ordinary
+ * channel traffic share one queue key (`core/queue.ts` keys on channel id).
+ *
+ * Inheriting the push's *session* is gated on the anchor's `owner_user_id`,
+ * because continuing a session means reading and extending its context:
+ *
+ * - replier **is** the anchor's owner → inherit `session_id`, the full
+ *   "answer the push" path;
+ * - anchor has **no** owner (no `userId` on the push, no configured mention
+ *   user) → adopt into a *fresh* session, so the turn still reaches the right
+ *   agent but carries none of the pushed session's context;
+ * - replier is **someone else** → refuse. The thread stays unbound so its
+ *   rightful owner can still claim it, and the bystander keeps the pre-existing
+ *   route to the agent: @-mention it in the channel for a session of their own.
+ *
+ * Without that gate any member able to open a thread on an agent push could
+ * take over the referenced session, which is strictly more than the mention
+ * path (a fresh session) ever granted them.
+ *
+ * The adopting thread binds to whoever replied first, matching the ownership
+ * rule for mention-created threads. Returns the registered row, or `undefined`
+ * when there is no anchor (the normal "unregistered thread" case).
+ */
+function adoptPushedThread(
+  deps: MessageCreateDeps,
+  log: KernelLogger,
+  message: Message,
+): ReturnType<MessageCreateDeps['threadDb']['get']> {
+  const threadId = message.channel.id;
+  const anchor = deps.pushedMessagesDb.get(threadId);
+  if (!anchor) return undefined;
+
+  // A thread's snowflake equals its root message's, so a hit already implies the
+  // right channel; assert it anyway rather than binding a thread to an agent
+  // channel it does not live under.
+  const parentId = (message.channel as { parentId?: string | null }).parentId;
+  if (parentId && parentId !== anchor.channel_id) {
+    log.warn(
+      'messageCreate/adopt',
+      `thread ${threadId} parent ${parentId} != anchor channel ${anchor.channel_id}, ignoring`,
+    );
+    return undefined;
+  }
+
+  const anchorOwner = anchor.owner_user_id?.trim() || null;
+  if (anchorOwner && anchorOwner !== message.author.id) {
+    log.warn(
+      'messageCreate/adopt',
+      `thread ${threadId} reply from ${message.author.id} != anchor owner ${anchorOwner}, refusing session handover`,
+    );
+    return undefined;
+  }
+  // Only a vetted owner inherits the pushed session; an unowned anchor still
+  // routes to the agent, but in a session of its own.
+  const inheritedSession = anchorOwner ? anchor.session_id : null;
+
+  try {
+    deps.threadDb.adopt(
+      threadId,
+      anchor.channel_id,
+      anchor.agent_id,
+      message.author.id,
+      inheritedSession,
+    );
+  } catch (err) {
+    void log.error('messageCreate/adopt', `failed to adopt thread ${threadId}: ${String(err)}`);
+    return undefined;
+  }
+
+  log.info(
+    'messageCreate/adopt',
+    `adopted thread ${threadId} → agent ${anchor.agent_id} session ${inheritedSession ?? 'new'}`,
+  );
+  // Re-read rather than synthesizing the row: `adopt` is INSERT OR IGNORE, so a
+  // concurrent first reply may have won and its binding is the one in force.
+  return deps.threadDb.get(threadId);
 }
 
 export function createMessageCreateHandler(deps: MessageCreateDeps) {
@@ -131,7 +225,8 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
       return;
     }
 
-    const threadInfo = deps.threadDb.get(message.channel.id);
+    const threadInfo =
+      deps.threadDb.get(message.channel.id) ?? adoptPushedThread(deps, log, message);
     if (!threadInfo) return;
 
     const ownerUserId = threadInfo.owner_user_id?.trim();

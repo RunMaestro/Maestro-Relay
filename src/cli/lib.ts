@@ -9,11 +9,24 @@ export interface SendApiPayload {
   message: string;
   mention?: boolean;
   provider?: string;
+  /**
+   * Maestro session the push belongs to. Recorded against the posted messages so
+   * a reply thread started on one of them continues this session.
+   */
+  sessionId?: string;
+  /**
+   * Platform user id allowed to continue `sessionId` from a reply thread on the
+   * push. Omitted means the provider's configured mention user, and failing
+   * that no vetted owner — a reply thread then starts a fresh session.
+   */
+  userId?: string;
 }
 
 export interface SendApiResult {
   success: boolean;
   channelId?: string;
+  /** Platform message ids of the posted messages (providers that report them). */
+  messageIds?: string[];
   error?: string;
 }
 

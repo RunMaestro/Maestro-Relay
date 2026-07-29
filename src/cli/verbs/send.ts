@@ -1,7 +1,7 @@
 import { parseArgs } from 'node:util';
 import { DEFAULT_PORT, fail, ok, parsePort, postToSendApi } from '../lib';
 
-export const sendUsage = `Usage: maestro-relay send --agent <id> --message <text> [--provider <name>] [--mention] [--port <number>]
+export const sendUsage = `Usage: maestro-relay send --agent <id> --message <text> [--provider <name>] [--mention] [--session <id>] [--user <id>] [--port <number>]
 
 Send a message to an agent's bridge channel (auto-creates channel if needed).
 
@@ -10,6 +10,12 @@ Options:
   -m, --message <text>  Message text to send (required)
       --provider <name> Provider/module name (default: discord)
       --mention         Mention the user set in DISCORD_MENTION_USER_ID
+  -s, --session <id>    Maestro session this push belongs to. A reply thread
+                        started on the pushed message continues this session
+                        instead of opening a new one (Discord).
+  -u, --user <id>       Platform user id allowed to continue --session from a
+                        reply thread. Defaults to DISCORD_MENTION_USER_ID; with
+                        neither, a reply thread starts a fresh session.
   -p, --port <number>   API port (default: ${DEFAULT_PORT})
   -h, --help            Show this help`;
 
@@ -23,6 +29,8 @@ export async function runSend(argv: string[]): Promise<void> {
         message: { type: 'string', short: 'm' },
         provider: { type: 'string' },
         mention: { type: 'boolean', default: false },
+        session: { type: 'string', short: 's' },
+        user: { type: 'string', short: 'u' },
         port: { type: 'string', short: 'p' },
         help: { type: 'boolean', short: 'h', default: false },
       },
@@ -60,6 +68,8 @@ export async function runSend(argv: string[]): Promise<void> {
         message,
         provider: parsed.values.provider,
         mention: parsed.values.mention,
+        sessionId: parsed.values.session,
+        userId: parsed.values.user,
       },
       port,
     );

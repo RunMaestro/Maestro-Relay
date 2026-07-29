@@ -8,6 +8,7 @@ import {
 import { maestro } from '../../../core/maestro';
 import { channelDb } from '../channelsDb';
 import { threadDb } from '../threadsDb';
+import { pushedMessagesDb } from '../pushedMessagesDb';
 import { cleanupAgentFiles } from '../../../core/attachments';
 import { clampFieldValue, clampTitle } from '../embed';
 import { discordConfig } from '../config';
@@ -350,8 +351,11 @@ async function handleDisconnect(interaction: ChatInputCommandInteraction): Promi
     );
   }
 
-  // Remove channel and its threads from DB
+  // Remove channel and its threads from DB. Push anchors for the channel go
+  // too: with the binding gone they can only ever adopt a thread into an agent
+  // this channel no longer belongs to.
   threadDb.removeByChannel(interaction.channelId);
+  pushedMessagesDb.removeByChannel(interaction.channelId);
   channelDb.remove(interaction.channelId);
 
   setTimeout(async () => {
