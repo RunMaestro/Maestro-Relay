@@ -29,19 +29,22 @@ export interface SendWithRetryOptions {
  * caller for more than a few seconds. On any non-`RateLimitError` it rethrows
  * immediately. If every attempt is exhausted it rethrows the last error, so a
  * caller can translate a final `RateLimitError` into an HTTP 429.
+ *
+ * Whatever `send` resolves to is passed straight back, so a caller that needs
+ * the provider's `SendResult` (e.g. the push API recording message ids) does not
+ * have to bypass the retry wrapper to get it.
  */
-export async function sendWithRetry(
-  send: (msg: OutgoingMessage) => Promise<void>,
+export async function sendWithRetry<T>(
+  send: (msg: OutgoingMessage) => Promise<T>,
   msg: OutgoingMessage,
   opts: SendWithRetryOptions = {},
-): Promise<void> {
+): Promise<T> {
   const retries = opts.retries ?? 3;
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      await send(msg);
-      return;
+      return await send(msg);
     } catch (err) {
       if (err instanceof RateLimitError) {
         lastError = err;

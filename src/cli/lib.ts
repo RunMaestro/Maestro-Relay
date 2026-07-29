@@ -9,11 +9,18 @@ export interface SendApiPayload {
   message: string;
   mention?: boolean;
   provider?: string;
+  /**
+   * Maestro session the push belongs to. Recorded against the posted messages so
+   * a reply thread started on one of them continues this session.
+   */
+  sessionId?: string;
 }
 
 export interface SendApiResult {
   success: boolean;
   channelId?: string;
+  /** Platform message ids of the posted messages (providers that report them). */
+  messageIds?: string[];
   error?: string;
 }
 

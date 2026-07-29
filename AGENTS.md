@@ -29,7 +29,7 @@ This repo is **Maestro Relay** — a chat-platform-to-Maestro bridge built aroun
 
 ### Discord provider
 
-Lives under `src/providers/discord/` (`adapter.ts`, `messageCreate.ts`, `voice.ts`, `commands/`, `deploy.ts`, `channelsDb.ts`, `threadsDb.ts`, `embed.ts`, `config.ts`). For Discord-specific runtime behavior, env vars, slash commands, and bot setup see [docs/discord.md](docs/discord.md). Voice transcription is documented in [docs/voice.md](docs/voice.md).
+Lives under `src/providers/discord/` (`adapter.ts`, `messageCreate.ts`, `voice.ts`, `commands/`, `deploy.ts`, `channelsDb.ts`, `threadsDb.ts`, `pushedMessagesDb.ts`, `embed.ts`, `config.ts`). Threads started on an agent-pushed message are adopted into the pushing agent's session — `pushedMessagesDb.ts` is the anchor registry, `messageCreate.ts` the adopt-on-miss path. For Discord-specific runtime behavior, env vars, slash commands, and bot setup see [docs/discord.md](docs/discord.md). Voice transcription is documented in [docs/voice.md](docs/voice.md).
 
 ### Slack provider
 

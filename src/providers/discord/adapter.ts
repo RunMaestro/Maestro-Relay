@@ -17,10 +17,13 @@ import type {
   ConversationRecord,
   IncomingMessage,
   KernelContext,
+  KernelLogger,
   MessageTarget,
   OutgoingMessage,
   PersonaIdentity,
+  PushedMessage,
   ReactionHandle,
+  SendResult,
 } from '../../core/types';
 import { maestro } from '../../core/maestro';
 import { logger } from '../../core/logger';
@@ -31,6 +34,7 @@ import { clampTitle, clampDescription } from './embed';
 import { discordConfig } from './config';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
+import { pushedMessagesDb, PUSHED_MESSAGE_RETENTION_DAYS } from './pushedMessagesDb';
 import { createMessageCreateHandler } from './messageCreate';
 import { createRoomMessageHandler } from './roomMessageCreate';
 import { RoomGatewayManager } from './roomGateways';
@@ -74,6 +78,8 @@ export class DiscordProvider implements BridgeProvider {
    */
   private handleRoomMessage: ((message: import('discord.js').Message) => void | Promise<void>) | null =
     null;
+  /** Daily retention sweep over the push-anchor table (see `startPushAnchorPurge`). */
+  private pushPurgeTimer: NodeJS.Timeout | null = null;
   private pendingChannels = new Map<string, Promise<AgentChannelInfo>>();
   private pendingCategory: Promise<CategoryChannel> | null = null;
 
@@ -158,9 +164,12 @@ export class DiscordProvider implements BridgeProvider {
       }
     });
 
+    this.startPushAnchorPurge(ctx.logger);
+
     const handleMessageCreate = createMessageCreateHandler({
       channelDb,
       threadDb,
+      pushedMessagesDb,
       getBotUserId: (message) => message.client.user?.id,
       enqueue: ctx.enqueue,
       isVoiceMessage,
@@ -231,7 +240,36 @@ export class DiscordProvider implements BridgeProvider {
     }
   }
 
+  /**
+   * Retention for push anchors: purge on startup, then once a day. The table
+   * only holds ids, but it grows with every pushed message forever otherwise,
+   * and an anchor nobody replied to in 30 days will never be replied to. The
+   * timer is `unref`'d so it never holds the process open.
+   */
+  private startPushAnchorPurge(log: KernelLogger): void {
+    const purge = (): void => {
+      try {
+        const removed = pushedMessagesDb.purgeOlderThan(PUSHED_MESSAGE_RETENTION_DAYS);
+        if (removed > 0) {
+          log.info(
+            'discord/pushAnchors',
+            `purged ${removed} push anchor(s) older than ${PUSHED_MESSAGE_RETENTION_DAYS}d`,
+          );
+        }
+      } catch (err) {
+        void log.error('discord/pushAnchors', `purge failed: ${String(err)}`);
+      }
+    };
+    purge();
+    this.pushPurgeTimer = setInterval(purge, 24 * 60 * 60 * 1000);
+    this.pushPurgeTimer.unref?.();
+  }
+
   async stop(): Promise<void> {
+    if (this.pushPurgeTimer) {
+      clearInterval(this.pushPurgeTimer);
+      this.pushPurgeTimer = null;
+    }
     if (this.roomStall) {
       this.roomStall.clear();
       this.roomStall = null;
@@ -277,7 +315,7 @@ export class DiscordProvider implements BridgeProvider {
     };
   }
 
-  async send(target: ChannelTarget, msg: OutgoingMessage): Promise<void> {
+  async send(target: ChannelTarget, msg: OutgoingMessage): Promise<SendResult> {
     const channel = await this.fetchSendable(target.channelId);
 
     // Callout messages render as a colored embed; the human mention (when any)
@@ -298,7 +336,8 @@ export class DiscordProvider implements BridgeProvider {
           ? `<@${discordConfig.mentionUserId}>`
           : undefined;
       try {
-        await channel.send({ content, embeds: [embed] });
+        const sent = await channel.send({ content, embeds: [embed] });
+        return { messageId: sent.id };
       } catch (err) {
         const rl = toRateLimitError(err);
         if (rl) throw rl;
@@ -313,14 +352,14 @@ export class DiscordProvider implements BridgeProvider {
         );
         const fallback = content ? `${content} ${msg.text}` : msg.text;
         try {
-          await channel.send(fallback);
+          const sent = await channel.send(fallback);
+          return { messageId: sent.id };
         } catch (fallbackErr) {
           const fallbackRl = toRateLimitError(fallbackErr);
           if (fallbackRl) throw fallbackRl;
           throw fallbackErr;
         }
       }
-      return;
     }
 
     let text = msg.text;
@@ -328,11 +367,34 @@ export class DiscordProvider implements BridgeProvider {
       text = `<@${discordConfig.mentionUserId}> ${text}`;
     }
     try {
-      await channel.send(text);
+      const sent = await channel.send(text);
+      return { messageId: sent.id };
     } catch (err) {
       const rl = toRateLimitError(err);
       if (rl) throw rl;
       throw err;
+    }
+  }
+
+  /**
+   * Persist a pushed message as a reply anchor. Called by the push API after a
+   * successful `/api/send`; a thread later started on that message inherits the
+   * agent and session recorded here (`messageCreate` adopt-on-miss).
+   * Best-effort — a failed bookkeeping write must never fail the push itself.
+   */
+  recordPushedMessage(record: PushedMessage): void {
+    try {
+      pushedMessagesDb.record(
+        record.messageId,
+        record.channelId,
+        record.agentId,
+        record.sessionId ?? null,
+      );
+    } catch (err) {
+      void logger.error(
+        'discord/recordPushedMessage',
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 

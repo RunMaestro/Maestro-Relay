@@ -40,12 +40,13 @@ Defined in `src/core/types.ts`. Every provider exports a class implementing this
 | `start(ctx: KernelContext)`     | yes      | Connect to the platform, register event handlers, call `ctx.enqueue(msg)` per inbound message |
 | `stop()`                        | yes      | Disconnect cleanly; called on graceful shutdown                                      |
 | `resolveConversation(message)`  | yes      | Look up the maestro agent + session bound to this conversation; return null to drop  |
-| `send(target, msg)`             | yes      | Post a message into a channel/thread; called by the kernel queue                     |
+| `send(target, msg)`             | yes      | Post a message into a channel/thread; called by the kernel queue. May return a `SendResult` carrying the posted `messageId` (Discord does; returning `void` stays valid) |
 | `findOrCreateAgentChannel(id)`  | yes      | Look up or create the platform channel bound to an agent (used by `/api/send`)       |
 | `isReady()`                     | yes      | Provider readiness for `/api/health`                                                 |
 | `react?(target, emoji)`         | optional | Queue/transcription indicator (e.g. `⏳`, `🎧`)                                      |
 | `sendTyping?(target)`           | optional | Typing indicator while the agent thinks                                              |
 | `sendAs?(target, identity, msg)`| optional | Post under a distinct per-message persona (multi-agent rooms) — see below            |
+| `recordPushedMessage?(record)`  | optional | Remember a message pushed via `/api/send` (message id → agent + session) so a reply anchored on it can be adopted into that session. Implement only if the platform lets an inbound reply be traced back to the message it answers |
 
 The kernel calls `react` and `sendTyping` if they exist; safe to omit when the platform has no analogue.
 

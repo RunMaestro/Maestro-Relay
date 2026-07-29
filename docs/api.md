@@ -22,6 +22,10 @@ maestro-relay send --agent <agent-id> --provider discord --message "Hello from M
 # e.g. DISCORD_MENTION_USER_ID for the Discord provider)
 maestro-relay send --agent <agent-id> --message "Build complete!" --mention
 
+# Send as part of a session — a reply thread on this message continues that
+# session instead of starting a new one (Discord; see "Answerable pushes")
+maestro-relay send --agent <agent-id> --session <session-id> --message "Deploy done — questions?"
+
 # Use a custom port
 maestro-relay send --agent <agent-id> --message "Hello" --port 4000
 
@@ -65,13 +69,42 @@ Request: `Content-Type: application/json`
   "agentId": "string",
   "message": "string",
   "mention": false,
-  "provider": "discord"
+  "provider": "discord",
+  "sessionId": "string"
 }
 ```
 
 `provider` is optional and defaults to `"discord"`. Must be a name listed in `ENABLED_PROVIDERS`.
 
 `mention` is rendered by the provider in a platform-appropriate way (Discord prepends `<@DISCORD_MENTION_USER_ID>` to the first part of a multi-part message).
+
+`sessionId` is optional — see [Answerable pushes](#answerable-pushes).
+
+Response:
+
+```json
+{
+  "success": true,
+  "channelId": "123456789",
+  "messageIds": ["987654321"]
+}
+```
+
+`messageIds` lists the platform message ids of the posted parts, in order, for providers that report them (Discord). Providers that don't return an empty array.
+
+#### Answerable pushes
+
+An agent-initiated push is a dead end by default: the bridge posts it, and a human answering it in the channel has nothing to route the answer back to.
+
+Passing `sessionId` fixes that for **Discord**. The bridge records each posted message against `(agentId, sessionId)`, and when someone **starts a thread on that message**, the reply is routed into that same maestro session — the agent picks the conversation up where it left off, with its context intact. No thread bookkeeping is needed on the caller's side; the binding is established the first time somebody replies.
+
+Notes:
+
+- **Threads only.** An *inline* reply in the parent channel is not routed: the channel and the session would then share one processing queue, interleaving windup traffic with ordinary channel traffic. Reply in a thread on the message.
+- The thread binds to whoever replied first, matching the ownership rule for mention-created threads.
+- Without `sessionId`, a thread on a pushed message still reaches the right **agent** — it just opens a fresh session.
+- Anchors are kept for **30 days**, then purged. Only ids are stored, never message content.
+- Non-Discord providers accept and ignore `sessionId` today.
 
 #### Rich rendering
 

@@ -17,6 +17,26 @@ export const threadDb = {
     ).run(threadId, channelId, agentId, ownerUserId);
   },
 
+  /**
+   * Register a thread the bridge did *not* create, carrying a session inherited
+   * from elsewhere (a push anchor — see `pushedMessagesDb`). Distinct from
+   * `register` in two ways: it seeds `session_id`, and it is a no-op when the
+   * thread is already registered, so two near-simultaneous first replies cannot
+   * make the second one throw on the primary key.
+   */
+  adopt(
+    threadId: string,
+    channelId: string,
+    agentId: string,
+    ownerUserId: string | null,
+    sessionId: string | null,
+  ): void {
+    db.prepare(
+      `INSERT OR IGNORE INTO discord_agent_threads (thread_id, channel_id, agent_id, owner_user_id, session_id)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(threadId, channelId, agentId, ownerUserId, sessionId);
+  },
+
   get(threadId: string): DiscordAgentThread | undefined {
     return db
       .prepare('SELECT * FROM discord_agent_threads WHERE thread_id = ?')

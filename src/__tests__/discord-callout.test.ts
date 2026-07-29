@@ -228,3 +228,71 @@ test('a callout fallback carries the mention prefix', async () => {
     else process.env.DISCORD_MENTION_USER_ID = prev;
   }
 });
+
+// --- send() surfaces the posted message id (push-anchor support) ---
+
+/** A sendable channel whose `send()` returns a discord.js-shaped message. */
+function makeIdChannel(id: string, opts: { failEmbed?: boolean } = {}) {
+  const calls: unknown[] = [];
+  const channel = {
+    isSendable() {
+      return true;
+    },
+    async send(arg: unknown) {
+      calls.push(arg);
+      if (opts.failEmbed && typeof arg === 'object') {
+        throw new Error('Missing Permissions: Embed Links');
+      }
+      return { id };
+    },
+  };
+  return { channel, calls };
+}
+
+test('send returns the posted message id for a plain text message', async () => {
+  const { channel } = makeIdChannel('msg-plain');
+  const provider = makeProvider(channel);
+
+  const result = await provider.send(TARGET, { text: 'hello' });
+
+  assert.deepEqual(result, { messageId: 'msg-plain' });
+});
+
+test('send returns the posted message id for a callout embed', async () => {
+  const { channel } = makeIdChannel('msg-embed');
+  const provider = makeProvider(channel);
+
+  const result = await provider.send(TARGET, {
+    text: '> [!NOTE]\n> hi',
+    callout: { variant: 'NOTE', body: 'hi' },
+  } as OutgoingMessage);
+
+  assert.deepEqual(result, { messageId: 'msg-embed' });
+});
+
+test('send returns the message id of the plaintext fallback when the embed fails', async () => {
+  const { channel, calls } = makeIdChannel('msg-fallback', { failEmbed: true });
+  const provider = makeProvider(channel);
+
+  const result = await provider.send(TARGET, {
+    text: '> [!NOTE]\n> hi',
+    callout: { variant: 'NOTE', body: 'hi' },
+  } as OutgoingMessage);
+
+  assert.equal(calls.length, 2, 'embed attempt then plaintext fallback');
+  assert.deepEqual(result, { messageId: 'msg-fallback' });
+});
+
+test('send still surfaces a rate limit rather than a message id', async () => {
+  const provider = makeProvider({
+    isSendable: () => true,
+    async send() {
+      throw new RateLimitError(50);
+    },
+  });
+
+  await assert.rejects(
+    provider.send(TARGET, { text: 'hello' }),
+    (err: unknown) => err instanceof RateLimitError,
+  );
+});

@@ -57,3 +57,18 @@ test('sendWithRetry rethrows a non-RateLimitError immediately without retrying',
   );
   assert.equal(calls, 1);
 });
+
+test('sendWithRetry passes the send result through to the caller', async () => {
+  const result = await sendWithRetry(async () => ({ messageId: 'm-1' }), MSG);
+  assert.deepEqual(result, { messageId: 'm-1' });
+});
+
+test('sendWithRetry passes through the result of the attempt that finally succeeded', async () => {
+  let calls = 0;
+  const result = await sendWithRetry(async () => {
+    calls++;
+    if (calls === 1) throw new RateLimitError(5);
+    return { messageId: `m-${calls}` };
+  }, MSG);
+  assert.deepEqual(result, { messageId: 'm-2' });
+});
