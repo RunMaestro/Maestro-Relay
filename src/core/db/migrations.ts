@@ -19,9 +19,9 @@ import type Database from 'better-sqlite3';
  *     per-client low-water mark that reconnect-gap reconciliation replays from
  * 11. Add `max_lifetime_turns` / `lifetime_turn_count` to `rooms` — the hard
  *     loop backstop that (unlike the burst counter) only resets on `/room reset`
- * 12. Create `discord_pushed_messages` (message_id → channel/agent/session): the
- *     anchor registry that lets a thread started on an agent-pushed message
- *     inherit that message's session
+ * 12. Create `discord_pushed_messages` (message_id → channel/agent/session plus
+ *     the `owner_user_id` allowed to inherit it): the anchor registry that lets
+ *     a thread started on an agent-pushed message inherit that message's session
  */
 export function runMigrations(db: Database.Database): void {
   ensureReadOnlyColumn(db);
@@ -54,13 +54,22 @@ export function runMigrations(db: Database.Database): void {
 export function ensureDiscordPushedMessagesTable(database: Database.Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS discord_pushed_messages (
-      message_id  TEXT PRIMARY KEY,
-      channel_id  TEXT NOT NULL,
-      agent_id    TEXT NOT NULL,
-      session_id  TEXT,
-      created_at  INTEGER NOT NULL DEFAULT (unixepoch())
+      message_id    TEXT PRIMARY KEY,
+      channel_id    TEXT NOT NULL,
+      agent_id      TEXT NOT NULL,
+      session_id    TEXT,
+      owner_user_id TEXT,
+      created_at    INTEGER NOT NULL DEFAULT (unixepoch())
     )
   `);
+  // Additive for databases created before the ownership gate existed. A row
+  // without an owner is treated as "nobody vetted" at adoption time, so
+  // backfilling is neither possible nor needed.
+  try {
+    database.exec('ALTER TABLE discord_pushed_messages ADD COLUMN owner_user_id TEXT');
+  } catch (error) {
+    if (!(error instanceof Error) || !/duplicate column name/i.test(error.message)) throw error;
+  }
   // The retention purge scans by age; keep it from degrading into a table scan.
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_discord_pushed_messages_created_at

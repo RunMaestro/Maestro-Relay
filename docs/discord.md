@@ -93,6 +93,8 @@ When an agent pushes a message on its own (`POST /api/send`, `maestro-relay send
 
 How it works: the bridge records the id of every message it pushes, and Discord gives a thread created from a message the same id as that message. So a thread the bridge has never seen is looked up in that registry; a hit binds the thread on the spot (agent + inherited session, owner = the first replier) and the turn flows through the normal thread path.
 
+- **Only the addressed user inherits the session.** The anchor also records who may answer — the push's `userId`, or `DISCORD_MENTION_USER_ID` when it carries none. A thread opened by that user continues the pushed session; a reply from any other member is refused (the thread stays unbound and claimable, and they can still @-mention the bot for a session of their own). With no `userId` and no `DISCORD_MENTION_USER_ID`, a reply thread reaches the right agent in a **fresh** session. Without this gate, anyone who can open a thread on a push could take over the referenced session and read its context.
+
 - **Threads only.** An inline reply in the parent channel is *not* routed — it would put windup traffic and ordinary channel traffic on the same processing queue. Use "Create Thread" on the message.
 - Push anchors hold **ids only** (no message content) and are purged after **30 days**; disconnecting an agent from a channel drops that channel's anchors immediately.
 - See [api.md → Answerable pushes](api.md#answerable-pushes) for the request shape.

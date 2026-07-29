@@ -70,7 +70,8 @@ Request: `Content-Type: application/json`
   "message": "string",
   "mention": false,
   "provider": "discord",
-  "sessionId": "string"
+  "sessionId": "string",
+  "userId": "string"
 }
 ```
 
@@ -78,7 +79,7 @@ Request: `Content-Type: application/json`
 
 `mention` is rendered by the provider in a platform-appropriate way (Discord prepends `<@DISCORD_MENTION_USER_ID>` to the first part of a multi-part message).
 
-`sessionId` is optional — see [Answerable pushes](#answerable-pushes).
+`sessionId` and `userId` are optional — see [Answerable pushes](#answerable-pushes).
 
 Response:
 
@@ -98,13 +99,15 @@ An agent-initiated push is a dead end by default: the bridge posts it, and a hum
 
 Passing `sessionId` fixes that for **Discord**. The bridge records each posted message against `(agentId, sessionId)`, and when someone **starts a thread on that message**, the reply is routed into that same maestro session — the agent picks the conversation up where it left off, with its context intact. No thread bookkeeping is needed on the caller's side; the binding is established the first time somebody replies.
 
+**Who may continue the session.** Picking a session back up means reading and extending its context, so a push only hands its session to a vetted user: `userId` (the platform user id allowed to answer), falling back to `DISCORD_MENTION_USER_ID` when omitted. A reply thread opened by that user inherits `sessionId`; a reply from anyone else is refused and leaves the thread unbound, so the rightful owner can still claim it (a bystander can always @-mention the bot in the channel to get a session of their own). If neither `userId` nor a configured mention user exists, the anchor has no owner and a reply thread simply starts a **fresh** session with the right agent.
+
 Notes:
 
 - **Threads only.** An *inline* reply in the parent channel is not routed: the channel and the session would then share one processing queue, interleaving windup traffic with ordinary channel traffic. Reply in a thread on the message.
-- The thread binds to whoever replied first, matching the ownership rule for mention-created threads.
+- The thread binds to whoever replied first (subject to the ownership check above), matching the ownership rule for mention-created threads.
 - Without `sessionId`, a thread on a pushed message still reaches the right **agent** — it just opens a fresh session.
 - Anchors are kept for **30 days**, then purged. Only ids are stored, never message content.
-- Non-Discord providers accept and ignore `sessionId` today.
+- Non-Discord providers accept and ignore `sessionId` / `userId` today.
 
 #### Rich rendering
 

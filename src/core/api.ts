@@ -21,6 +21,13 @@ export interface SendRequest {
    * fresh one.
    */
   sessionId?: string;
+  /**
+   * Optional platform user id allowed to continue `sessionId` by replying in a
+   * thread on this push. Without it the provider falls back to its configured
+   * mention user, and failing that a reply thread starts a *fresh* session —
+   * an anchor never hands an existing session to an unvetted replier.
+   */
+  userId?: string;
 }
 
 export type ApiDeps = {
@@ -113,6 +120,12 @@ export function createServerHandler(deps: ApiDeps) {
     }
     const sessionId = body.sessionId?.trim() || null;
 
+    if (body.userId !== undefined && typeof body.userId !== 'string') {
+      sendJson(res, 400, { success: false, error: 'userId must be a string when provided' });
+      return;
+    }
+    const userId = body.userId?.trim() || null;
+
     const providerName = body.provider ?? 'discord';
     const provider = deps.providers.get(providerName);
     if (!provider) {
@@ -193,6 +206,7 @@ export function createServerHandler(deps: ApiDeps) {
             channelId: info.channelId,
             agentId: info.agentId,
             sessionId,
+            ownerUserId: userId,
           });
         } catch (err) {
           await log.error('api/recordPushedMessage', (err as Error).message);

@@ -34,7 +34,11 @@ import { clampTitle, clampDescription } from './embed';
 import { discordConfig } from './config';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
-import { pushedMessagesDb, PUSHED_MESSAGE_RETENTION_DAYS } from './pushedMessagesDb';
+import {
+  pushedMessagesDb,
+  resolveAnchorOwner,
+  PUSHED_MESSAGE_RETENTION_DAYS,
+} from './pushedMessagesDb';
 import { createMessageCreateHandler } from './messageCreate';
 import { createRoomMessageHandler } from './roomMessageCreate';
 import { RoomGatewayManager } from './roomGateways';
@@ -389,6 +393,11 @@ export class DiscordProvider implements BridgeProvider {
         record.channelId,
         record.agentId,
         record.sessionId ?? null,
+        // Falls back to the configured mention user: they are who this bot's
+        // pushes are addressed to, so they are the one person who may pick the
+        // session back up. No caller-supplied user and no configured mention
+        // user means no vetted owner, and a reply thread then starts fresh.
+        resolveAnchorOwner(record.ownerUserId, discordConfig.mentionUserId),
       );
     } catch (err) {
       void logger.error(

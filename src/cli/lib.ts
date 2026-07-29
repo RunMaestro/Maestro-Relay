@@ -14,6 +14,12 @@ export interface SendApiPayload {
    * a reply thread started on one of them continues this session.
    */
   sessionId?: string;
+  /**
+   * Platform user id allowed to continue `sessionId` from a reply thread on the
+   * push. Omitted means the provider's configured mention user, and failing
+   * that no vetted owner — a reply thread then starts a fresh session.
+   */
+  userId?: string;
 }
 
 export interface SendApiResult {

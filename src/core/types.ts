@@ -191,6 +191,13 @@ export interface PushedMessage {
   agentId: string;
   /** The maestro session the push belongs to; null when the caller sent none. */
   sessionId?: string | null;
+  /**
+   * Platform user id authorized to continue `sessionId` from a reply thread on
+   * this message. Null means "nobody vetted": the provider must then route such
+   * a reply into a *fresh* session rather than handing over this one, so an
+   * anchor can never leak an existing session's context to a bystander.
+   */
+  ownerUserId?: string | null;
 }
 
 export interface AgentChannelInfo {

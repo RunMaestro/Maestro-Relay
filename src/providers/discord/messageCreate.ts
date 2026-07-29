@@ -67,6 +67,22 @@ function toIncoming(message: Message, attachmentSource?: IncomingAttachment[]): 
  * routing it to the push's session would make the windup session and ordinary
  * channel traffic share one queue key (`core/queue.ts` keys on channel id).
  *
+ * Inheriting the push's *session* is gated on the anchor's `owner_user_id`,
+ * because continuing a session means reading and extending its context:
+ *
+ * - replier **is** the anchor's owner → inherit `session_id`, the full
+ *   "answer the push" path;
+ * - anchor has **no** owner (no `userId` on the push, no configured mention
+ *   user) → adopt into a *fresh* session, so the turn still reaches the right
+ *   agent but carries none of the pushed session's context;
+ * - replier is **someone else** → refuse. The thread stays unbound so its
+ *   rightful owner can still claim it, and the bystander keeps the pre-existing
+ *   route to the agent: @-mention it in the channel for a session of their own.
+ *
+ * Without that gate any member able to open a thread on an agent push could
+ * take over the referenced session, which is strictly more than the mention
+ * path (a fresh session) ever granted them.
+ *
  * The adopting thread binds to whoever replied first, matching the ownership
  * rule for mention-created threads. Returns the registered row, or `undefined`
  * when there is no anchor (the normal "unregistered thread" case).
@@ -92,13 +108,25 @@ function adoptPushedThread(
     return undefined;
   }
 
+  const anchorOwner = anchor.owner_user_id?.trim() || null;
+  if (anchorOwner && anchorOwner !== message.author.id) {
+    log.warn(
+      'messageCreate/adopt',
+      `thread ${threadId} reply from ${message.author.id} != anchor owner ${anchorOwner}, refusing session handover`,
+    );
+    return undefined;
+  }
+  // Only a vetted owner inherits the pushed session; an unowned anchor still
+  // routes to the agent, but in a session of its own.
+  const inheritedSession = anchorOwner ? anchor.session_id : null;
+
   try {
     deps.threadDb.adopt(
       threadId,
       anchor.channel_id,
       anchor.agent_id,
       message.author.id,
-      anchor.session_id,
+      inheritedSession,
     );
   } catch (err) {
     void log.error('messageCreate/adopt', `failed to adopt thread ${threadId}: ${String(err)}`);
@@ -107,7 +135,7 @@ function adoptPushedThread(
 
   log.info(
     'messageCreate/adopt',
-    `adopted thread ${threadId} → agent ${anchor.agent_id} session ${anchor.session_id ?? 'new'}`,
+    `adopted thread ${threadId} → agent ${anchor.agent_id} session ${inheritedSession ?? 'new'}`,
   );
   // Re-read rather than synthesizing the row: `adopt` is INSERT OR IGNORE, so a
   // concurrent first reply may have won and its binding is the one in force.

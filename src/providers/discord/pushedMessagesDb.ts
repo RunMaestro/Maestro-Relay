@@ -9,6 +9,12 @@ import { db } from '../../core/db';
  * bridge has never seen before can be looked up here to discover which agent
  * (and which maestro session) posted the message the human just replied to.
  *
+ * An anchor also carries the Discord user allowed to *inherit* that session
+ * (`owner_user_id`). Without that gate any member who can open a thread on the
+ * push would take over the referenced session and keep writing with its
+ * context; adoption therefore only hands over `session_id` to that user, and
+ * anyone else's reply starts fresh (see `messageCreate.adoptPushedThread`).
+ *
  * Only ids are stored — never message content. Rows expire via
  * `purgeOlderThan`, since an anchor nobody has replied to in a month is dead
  * weight.
@@ -19,11 +25,30 @@ export interface DiscordPushedMessage {
   channel_id: string;
   agent_id: string;
   session_id: string | null;
+  /**
+   * Discord user allowed to continue `session_id` by replying in a thread on
+   * this message. Null means nobody was vetted, in which case such a reply gets
+   * a fresh session instead of this one.
+   */
+  owner_user_id: string | null;
   created_at: number;
 }
 
 /** Default retention for push anchors. */
 export const PUSHED_MESSAGE_RETENTION_DAYS = 30;
+
+/**
+ * Who may inherit a push's session: the user the caller vetted, else the
+ * configured mention user (the human this bot's pushes are addressed to), else
+ * nobody. Blank strings — `DISCORD_MENTION_USER_ID` is `''` when unset — must
+ * collapse to null so an empty id never reads as a real owner.
+ */
+export function resolveAnchorOwner(
+  recordOwnerUserId: string | null | undefined,
+  mentionUserId: string | null | undefined,
+): string | null {
+  return recordOwnerUserId?.trim() || mentionUserId?.trim() || null;
+}
 
 export const pushedMessagesDb = {
   /**
@@ -36,11 +61,12 @@ export const pushedMessagesDb = {
     channelId: string,
     agentId: string,
     sessionId: string | null = null,
+    ownerUserId: string | null = null,
   ): void {
     db.prepare(
-      `INSERT OR REPLACE INTO discord_pushed_messages (message_id, channel_id, agent_id, session_id)
-       VALUES (?, ?, ?, ?)`,
-    ).run(messageId, channelId, agentId, sessionId);
+      `INSERT OR REPLACE INTO discord_pushed_messages (message_id, channel_id, agent_id, session_id, owner_user_id)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(messageId, channelId, agentId, sessionId, ownerUserId);
   },
 
   get(messageId: string): DiscordPushedMessage | undefined {

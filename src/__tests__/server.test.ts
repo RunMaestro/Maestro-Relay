@@ -523,6 +523,7 @@ interface AnchorRecord {
   channelId: string;
   agentId: string;
   sessionId?: string | null;
+  ownerUserId?: string | null;
 }
 
 /**
@@ -572,14 +573,26 @@ test('POST /api/send records a push anchor per posted message with the given ses
     const res = await request(server, {
       method: 'POST',
       path: '/api/send',
-      body: { agentId: 'a-1', message: 'hello', sessionId: 'session-42' },
+      body: { agentId: 'a-1', message: 'hello', sessionId: 'session-42', userId: 'u-9' },
     });
 
     assert.equal(res.status, 200);
     assert.deepEqual(res.body.messageIds, ['msg-1', 'msg-2']);
     assert.deepEqual(anchors, [
-      { messageId: 'msg-1', channelId: 'ch-1', agentId: 'a-1', sessionId: 'session-42' },
-      { messageId: 'msg-2', channelId: 'ch-1', agentId: 'a-1', sessionId: 'session-42' },
+      {
+        messageId: 'msg-1',
+        channelId: 'ch-1',
+        agentId: 'a-1',
+        sessionId: 'session-42',
+        ownerUserId: 'u-9',
+      },
+      {
+        messageId: 'msg-2',
+        channelId: 'ch-1',
+        agentId: 'a-1',
+        sessionId: 'session-42',
+        ownerUserId: 'u-9',
+      },
     ]);
   } finally {
     server.close();
@@ -618,6 +631,48 @@ test('POST /api/send treats a blank sessionId as absent', async () => {
       body: { agentId: 'a-1', message: 'hello', sessionId: '   ' },
     });
     assert.equal(anchors[0].sessionId, null);
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send records a null owner when userId is omitted or blank', async () => {
+  const anchors: AnchorRecord[] = [];
+  const server = await startTestServer(
+    makeDeps({ providers: new Map([['discord', makeAnchoringProvider({ anchors })]]) }),
+  );
+  try {
+    await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', sessionId: 'session-42' },
+    });
+    await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', sessionId: 'session-42', userId: '  ' },
+    });
+    // Null, never a bogus owner — the provider decides the fallback, and an
+    // unowned anchor hands out no session.
+    assert.deepEqual(
+      anchors.map((a) => a.ownerUserId),
+      [null, null],
+    );
+  } finally {
+    server.close();
+  }
+});
+
+test('POST /api/send returns 400 for a non-string userId', async () => {
+  const server = await startTestServer(makeDeps());
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'hello', userId: 42 },
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.body.error, /userId/);
   } finally {
     server.close();
   }

@@ -610,6 +610,7 @@ test('handleMessageCreate adopts a thread opened on an agent-pushed message', as
       channel_id: 'channel-1',
       agent_id: 'agent-push',
       session_id: 'session-push',
+      owner_user_id: 'user-1',
     },
   );
   const handler = createMessageCreateHandler(deps as any);
@@ -636,6 +637,87 @@ test('handleMessageCreate adopts with a null session when the push carried none'
       channel_id: 'channel-1',
       agent_id: 'agent-push',
       session_id: null,
+      owner_user_id: 'user-1',
+    },
+  );
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 1);
+  assert.equal(registered.get('pushed-msg-1').session_id, null);
+});
+
+// --- the ownership gate on session inheritance ---
+//
+// Continuing a session means reading and extending its context, so an anchor
+// only hands `session_id` to the user it was addressed to. Everyone else either
+// gets a fresh session (unowned anchor) or nothing at all (wrong user).
+
+test('handleMessageCreate refuses a session handover to a user who is not the anchor owner', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+      owner_user_id: 'owner-7',
+    },
+  );
+  const handler = createMessageCreateHandler(deps as any);
+
+  // `makeAdoptMessage` authors as `user-1`, a bystander here.
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 0, 'a bystander must not drive the pushed session');
+  assert.equal(registered.size, 0, 'and the thread stays claimable by its real owner');
+});
+
+test('handleMessageCreate adopts an unowned anchor into a fresh session', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+      owner_user_id: null,
+    },
+  );
+  const handler = createMessageCreateHandler(deps as any);
+
+  await handler(makeAdoptMessage() as any);
+
+  assert.equal(enqueued, 1, 'the reply still reaches the agent');
+  const row = registered.get('pushed-msg-1');
+  assert.equal(row.agent_id, 'agent-push', 'routed to the pushing agent');
+  assert.equal(
+    row.session_id,
+    null,
+    'but with no vetted owner it must not inherit the pushed session',
+  );
+  assert.equal(row.owner_user_id, 'user-1');
+});
+
+test('handleMessageCreate treats a blank anchor owner as unvetted', async () => {
+  let enqueued = 0;
+  const { deps, registered } = createAdoptDeps(
+    () => {
+      enqueued += 1;
+    },
+    {
+      message_id: 'pushed-msg-1',
+      channel_id: 'channel-1',
+      agent_id: 'agent-push',
+      session_id: 'session-push',
+      owner_user_id: '   ',
     },
   );
   const handler = createMessageCreateHandler(deps as any);
