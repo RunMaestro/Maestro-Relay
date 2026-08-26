@@ -15,11 +15,14 @@ import { splitMessage } from '../../core/splitMessage';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { discordAttachmentToIncoming, isVoiceAttachment, isVoiceMessage } from './voice';
+import type { AmbientBuffer } from '../../core/ambient';
 
 type Enqueue = (msg: IncomingMessage, options?: EnqueueOptions) => void;
 
 export type MessageCreateDeps = {
   channelDb: Pick<typeof channelDb, 'get'>;
+  /** Present only when ambient mode is compiled in; absent in tests that ignore it. */
+  ambient?: AmbientBuffer;
   threadDb: Pick<typeof threadDb, 'get' | 'register'>;
   getBotUserId: (message: Message) => string | undefined;
   enqueue: Enqueue;
@@ -68,6 +71,26 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
       const channelInfo = deps.channelDb.get(message.channel.id);
       if (!channelInfo) {
         log.debug('messageCreate/mention', `channel ${message.channel.id} not registered, ignoring`);
+        return;
+      }
+
+      // Ambient mode: no mention required, no thread created, anyone in the
+      // channel counts. The message joins a batch that is handed to the agent
+      // once the conversation pauses. A direct mention still short-circuits to
+      // the thread path below, because addressing the bot by name should always
+      // get a prompt answer rather than waiting on the quiet window.
+      const ambientOn = channelInfo.ambient === 1 && !!deps.ambient;
+      const mentionsBotForAmbient =
+        message.mentions.users.has(botUserId) ||
+        message.content.includes(`<@${botUserId}>`) ||
+        message.content.includes(`<@!${botUserId}>`);
+      if (ambientOn && !mentionsBotForAmbient) {
+        deps.ambient!.add(message.channel.id, {
+          authorName:
+            message.member?.displayName ?? message.author.username ?? message.author.id,
+          content: message.content,
+          message: toIncoming(message),
+        });
         return;
       }
 

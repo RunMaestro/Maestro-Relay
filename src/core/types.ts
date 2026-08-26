@@ -111,6 +111,12 @@ export interface BridgeProvider {
 export type EnqueueOptions = {
   contentOverride?: string;
   attachmentsOverride?: IncomingAttachment[];
+  /**
+   * Ambient turns are unaddressed: the agent was not spoken to, it was
+   * listening. The queue drops a silence reply and suppresses the usage footer
+   * so an idle listener leaves no trace in the channel.
+   */
+  ambient?: boolean;
 };
 
 export interface KernelLogger {

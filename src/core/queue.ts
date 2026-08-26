@@ -9,6 +9,7 @@ import type {
 import { splitMessage as defaultSplitMessage } from './splitMessage';
 import { renderTables } from './renderTables';
 import { downloadAttachments as defaultDownload, formatAttachmentRefs } from './attachments';
+import { isSilence } from './ambient';
 
 interface QueueEntry {
   message: IncomingMessage;
@@ -185,6 +186,18 @@ export function createQueue(deps: QueueDeps) {
         // ignore cleanup failure
       }
 
+      // An ambient turn the agent chose not to answer leaves nothing behind:
+      // no message, no footer, not even a usage line. That silence is the
+      // feature — a listener that comments on every exchange is unusable.
+      if (options?.ambient && result.success && isSilence(result.response)) {
+        deps.logger.debug(
+          'queue:ambient-silence',
+          `agent=${conv.agentId} channel=${message.channelId} stayed silent`,
+        );
+        void processNext(k);
+        return;
+      }
+
       if (result.response) {
         if (!result.success) {
           void deps.logger.error(
@@ -208,6 +221,12 @@ export function createQueue(deps: QueueDeps) {
         await provider.send(target, {
           text: `⚠️ The agent could not complete this request.${hint}`,
         });
+      }
+
+      if (options?.ambient) {
+        // Ambient replies read as conversation, so they carry no usage footer.
+        void processNext(k);
+        return;
       }
 
       const cost = (result.usage?.totalCostUsd ?? 0).toFixed(4);

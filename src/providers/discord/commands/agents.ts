@@ -54,6 +54,23 @@ export const data = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub
+      .setName('ambient')
+      .setDescription('Let the agent follow this channel and chime in without being mentioned')
+      .addStringOption((opt) =>
+        opt
+          .setName('mode')
+          .setDescription('Turn ambient listening on or off')
+          .setRequired(true)
+          .addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName('scope')
+          .setDescription("What the agent should speak up about (e.g. 'trading research'). Optional."),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub
       .setName('readonly')
       .setDescription('Toggle read-only mode for this agent channel')
       .addStringOption((opt) =>
@@ -106,6 +123,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     await handleDisconnect(interaction);
   } else if (sub === 'readonly') {
     await handleReadonly(interaction);
+  } else if (sub === 'ambient') {
+    await handleAmbient(interaction);
   }
 }
 
@@ -284,6 +303,33 @@ async function handleShow(interaction: ChatInputCommandInteraction): Promise<voi
   }
 
   await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleAmbient(interaction: ChatInputCommandInteraction): Promise<void> {
+  const channelInfo = channelDb.get(interaction.channelId);
+  if (!channelInfo) {
+    await interaction.reply({ content: 'This channel is not an agent channel.', ephemeral: true });
+    return;
+  }
+
+  const on = interaction.options.getString('mode', true) === 'on';
+  const scope = interaction.options.getString('scope');
+  channelDb.setAmbient(interaction.channelId, on, on ? scope : null);
+
+  const embed = new EmbedBuilder()
+    .setColor(on ? 0x9146ff : 0x99aab5)
+    .setDescription(
+      on
+        ? `👂 **${channelInfo.agent_name}** is now following this channel. ` +
+          `No need to mention it — talk normally and it will chime in when it has ` +
+          `something to add.` +
+          (scope ? `
+-# Speaking up about: ${scope}` : '')
+        : `🔇 **${channelInfo.agent_name}** has stopped following this channel. ` +
+          `Mention it to get its attention.`,
+    );
+
+  await interaction.reply({ embeds: [embed] });
 }
 
 async function handleReadonly(interaction: ChatInputCommandInteraction): Promise<void> {

@@ -21,6 +21,9 @@ export const channelDb = {
   setReadOnly(channelId: string, readOnly: boolean): void {
     core.setReadOnly('discord', channelId, readOnly);
   },
+  setAmbient(channelId: string, ambient: boolean, scope: string | null = null): void {
+    core.setAmbient('discord', channelId, ambient, scope);
+  },
   remove(channelId: string): void {
     core.remove('discord', channelId);
   },

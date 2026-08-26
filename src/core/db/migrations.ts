@@ -9,6 +9,7 @@ import type Database from 'better-sqlite3';
  *  3. Add `provider` column + composite PK (provider, channel_id) to agent_channels
  *  4. Rename `agent_threads` → `discord_agent_threads`
  *  5. Add `slack_agent_conversations` thread/timestamp registry
+ *  6. Add `ambient` + `ambient_scope` to agent_channels
  */
 export function runMigrations(db: Database.Database): void {
   ensureReadOnlyColumn(db);
@@ -17,6 +18,7 @@ export function runMigrations(db: Database.Database): void {
   ensureDiscordThreadsTable(db);
   ensureOwnerUserIdColumn(db);
   ensureSlackConversationsTable(db);
+  ensureAmbientColumns(db);
 }
 
 export function ensureOwnerUserIdColumn(database: Database.Database): void {
@@ -28,6 +30,24 @@ export function ensureOwnerUserIdColumn(database: Database.Database): void {
       !error.message.toLowerCase().includes('duplicate column name')
     ) {
       throw error;
+    }
+  }
+}
+
+export function ensureAmbientColumns(database: Database.Database): void {
+  for (const stmt of [
+    'ALTER TABLE agent_channels ADD COLUMN ambient INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE agent_channels ADD COLUMN ambient_scope TEXT',
+  ]) {
+    try {
+      database.exec(stmt);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !error.message.toLowerCase().includes('duplicate column name')
+      ) {
+        throw error;
+      }
     }
   }
 }

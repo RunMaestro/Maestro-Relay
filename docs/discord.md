@@ -54,6 +54,7 @@ The provider only loads if `discord` is in `ENABLED_PROVIDERS` (default: `discor
 | `/agents show <agent>`     | Show an agent's stats and recent activity                       |
 | `/agents disconnect`       | (Run inside an agent channel) Remove and delete the channel     |
 | `/agents readonly on\|off` | Toggle read-only mode for the current agent channel             |
+| `/agents ambient on\|off`  | Toggle ambient listening for the current agent channel          |
 | `/session new`             | Create a new owner-bound thread for the current agent channel   |
 | `/session list`            | List session threads for the current agent channel              |
 | `/playbook list`           | List playbooks (optionally filter by agent)                     |
@@ -83,13 +84,14 @@ npm run deploy-commands
 - **Mentioning the bot** in an agent channel creates a new owner-bound thread (equivalent to running `/session new`).
 - **Owner-bound threads**: only the user who created the thread can trigger the agent. Other users' messages are silently ignored — no error reply, no forwarding.
 - **Read-only mode** via `/agents readonly on` lets the bridge POST agent updates to the channel (via the HTTP API) without forwarding user messages back. Toggle off with `/agents readonly off`.
+- **Ambient mode** via `/agents ambient on` lets the agent follow the channel conversation without being mentioned, batching messages on a quiet window and staying silent unless it has something to add. Off by default, per channel. See [docs/ambient.md](ambient.md).
 - **Reactions**: `⏳` while a message is queued, `🎧` while a voice message is being transcribed.
 - **Usage stats** are appended below each agent reply (tokens, cost, context %).
 - **Markdown tables** in agent replies are rendered as aligned, fenced ASCII tables so they display correctly (Discord has no native table syntax). See [architecture.md → Output rendering](architecture.md#output-rendering).
 
 ## Security
 
-- Slash command access can be locked down with `DISCORD_ALLOWED_USER_IDS`.
+- Slash command access can be locked down with `DISCORD_ALLOWED_USER_IDS`. This gates `/agents ambient` too, so only an operator can put an agent into a channel-listening posture.
 - Threads created by mention or `/session new` are bound to a single owner; non-owner messages are ignored silently.
 - The bot only auto-creates channels under the **Maestro Agents** category.
 

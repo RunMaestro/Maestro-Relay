@@ -17,6 +17,26 @@ function csv(key: string): string[] {
 }
 
 /**
+ * Ambient-mode tuning. These are process-wide; whether ambient is actually on
+ * is a per-channel flag in the database, set with `/agents ambient`.
+ *
+ * The window is the one number worth thinking about. Too short and the agent
+ * answers half a thought; too long and it feels absent from the conversation.
+ * Twenty seconds is a compromise that reads as "waited for a pause".
+ */
+export const ambientConfig = {
+  get windowMs(): number {
+    return parseInt(process.env.AMBIENT_WINDOW_MS || '20000', 10);
+  },
+  get maxBatch(): number {
+    return parseInt(process.env.AMBIENT_MAX_BATCH || '25', 10);
+  },
+  get maxWaitMs(): number {
+    return parseInt(process.env.AMBIENT_MAX_WAIT_MS || '120000', 10);
+  },
+};
+
+/**
  * Provider-neutral kernel configuration. Each provider adapter loads its
  * own platform credentials (DISCORD_BOT_TOKEN, SLACK_BOT_TOKEN, ...) on
  * `start()` so missing creds for a disabled provider don't fail the bot.
