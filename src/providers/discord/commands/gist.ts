@@ -8,7 +8,7 @@ import { maestro } from '../../../core/maestro';
 
 export const data = new SlashCommandBuilder()
   .setName('gist')
-  .setDescription("Publish this agent's session transcript as a GitHub gist")
+  .setDescription("Publish the agent's current desktop tab transcript as a GitHub gist")
   .addStringOption((opt) =>
     opt.setName('description').setDescription('Optional gist description').setRequired(false),
   )
@@ -48,7 +48,12 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     .setColor(0x57f287)
     .setTitle(`📎 Gist published — ${channelInfo.agent_name}`)
     .setURL(result.gistUrl)
-    .setDescription(`[Open gist](${result.gistUrl})\nVisibility: **${visibility}**`);
+    .setDescription(
+      `[Open gist](${result.gistUrl})\nVisibility: **${visibility}**\n\n` +
+        `⚠️ This is the transcript of **${channelInfo.agent_name}**'s currently open ` +
+        `tab in the Maestro desktop app — *not* this conversation. Check its contents ` +
+        `before sharing the link.`,
+    );
 
   await interaction.editReply({ embeds: [embed] });
 }
