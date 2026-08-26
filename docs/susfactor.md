@@ -23,7 +23,7 @@ The **composed prompt** — the exact text the agent would receive — not the r
 
 Empty or attachment-only messages are skipped: there is no text to carry an injection.
 
-Prompts longer than `SUSFACTOR_MAX_CHARS` are head/tail sampled before scoring, keeping both ends. Truncating from the front alone would let an attacker pad past the limit and hide the payload in the tail.
+Prompts longer than `SUSFACTOR_MAX_CHARS` are head/tail sampled before scoring, keeping both ends. Truncating from the front alone would let an attacker pad past the limit and hide the payload in the tail. The minimum is 256: a smaller sample carries too little of the prompt to classify, which would leave screening switched on but blind, so the relay refuses to start instead.
 
 ## Flagging
 
@@ -48,7 +48,7 @@ SUSFACTOR_API_TOKEN=        # 0din API token; required unless mode is off
 SUSFACTOR_THRESHOLD=        # optional: 0..1 local threshold; overrides the server verdict
 SUSFACTOR_TIMEOUT_MS=8000   # optional: per-request timeout for token exchange and scoring
 SUSFACTOR_FAIL_OPEN=true    # optional: on API error/timeout, true forwards, false blocks
-SUSFACTOR_MAX_CHARS=8000    # optional: prompts longer than this are head/tail sampled
+SUSFACTOR_MAX_CHARS=8000    # optional: head/tail sample size for long prompts (minimum 256)
 ```
 
 Get the token from your 0din account ("View API Token").

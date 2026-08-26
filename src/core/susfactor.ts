@@ -89,7 +89,14 @@ class SusFactorError extends Error {
  */
 export function sampleForScreening(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
-  const budget = Math.max(0, maxChars - SAMPLE_MARKER.length);
+  // Below the marker's own length there is no room to explain the elision.
+  // Drop the marker rather than the user text: a sample that is all marker
+  // scores as benign every time, which silently disables screening.
+  if (maxChars <= SAMPLE_MARKER.length) {
+    const head = Math.ceil(maxChars / 2);
+    return text.slice(0, head) + text.slice(text.length - (maxChars - head));
+  }
+  const budget = maxChars - SAMPLE_MARKER.length;
   const head = Math.ceil(budget / 2);
   const tail = budget - head;
   return text.slice(0, head) + SAMPLE_MARKER + (tail > 0 ? text.slice(text.length - tail) : '');
@@ -200,7 +207,9 @@ export function createSusFactor(options: SusFactorOptions): SusFactorScreener {
 
     const serverThreshold = typeof body.threshold === 'number' ? body.threshold : 0.5;
     const isSuspicious =
-      options.threshold !== undefined ? body.score >= options.threshold : body.is_suspicious === true;
+      options.threshold !== undefined
+        ? body.score >= options.threshold
+        : body.is_suspicious === true;
 
     return {
       score: body.score,

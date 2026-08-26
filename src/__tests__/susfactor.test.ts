@@ -207,8 +207,7 @@ test('the JWT is re-exchanged once its expiry window closes', async () => {
 
 test('a 401 on scoring triggers exactly one token refresh and retry', async () => {
   const h = harness({
-    score: (_prompt, attempt) =>
-      attempt === 1 ? jsonResponseUnauthorized() : 0.02,
+    score: (_prompt, attempt) => (attempt === 1 ? jsonResponseUnauthorized() : 0.02),
   });
   const sf = build('block', h);
 
@@ -218,10 +217,9 @@ test('a 401 on scoring triggers exactly one token refresh and retry', async () =
   assert.equal(h.tokenCalls(), 2);
   assert.equal(h.calls.filter((c) => c.url === SUS_URL).length, 2);
 
-  const retryAuth = (h.calls.filter((c) => c.url === SUS_URL)[1].init.headers as Record<
-    string,
-    string
-  >)['Authorization'];
+  const retryAuth = (
+    h.calls.filter((c) => c.url === SUS_URL)[1].init.headers as Record<string, string>
+  )['Authorization'];
   assert.equal(retryAuth, 'Bearer jwt-2');
 });
 
@@ -271,6 +269,28 @@ test('a prompt within the limit is sent verbatim', async () => {
 
   assert.equal(decision.verdict?.sampled, false);
   assert.equal(seen[0], 'short prompt');
+});
+
+test('sampleForScreening keeps user text when maxChars is below the marker length', () => {
+  // The elision marker is 52 chars. A smaller budget must drop the marker, not
+  // the prompt — a sample that is all marker scores benign every time.
+  const text = 'A'.repeat(300) + 'INJECT' + 'B'.repeat(300);
+  for (const maxChars of [10, 40, 52]) {
+    const out = sampleForScreening(text, maxChars);
+    assert.equal(out.length, maxChars, `maxChars=${maxChars} must be respected exactly`);
+    assert.ok(/[AB]/.test(out), `maxChars=${maxChars} must retain prompt text`);
+    assert.ok(!out.includes('omitted for screening'), `maxChars=${maxChars} must drop the marker`);
+  }
+});
+
+test('sampleForScreening never exceeds maxChars at any size', () => {
+  const text = 'A'.repeat(5000) + 'B'.repeat(5000);
+  for (const maxChars of [1, 2, 51, 52, 53, 100, 1000, 9999]) {
+    assert.ok(
+      sampleForScreening(text, maxChars).length <= maxChars,
+      `maxChars=${maxChars} overflowed`,
+    );
+  }
 });
 
 test('sampleForScreening keeps both ends within budget', () => {
