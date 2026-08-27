@@ -12,15 +12,15 @@ The Discord provider is the default, in-the-box chat interface for Maestro Relay
 https://discord.com/oauth2/authorize?client_id=<DISCORD_CLIENT_ID>&scope=bot+applications.commands&permissions=309237681232
 ```
 
-   The `309237681232` permissions integer grants:
+The `309237681232` permissions integer grants:
 
-   - **Manage Channels** — create/delete agent channels (`/agents new`, `/agents disconnect`)
-   - **View Channels**
-   - **Send Messages**
-   - **Attach Files** — re-upload user attachments when forwarding to a session thread
-   - **Add Reactions** — `⏳` / `🎧` queue and transcription indicators
-   - **Create Public Threads** — owner-bound session threads
-   - **Send Messages in Threads**
+- **Manage Channels** — create/delete agent channels (`/agents new`, `/agents disconnect`)
+- **View Channels**
+- **Send Messages**
+- **Attach Files** — re-upload user attachments when forwarding to a session thread
+- **Add Reactions** — `⏳` / `🎧` queue and transcription indicators
+- **Create Public Threads** — owner-bound session threads
+- **Send Messages in Threads**
 
 4. Enable **Message Content Intent** under Privileged Gateway Intents at:
 
@@ -28,7 +28,7 @@ https://discord.com/oauth2/authorize?client_id=<DISCORD_CLIENT_ID>&scope=bot+app
 https://discord.com/developers/applications/<DISCORD_CLIENT_ID>/bot
 ```
 
-   Without this the bot fails to connect with a *"Used disallowed intents"* error.
+Without this the bot fails to connect with a _"Used disallowed intents"_ error.
 
 ## Configuration
 
@@ -52,6 +52,8 @@ The provider only loads if `discord` is in `ENABLED_PROVIDERS` (default: `discor
 | `/agents list`             | Show all available agents                                       |
 | `/agents new <agent>`      | Create a dedicated channel for an agent (autocomplete)          |
 | `/agents show <agent>`     | Show an agent's stats and recent activity                       |
+| `/agents grant <user>`     | (Run inside an agent channel) Give someone access to it         |
+| `/agents revoke <user>`    | (Run inside an agent channel) Remove someone's access           |
 | `/agents disconnect`       | (Run inside an agent channel) Remove and delete the channel     |
 | `/agents readonly on\|off` | Toggle read-only mode for the current agent channel             |
 | `/agents ambient on\|off`  | Toggle ambient listening for the current agent channel          |
@@ -81,6 +83,7 @@ npm run deploy-commands
 
 ## Runtime behavior
 
+- **Agent channels are private by default.** `/agents new` creates the channel with `@everyone` denied **View Channel**, granting only the bot and whoever ran the command. Add people with `/agents grant @user`, remove them with `/agents revoke @user`. Pass `visibility:public` to `/agents new` for the old behavior. See [Channel visibility](#channel-visibility).
 - **Mentioning the bot** in an agent channel creates a new owner-bound thread (equivalent to running `/session new`).
 - **Owner-bound threads**: only the user who created the thread can trigger the agent. Other users' messages are silently ignored — no error reply, no forwarding.
 - **Read-only mode** via `/agents readonly on` lets the bridge POST agent updates to the channel (via the HTTP API) without forwarding user messages back. Toggle off with `/agents readonly off`.
@@ -89,9 +92,47 @@ npm run deploy-commands
 - **Usage stats** are appended below each agent reply (tokens, cost, context %).
 - **Markdown tables** in agent replies are rendered as aligned, fenced ASCII tables so they display correctly (Discord has no native table syntax). See [architecture.md → Output rendering](architecture.md#output-rendering).
 
+## Channel visibility
+
+An agent channel is a text box wired to a process on someone's machine. Anyone who can post in it can send instructions to that agent, so the default has to be closed.
+
+`/agents new` creates the channel with permission overwrites set **at creation time**:
+
+| Principal                 | View Channel | Send Messages |
+| ------------------------- | ------------ | ------------- |
+| `@everyone`               | denied       | —             |
+| The bot                   | allowed      | allowed       |
+| Whoever ran `/agents new` | allowed      | allowed       |
+
+Overwrites are passed to the create call rather than patched on afterwards. A channel that is public for even a moment has already been seen by everyone watching the server.
+
+If the **Maestro Agents** category does not exist yet, it is created with the same `@everyone` deny. An existing category is left as the operator arranged it — the channel-level overwrite is what decides visibility either way.
+
+### Adding people
+
+```
+/agents grant @ali     # run inside the agent channel
+/agents revoke @ali
+```
+
+Both need **Manage Roles** on the bot; without it the command reports that rather than failing silently.
+
+`/agents revoke` removes the _channel-level_ overwrite. Someone who can see the channel through a role still can — the reply says so rather than implying a stronger guarantee than it delivers.
+
+### Opting out
+
+```
+/agents new agent:Kensho visibility:public
+```
+
+This restores the pre-existing behavior, where the channel inherits the category and is typically visible to `@everyone`. The confirmation reply says so explicitly when you choose it.
+
+> **Upgrading?** This changes what `/agents new` does. Channels created before the upgrade are untouched — their permissions are whatever they already were. Only newly created channels are private.
+
 ## Security
 
 - Slash command access can be locked down with `DISCORD_ALLOWED_USER_IDS`. This gates `/agents ambient` too, so only an operator can put an agent into a channel-listening posture.
+- **Agent channels are private by default** — see [Channel visibility](#channel-visibility). The relay's own gating and Discord's permissions are independent layers: relay gating decides what reaches an agent, Discord permissions decide who can see and post at all.
 - Threads created by mention or `/session new` are bound to a single owner; non-owner messages are ignored silently.
 - The bot only auto-creates channels under the **Maestro Agents** category.
 
