@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import type { SusFactorMode } from './susfactor';
 dotenv.config();
 
 export function required(key: string): string {
@@ -6,6 +7,33 @@ export function required(key: string): string {
   if (!val) throw new Error(`Missing required env var: ${key}`);
   return val;
 }
+
+const SUSFACTOR_MODES: SusFactorMode[] = ['off', 'log', 'flag', 'block'];
+
+function optionalFloat(key: string): number | undefined {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const val = Number(raw);
+  if (!Number.isFinite(val)) throw new Error(`${key} must be a number (got "${raw}")`);
+  return val;
+}
+
+function positiveInt(key: string, fallback: number, min = 1): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const val = Number(raw);
+  if (!Number.isInteger(val) || val < min) {
+    throw new Error(`${key} must be an integer >= ${min} (got "${raw}")`);
+  }
+  return val;
+}
+
+/**
+ * Floor for SUSFACTOR_MAX_CHARS. A sample smaller than this carries too little
+ * of the prompt to classify, so accepting it would leave screening switched on
+ * but blind — the failure mode the startup checks exist to prevent.
+ */
+const MIN_SUSFACTOR_MAX_CHARS = 256;
 
 function csv(key: string): string[] {
   const val = process.env[key];
@@ -70,5 +98,25 @@ export const config = {
    */
   get logLevel(): string {
     return (process.env.LOG_LEVEL || 'info').toLowerCase();
+  },
+  /**
+   * SusFactor (0din.ai) prompt screening. Off unless `SUSFACTOR_MODE` is set,
+   * so existing installs are unaffected.
+   */
+  get susFactor() {
+    const raw = (process.env.SUSFACTOR_MODE || 'off').trim().toLowerCase();
+    if (!SUSFACTOR_MODES.includes(raw as SusFactorMode)) {
+      throw new Error(`SUSFACTOR_MODE must be one of ${SUSFACTOR_MODES.join('|')} (got "${raw}")`);
+    }
+    return {
+      mode: raw as SusFactorMode,
+      apiToken: process.env.SUSFACTOR_API_TOKEN || '',
+      threshold: optionalFloat('SUSFACTOR_THRESHOLD'),
+      timeoutMs: positiveInt('SUSFACTOR_TIMEOUT_MS', 8000),
+      failOpen: (process.env.SUSFACTOR_FAIL_OPEN || 'true').trim().toLowerCase() !== 'false',
+      maxChars: positiveInt('SUSFACTOR_MAX_CHARS', 8000, MIN_SUSFACTOR_MAX_CHARS),
+      tokenUrl: process.env.SUSFACTOR_TOKEN_URL || undefined,
+      susUrl: process.env.SUSFACTOR_SUS_URL || undefined,
+    };
   },
 };

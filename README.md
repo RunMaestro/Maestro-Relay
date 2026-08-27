@@ -15,6 +15,7 @@
 - Per-conversation FIFO queue with typing/reaction indicators
 - Streams agent replies back into chat with usage stats
 - Voice transcription pipeline (whisper.cpp) for Discord voice messages
+- Optional prompt-injection screening (0din.ai SusFactor) with log/flag/block modes ([docs/susfactor.md](docs/susfactor.md))
 
 ## Prerequisites
 
@@ -143,6 +144,8 @@ npm run build && node --test --experimental-test-coverage dist/__tests__/**/*.te
 Optional voice transcription (whisper.cpp, Discord-only today): [docs/voice.md](docs/voice.md).
 
 Optional ambient mode (Discord-only today): [docs/ambient.md](docs/ambient.md).
+
+Optional prompt-injection screening for every provider: [docs/susfactor.md](docs/susfactor.md).
 
 ## How it works
 
