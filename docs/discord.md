@@ -34,13 +34,14 @@ Without this the bot fails to connect with a _"Used disallowed intents"_ error.
 
 Discord provider keys read from `.env`:
 
-| Key                        | Required | Purpose                                                    |
-| -------------------------- | -------- | ---------------------------------------------------------- |
-| `DISCORD_BOT_TOKEN`        | yes      | Bot token from the Discord Developer Portal                |
-| `DISCORD_CLIENT_ID`        | yes      | Application ID from the Discord Developer Portal           |
-| `DISCORD_GUILD_ID`         | yes      | Server ID where slash commands are registered              |
-| `DISCORD_ALLOWED_USER_IDS` | no       | Comma-separated user IDs allowed to use slash commands     |
-| `DISCORD_MENTION_USER_ID`  | no       | User ID to `@mention` when API callers pass `mention=true` |
+| Key                        | Required | Purpose                                                     |
+| -------------------------- | -------- | ----------------------------------------------------------- |
+| `DISCORD_BOT_TOKEN`        | yes      | Bot token from the Discord Developer Portal                 |
+| `DISCORD_CLIENT_ID`        | yes      | Application ID from the Discord Developer Portal            |
+| `DISCORD_GUILD_ID`         | yes      | Server ID where slash commands are registered               |
+| `DISCORD_ALLOWED_USER_IDS` | no       | Comma-separated user IDs with **full** slash-command access |
+| `DISCORD_VIEWER_USER_IDS`  | no       | Comma-separated user IDs limited to **read-only** commands  |
+| `DISCORD_MENTION_USER_ID`  | no       | User ID to `@mention` when API callers pass `mention=true`  |
 
 The provider only loads if `discord` is in `ENABLED_PROVIDERS` (default: `discord`).
 
@@ -129,9 +130,44 @@ This restores the pre-existing behavior, where the channel inherits the category
 
 > **Upgrading?** This changes what `/agents new` does. Channels created before the upgrade are untouched — their permissions are whatever they already were. Only newly created channels are private.
 
+## Command access tiers
+
+`DISCORD_ALLOWED_USER_IDS` grants **full** access: every command, including the ones that make an agent execute something. `DISCORD_VIEWER_USER_IDS` grants a weaker tier for collaborators who need to see what is going on without being able to run anything.
+
+|                                                         | Admin | Viewer |
+| ------------------------------------------------------- | ----- | ------ |
+| `/health`                                               | ✅    | ✅     |
+| `/agents list`, `/agents show`                          | ✅    | ✅     |
+| `/session new`, `/session list`                         | ✅    | ✅     |
+| `/playbook list`, `/playbook show`                      | ✅    | ✅     |
+| `/notes synopsis`, `/notes history`                     | ✅    | ✅     |
+| `/agents new`, `/agents disconnect`, `/agents readonly` | ✅    | ❌     |
+| `/playbook run`, `/auto-run start`                      | ✅    | ❌     |
+| `/gist`                                                 | ✅    | ❌     |
+
+The line is **execution and outbound disclosure**: a viewer cannot make an agent run anything, cannot change relay state, and cannot publish a transcript outward. Reading is allowed.
+
+A command that is not classified is **admin**. A command added to the relay later is closed to viewers until someone classifies it deliberately, which is the safe direction for that mistake to point. The same applies per subcommand — `/agents` being partly viewer-visible does not make a new `/agents` subcommand viewer-visible.
+
+Autocomplete is gated by the same tier, so a viewer never sees completions for a command they cannot run.
+
+> [!IMPORTANT]
+> **Viewer is an execution boundary, not a confidentiality one.** A viewer can run `/agents list` and `/agents show`, which disclose agent names, tool types, and working directories. If someone should not know what agents exist on the machine, leave them out of **both** lists — an unlisted user reaching an agent channel can still talk to that one agent, and nothing else.
+
+### Behavior with each list unset
+
+| `ALLOWED` | `VIEWER` | Result                                                                                        |
+| --------- | -------- | --------------------------------------------------------------------------------------------- |
+| empty     | empty    | No restriction — every user may run every command (unchanged default)                         |
+| set       | empty    | Previous behavior exactly: listed users have full access, everyone else has none              |
+| set       | set      | Listed admins have full access, listed viewers have read-only, everyone else none             |
+| empty     | set      | Viewer list has no effect, since everyone is already an admin. Logged as a warning at startup |
+
+Setting `DISCORD_VIEWER_USER_IDS` is the only way to reach the new behavior, so an existing deployment is unaffected.
+
 ## Security
 
-- Slash command access can be locked down with `DISCORD_ALLOWED_USER_IDS`. This gates `/agents ambient` too, so only an operator can put an agent into a channel-listening posture.
+- Slash command access is tiered: `DISCORD_ALLOWED_USER_IDS` grants full access, `DISCORD_VIEWER_USER_IDS` grants read-only — see [Command access tiers](#command-access-tiers). Full access is what gates `/agents ambient`, so only an operator can put an agent into a channel-listening posture.
 - **Agent channels are private by default** — see [Channel visibility](#channel-visibility). The relay's own gating and Discord's permissions are independent layers: relay gating decides what reaches an agent, Discord permissions decide who can see and post at all.
 - Threads created by mention or `/session new` are bound to a single owner; non-owner messages are ignored silently.
 - The bot only auto-creates channels under the **Maestro Agents** category.

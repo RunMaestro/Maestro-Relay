@@ -27,6 +27,14 @@ export const discordConfig = {
   get allowedUserIds() {
     return csv('DISCORD_ALLOWED_USER_IDS');
   },
+  /**
+   * Users who may run read-only commands but not ones that make an agent
+   * execute something. Empty by default, which reproduces the previous
+   * single-list behavior exactly.
+   */
+  get viewerUserIds() {
+    return csv('DISCORD_VIEWER_USER_IDS');
+  },
   get mentionUserId() {
     return process.env.DISCORD_MENTION_USER_ID || '';
   },
