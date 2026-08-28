@@ -37,6 +37,12 @@ const CONFIG = {
   installDir: process.env.MAESTRO_RELAY_HOME || join(HOME, '.local/share/maestro-relay'),
   /** The git checkout we build patched releases from. */
   sourceDir: process.env.MAESTRO_RELAY_SRC || join(HOME, 'Projects/Maestro-Relay'),
+  /**
+   * The branch the running relay is supposed to be built from. Every feature
+   * we write is written to be run, so anything merged here and absent from the
+   * install dir is a fault, not a difference of opinion.
+   */
+  deployBranch: process.env.MAESTRO_RELAY_DEPLOY_BRANCH || 'kensho/deployed',
   apiPort: Number(process.env.RELAY_API_PORT || 3457),
   launchdLabel: 'sh.maestro.relay',
   /** Agent that receives escalations. */
@@ -80,6 +86,15 @@ const SIGNATURES = [
     // predates that patch, so redeploying from source is the fix.
     repair: 'redeploy-from-source',
     summary: 'maestro-cli stdout has non-JSON preamble; deployed build is missing the parseCliJson guard',
+  },
+  {
+    id: 'incomplete-deploy',
+    // Not matched against a log line — raised directly by checkPatchDrift when
+    // the running dist is missing modules the deploy branch defines. The build
+    // came from the wrong branch, so rebuilding from source is the fix.
+    match: /^(?!)/,
+    repair: 'redeploy-from-source',
+    summary: 'deployed build is missing modules present on the deploy branch',
   },
   {
     id: 'cli-missing',
@@ -351,6 +366,14 @@ async function checkService({ dryRun }) {
  * `maestro-relay-ctl update` reinstalls an upstream release over the install
  * dir, which throws away locally-applied fixes. Comparing mtimes catches that
  * without the cost of a full rebuild on every heartbeat.
+ *
+ * The presence check alone is not enough, and that gap cost real time. Ambient
+ * mode shipped, its migration ran, its per-channel flag was switched on — and
+ * the running build had been compiled from a different branch, so none of the
+ * code was in the process. Every check passed, because each one asked whether
+ * the patches it knew about were *present*. None asked whether anything was
+ * *missing*. So the file-completeness check below is the one that matters:
+ * every module on the deploy branch must exist in the running dist.
  */
 function checkPatchDrift() {
   const deployed = join(CONFIG.installDir, 'dist/core/maestro.js');
@@ -368,12 +391,55 @@ function checkPatchDrift() {
     return { healthy: false, signature: 'cli-stdout-pollution' };
   }
 
+  const missing = missingFromDeployedDist();
+  if (missing === null) {
+    record('ok', 'patch-drift', 'skipped: deploy branch not readable');
+    return { healthy: true };
+  }
+  if (missing.length > 0) {
+    const shown = missing.slice(0, 5).join(', ');
+    const more = missing.length > 5 ? ` (+${missing.length - 5} more)` : '';
+    record(
+      'fault',
+      'patch-drift',
+      `deployed build is missing ${missing.length} module(s) from ${CONFIG.deployBranch}: ${shown}${more}`,
+    );
+    return { healthy: false, signature: 'incomplete-deploy' };
+  }
+
   if (statSync(source).mtimeMs > statSync(deployed).mtimeMs) {
     record('warn', 'patch-drift', 'source maestro.ts is newer than the deployed build');
   } else {
-    record('ok', 'patch-drift', 'deployed build carries local patches');
+    record('ok', 'patch-drift', `deployed build matches ${CONFIG.deployBranch}`);
   }
   return { healthy: true };
+}
+
+/**
+ * Modules the deploy branch defines that the running dist does not contain.
+ *
+ * Compares file lists, not content — a build from the wrong branch is missing
+ * whole modules, which is cheap to see and unambiguous. Content drift within a
+ * file is the mtime check's job. Returns null when the branch cannot be read,
+ * so a missing checkout reads as "unknown" rather than "everything is fine".
+ */
+function missingFromDeployedDist() {
+  let listing;
+  try {
+    listing = execFileSync('git', ['ls-tree', '-r', '--name-only', CONFIG.deployBranch], {
+      cwd: CONFIG.sourceDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+
+  return listing
+    .split('\n')
+    .filter((f) => f.startsWith('src/') && f.endsWith('.ts') && !f.includes('__tests__'))
+    .map((f) => f.replace(/^src\//, '').replace(/\.ts$/, '.js'))
+    .filter((f) => !existsSync(join(CONFIG.installDir, 'dist', f)));
 }
 
 /**
