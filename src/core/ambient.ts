@@ -107,6 +107,35 @@ export function buildAmbientPrompt(transcript: string, purview?: string): string
   );
 }
 
+/**
+ * Wrap a transcript from a *thread* the agent is bound to.
+ *
+ * A thread is not the channel. Someone opened it deliberately to work a topic,
+ * so silence is the wrong default there — the batching exists only to stop a
+ * brief typed in eight parts from becoming eight separate turns. Ali sent an
+ * eleven-message knowledge-base spec in under two minutes; that is one document
+ * and deserves one answer.
+ */
+export function buildThreadPrompt(
+  transcript: string,
+  threadName?: string,
+  purview?: string,
+): string {
+  const where = threadName?.trim() ? `the thread "${threadName.trim()}"` : 'a thread';
+  const scope = purview?.trim() ? `Your purview is: ${purview.trim()}\n\n` : '';
+  return (
+    `The following messages were posted in ${where}, which you are part of. They ` +
+    `arrived close together and are batched here as one turn — read them as a ` +
+    `single contribution, not as separate questions.\n\n` +
+    scope +
+    `${transcript}\n\n` +
+    `---\n` +
+    `Answer them. Unlike the open channel, a thread is a space someone opened on ` +
+    `purpose, so a reply is expected rather than optional. Answer once, covering ` +
+    `the whole batch, rather than replying to each message in turn.`
+  );
+}
+
 /** True when an agent reply means "nothing to add" and should not be posted. */
 export function isSilence(response: string | null | undefined): boolean {
   if (!response) return true;

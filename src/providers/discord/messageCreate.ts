@@ -154,11 +154,56 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
       return;
     }
 
-    const threadInfo = deps.threadDb.get(message.channel.id);
-    if (!threadInfo) return;
+    let threadInfo = deps.threadDb.get(message.channel.id);
+
+    // A thread nobody registered. Before ambient mode this was a silent black
+    // hole: Ali hand-created three threads and wrote thirty-odd messages of
+    // research briefs into them, and not one reached the agent, because only a
+    // thread the bot itself opened from a mention had a row here.
+    //
+    // If the parent channel is in ambient mode, the agent is already listening
+    // to that room, and a thread of it is still that room. Adopt the thread
+    // with no owner lock — an ambient channel is a shared space, so binding the
+    // thread to whoever happened to speak first would be wrong.
+    if (!threadInfo) {
+      const parentId = message.channel.parentId;
+      const parentInfo = parentId ? deps.channelDb.get(parentId) : undefined;
+      if (!parentInfo || parentInfo.ambient !== 1 || !deps.ambient) return;
+
+      try {
+        deps.threadDb.register(message.channel.id, parentId!, parentInfo.agent_id, null);
+      } catch (err) {
+        await log.error(
+          'messageCreate/thread-adopt',
+          `failed to adopt thread ${message.channel.id}: ${String(err)}`,
+        );
+        return;
+      }
+      log.info(
+        'messageCreate/thread-adopt',
+        `adopted unregistered thread ${message.channel.id} under ambient channel ${parentId}`,
+      );
+      threadInfo = deps.threadDb.get(message.channel.id);
+      if (!threadInfo) return;
+    }
 
     const ownerUserId = threadInfo.owner_user_id?.trim();
     if (ownerUserId && ownerUserId !== message.author.id) return;
+
+    // Batch thread traffic the same way the channel is batched, so a brief typed
+    // in eight parts is one turn rather than eight. Unlike the channel, a reply
+    // is expected — the prompt differs, not the buffering. Only unowned
+    // (adopted) threads batch; a mention-created thread stays immediate, which
+    // is what someone who just @-mentioned the bot is waiting for.
+    if (!ownerUserId && deps.ambient && !deps.isVoiceMessage(message)) {
+      deps.ambient.add(message.channel.id, {
+        authorName:
+          message.member?.displayName ?? message.author.username ?? message.author.id,
+        content: message.content,
+        message: toIncoming(message),
+      });
+      return;
+    }
 
     if (!deps.isVoiceMessage(message)) {
       deps.enqueue(toIncoming(message));

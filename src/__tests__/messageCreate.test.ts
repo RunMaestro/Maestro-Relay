@@ -551,3 +551,122 @@ test('handleMessageCreate reports transcription failures and falls back to enque
   assert.ok(reactions.includes('🎧'), 'should have 🎧 reaction even on failure');
   assert.ok(replies.some((r) => r.includes('Failed to transcribe this voice message')));
 });
+
+// --- Thread adoption under an ambient channel -------------------------------
+//
+// The regression these cover: Ali hand-created three threads in the Kensho
+// channel and wrote ~30 messages of research briefs into them. Every one was
+// dropped, because only a thread the bot itself opened from a mention had a
+// row in discord_agent_threads, and an unregistered thread returned early.
+
+function ambientDeps(enqueue: (...args: any[]) => void, overrides: any = {}) {
+  const added: any[] = [];
+  const registered: any[] = [];
+  const deps: any = {
+    ...createDeps(enqueue),
+    isVoiceMessage: () => false,
+    channelDb: { get: () => ({ agent_id: 'agent-1', ambient: 1 }) as any },
+    threadDb: {
+      get: () => undefined,
+      register: (...args: unknown[]) => {
+        registered.push(args);
+      },
+    },
+    ambient: {
+      add: (channelId: string, entry: any) => added.push({ channelId, entry }),
+    },
+    ...overrides,
+  };
+  return { deps, added, registered };
+}
+
+function threadMessage(overrides: any = {}) {
+  return makeMessage({
+    channel: {
+      id: 'thread-9',
+      parentId: 'chan-1',
+      isThread: () => true,
+      sendTyping: async () => undefined,
+    },
+    ...overrides,
+  });
+}
+
+test('an unregistered thread under an ambient channel is adopted and buffered', async () => {
+  let enqueued = 0;
+  const { deps, added, registered } = ambientDeps(() => {
+    enqueued += 1;
+  });
+  // Adoption writes a row, so the re-read after register must find one.
+  let row: any;
+  deps.threadDb.get = () => row;
+  deps.threadDb.register = (...args: unknown[]) => {
+    registered.push(args);
+    row = { thread_id: 'thread-9', channel_id: 'chan-1', owner_user_id: null };
+  };
+
+  const handler = createMessageCreateHandler(deps);
+  await handler(threadMessage() as any);
+
+  assert.equal(registered.length, 1, 'the thread should be registered once');
+  assert.equal(registered[0][3], null, 'adopted threads carry no owner lock');
+  assert.equal(added.length, 1, 'the message should be buffered, not enqueued');
+  assert.equal(added[0].channelId, 'thread-9', 'buffered under the thread id');
+  assert.equal(enqueued, 0, 'batching means no immediate enqueue');
+});
+
+test('an unregistered thread under a non-ambient channel is still ignored', async () => {
+  let enqueued = 0;
+  const { deps, added, registered } = ambientDeps(() => {
+    enqueued += 1;
+  });
+  deps.channelDb.get = () => ({ agent_id: 'agent-1', ambient: 0 }) as any;
+
+  const handler = createMessageCreateHandler(deps);
+  await handler(threadMessage() as any);
+
+  assert.equal(registered.length, 0);
+  assert.equal(added.length, 0);
+  assert.equal(enqueued, 0);
+});
+
+test('an adopted thread accepts messages from anyone, not just the first speaker', async () => {
+  const { deps, added } = ambientDeps(() => undefined);
+  deps.threadDb.get = () =>
+    ({ thread_id: 'thread-9', channel_id: 'chan-1', owner_user_id: null }) as any;
+
+  const handler = createMessageCreateHandler(deps);
+  await handler(threadMessage({ author: { bot: false, id: 'someone-else' } }) as any);
+
+  assert.equal(added.length, 1, 'no owner lock means anyone in the thread is heard');
+});
+
+test('a mention-created thread stays immediate and is not batched', async () => {
+  let enqueued = 0;
+  const { deps, added } = ambientDeps(() => {
+    enqueued += 1;
+  });
+  // owner_user_id set == created from a mention; that user is waiting on a reply.
+  deps.threadDb.get = () =>
+    ({ thread_id: 'thread-1', channel_id: 'chan-1', owner_user_id: 'user-1' }) as any;
+
+  const handler = createMessageCreateHandler(deps);
+  await handler(threadMessage() as any);
+
+  assert.equal(added.length, 0, 'owned threads must not wait on the quiet window');
+  assert.equal(enqueued, 1);
+});
+
+test('a thread with no parent id is ignored rather than crashing', async () => {
+  const { deps, added, registered } = ambientDeps(() => undefined);
+
+  const handler = createMessageCreateHandler(deps);
+  await handler(
+    threadMessage({
+      channel: { id: 'thread-9', isThread: () => true, sendTyping: async () => undefined },
+    }) as any,
+  );
+
+  assert.equal(registered.length, 0);
+  assert.equal(added.length, 0);
+});

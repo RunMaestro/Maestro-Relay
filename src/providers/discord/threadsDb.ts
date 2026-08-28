@@ -10,7 +10,20 @@ export interface DiscordAgentThread {
 }
 
 export const threadDb = {
-  register(threadId: string, channelId: string, agentId: string, ownerUserId: string): void {
+  /**
+   * Bind a thread to an agent.
+   *
+   * `ownerUserId` null means the thread is unowned and anyone in it may talk to
+   * the agent — that is how a thread adopted under an ambient channel is
+   * registered, since an ambient room is shared by definition. A thread created
+   * from a mention passes the mentioner and stays private to them.
+   */
+  register(
+    threadId: string,
+    channelId: string,
+    agentId: string,
+    ownerUserId: string | null,
+  ): void {
     db.prepare(
       `INSERT INTO discord_agent_threads (thread_id, channel_id, agent_id, owner_user_id)
        VALUES (?, ?, ?, ?)`,

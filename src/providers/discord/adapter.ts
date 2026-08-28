@@ -29,7 +29,12 @@ import { requiredTier, isAuthorized, configWarning } from './access';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { createMessageCreateHandler } from './messageCreate';
-import { buildAmbientPrompt, createAmbientBuffer, type AmbientBuffer } from '../../core/ambient';
+import {
+  buildAmbientPrompt,
+  buildThreadPrompt,
+  createAmbientBuffer,
+  type AmbientBuffer,
+} from '../../core/ambient';
 import { ambientConfig } from '../../core/config';
 import { isVoiceMessage, isVoiceAttachment } from './voice';
 import { transcribeVoiceAttachment, isTranscriberAvailable } from '../../core/transcription';
@@ -137,20 +142,35 @@ export class DiscordProvider implements BridgeProvider {
       }
     });
 
-    // One buffer per process, keyed internally by channel. Flushing hands the
-    // whole batch to the queue as a single turn anchored on the newest message,
-    // so the reaction and any reply land where the conversation actually is.
+    // One buffer per process, keyed internally by channel *or thread* id.
+    // Flushing hands the whole batch to the queue as a single turn anchored on
+    // the newest message, so the reaction and any reply land where the
+    // conversation actually is.
     const ambient = createAmbientBuffer({
       windowMs: ambientConfig.windowMs,
       maxBatch: ambientConfig.maxBatch,
       maxWaitMs: ambientConfig.maxWaitMs,
       logger: ctx.logger,
       onFlush: ({ transcript, anchor, channelId }) => {
-        const info = channelDb.get(channelId);
+        // The key may be a thread, in which case the ambient flag and purview
+        // live on its parent. Resolve that before deciding anything.
+        const direct = channelDb.get(channelId);
+        const threadInfo = direct ? undefined : threadDb.get(channelId);
+        const info = direct ?? (threadInfo ? channelDb.get(threadInfo.channel_id) : undefined);
         if (!info || info.ambient !== 1) return; // toggled off mid-batch
+
+        const isThread = !direct;
+        const threadName = isThread
+          ? (client.channels.cache.get(channelId) as { name?: string } | undefined)?.name
+          : undefined;
+
         ctx.enqueue(anchor, {
-          contentOverride: buildAmbientPrompt(transcript, info.ambient_scope ?? undefined),
-          ambient: true,
+          contentOverride: isThread
+            ? buildThreadPrompt(transcript, threadName, info.ambient_scope ?? undefined)
+            : buildAmbientPrompt(transcript, info.ambient_scope ?? undefined),
+          // Only the open channel may answer with silence. A thread was opened
+          // on purpose and gets a real reply.
+          ambient: !isThread,
         });
       },
     });
