@@ -80,6 +80,17 @@ export const config = {
     return (process.env.LOG_LEVEL || 'info').toLowerCase();
   },
   /**
+   * Post the per-reply `N tokens • $cost • X% context` footer.
+   *
+   * On by default to preserve existing behaviour, but worth switching off in
+   * any channel humans converse in: it doubles the message count and puts
+   * operational telemetry in front of people who are reading a conversation.
+   * Set `SHOW_USAGE_FOOTER=false` to suppress it.
+   */
+  get showUsageFooter(): boolean {
+    return (process.env.SHOW_USAGE_FOOTER || 'true').trim().toLowerCase() !== 'false';
+  },
+  /**
    * SusFactor (0din.ai) prompt screening. Off unless `SUSFACTOR_MODE` is set,
    * so existing installs are unaffected.
    */

@@ -192,6 +192,39 @@ type RunOptions = {
 const DEFAULT_TIMEOUT_MS = 30 * 1000;
 const DEFAULT_MAX_BUFFER = 10 * 1024 * 1024; // 10MB
 
+/**
+ * Parse a JSON payload from maestro-cli stdout, tolerating log lines printed
+ * ahead of it.
+ *
+ * maestro-cli bundles subsystems that log through `console.info`, which Node
+ * writes to stdout. The WakaTime tracker is the known offender: it emits
+ * `[<iso>] [INFO] [[WakaTime]] Found WakaTime CLI: ...` on every invocation, so
+ * `JSON.parse(stdout)` fails on the timestamp and every agent reply is lost.
+ * Rather than trust the CLI to keep stdout clean, skip forward to the first
+ * line that parses as JSON on its own.
+ */
+export function parseCliJson<T = unknown>(raw: string): T {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    let offset = 0;
+    while (offset < raw.length) {
+      const ch = raw[offset];
+      if (ch === '{' || ch === '[') {
+        try {
+          return JSON.parse(raw.slice(offset)) as T;
+        } catch {
+          /* this line is log noise, keep looking */
+        }
+      }
+      const nextBreak = raw.indexOf('\n', offset);
+      if (nextBreak === -1) break;
+      offset = nextBreak + 1;
+    }
+    throw err;
+  }
+}
+
 async function run(args: string[], opts: RunOptions = {}): Promise<string> {
   try {
     const { stdout } = (await execFileAsync('maestro-cli', args, {
@@ -284,8 +317,8 @@ export const maestro = {
 
   /** List all agents. Returns empty array on error. */
   async listAgents(): Promise<MaestroAgent[]> {
-    const raw = await run(['list', 'agents', '--json']);
-    return JSON.parse(raw) as MaestroAgent[];
+    const raw = await run(["list", "agents", "--json"]);
+    return parseCliJson<MaestroAgent[]>(raw);
   },
 
   /** Look up an agent's cwd by ID, with a TTL cache to avoid repeated CLI calls. */
@@ -301,8 +334,8 @@ export const maestro = {
 
   /** List sessions for a given agent */
   async listSessions(agentId: string, limit = 25): Promise<MaestroSession[]> {
-    const raw = await run(['list', 'sessions', agentId, '--json', '-l', String(limit)]);
-    const parsed = JSON.parse(raw);
+    const raw = await run(["list", "sessions", agentId, "--json", "-l", String(limit)]);
+    const parsed = parseCliJson<MaestroSession[] | { sessions?: MaestroSession[] }>(raw);
     const sessions = Array.isArray(parsed) ? parsed : parsed?.sessions;
     return Array.isArray(sessions) ? sessions : [];
   },
@@ -335,7 +368,7 @@ export const maestro = {
     args.push(agentId, '--', message);
     try {
       const raw = await runSpawn(args);
-      return JSON.parse(raw) as SendResult;
+      return parseCliJson<SendResult>(raw);
     } catch (err: unknown) {
       // CLI may exit non-zero but still return valid JSON (e.g. read-only rejection)
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -372,7 +405,7 @@ export const maestro = {
     args.push(agentId, '--', message);
     try {
       const raw = await runSpawn(args);
-      return JSON.parse(raw) as DispatchResult;
+      return parseCliJson<DispatchResult>(raw);
     } catch (err: unknown) {
       // CLI exits non-zero on error but still emits a JSON error shape on stdout.
       const errMsg = err instanceof Error ? err.message : String(err);
@@ -391,7 +424,7 @@ export const maestro = {
   /** List every open AI tab across every agent in the running Maestro desktop. */
   async sessionList(): Promise<DesktopSessionEntry[]> {
     const raw = await run(['session', 'list', '--json']);
-    const parsed = JSON.parse(raw) as {
+    const parsed = parseCliJson(raw) as {
       success?: boolean;
       sessions?: DesktopSessionEntry[];
       error?: string;
@@ -418,7 +451,7 @@ export const maestro = {
     if (opts.since != null) args.push('--since', String(opts.since));
     if (opts.tail != null) args.push('--tail', String(opts.tail));
     const raw = await run(args);
-    const parsed = JSON.parse(raw) as
+    const parsed = parseCliJson(raw) as
       | SessionHistory
       | { success: false; error?: string; code?: string };
     if (parsed.success === false) {
@@ -435,19 +468,19 @@ export const maestro = {
     const args = ['list', 'playbooks', '--json'];
     if (agentId) args.push('-a', agentId);
     const raw = await run(args);
-    return JSON.parse(raw) as MaestroPlaybook[];
+    return parseCliJson<MaestroPlaybook[]>(raw);
   },
 
   /** Show detailed info for a single playbook */
   async showPlaybook(playbookId: string): Promise<MaestroPlaybookDetail> {
     const raw = await run(['show', 'playbook', playbookId, '--json']);
-    return JSON.parse(raw) as MaestroPlaybookDetail;
+    return parseCliJson<MaestroPlaybookDetail>(raw);
   },
 
   /** Show detailed agent info including stats and recent history */
   async showAgent(agentId: string): Promise<MaestroAgentDetail> {
     const raw = await run(['show', 'agent', agentId, '--json']);
-    return JSON.parse(raw) as MaestroAgentDetail;
+    return parseCliJson<MaestroAgentDetail>(raw);
   },
 
   /** Publish an agent's session transcript as a GitHub gist */
@@ -459,7 +492,7 @@ export const maestro = {
     if (opts.description) args.push('-d', opts.description);
     if (opts.isPublic) args.push('-p');
     const raw = await run(args, { timeoutMs: 60_000 });
-    return JSON.parse(raw) as GistResult;
+    return parseCliJson<GistResult>(raw);
   },
 
   /** Generate AI synopsis of recent activity (requires running Maestro app) */
@@ -468,7 +501,7 @@ export const maestro = {
     if (opts.days != null) args.push('-d', String(opts.days));
     // Synopsis generation involves AI inference — give it 2 minutes
     const raw = await run(args, { timeoutMs: 120_000 });
-    return JSON.parse(raw) as DirectorSynopsis;
+    return parseCliJson<DirectorSynopsis>(raw);
   },
 
   /** Show unified history across all agents */
@@ -480,7 +513,7 @@ export const maestro = {
     if (opts.limit != null) args.push('-l', String(opts.limit));
     if (opts.filter) args.push('--filter', opts.filter);
     const raw = await run(args);
-    const parsed = JSON.parse(raw);
+    const parsed = parseCliJson<DirectorNotesEntry[] | { entries?: DirectorNotesEntry[] }>(raw);
     if (Array.isArray(parsed)) return parsed as DirectorNotesEntry[];
     if (Array.isArray(parsed?.entries)) return parsed.entries as DirectorNotesEntry[];
     return [];

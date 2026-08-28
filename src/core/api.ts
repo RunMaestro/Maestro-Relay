@@ -16,6 +16,12 @@ export interface SendRequest {
 export type ApiDeps = {
   /** Map provider-name → BridgeProvider instance. */
   providers: Map<string, BridgeProvider>;
+  /**
+   * Messages accepted but not yet answered. Published on /api/health so an
+   * external supervisor can tell a wedged relay from a busy one and hold off
+   * restarting mid-reply.
+   */
+  inFlight?: () => number;
   splitMessage?: (text: string) => string[];
   logger?: import('./types').KernelLogger;
 };
@@ -194,6 +200,7 @@ export function createServerHandler(deps: ApiDeps) {
         status: ready ? 'ok' : 'not_ready',
         uptime: process.uptime(),
         providers,
+        inFlight: deps.inFlight ? deps.inFlight() : 0,
       });
       return;
     }
@@ -215,8 +222,11 @@ export function createServerHandler(deps: ApiDeps) {
   };
 }
 
-export function startServer(providers: Map<string, BridgeProvider>): http.Server {
-  const handler = createServerHandler({ providers });
+export function startServer(
+  providers: Map<string, BridgeProvider>,
+  opts: { inFlight?: () => number } = {},
+): http.Server {
+  const handler = createServerHandler({ providers, inFlight: opts.inFlight });
 
   const server = http.createServer(handler);
 
