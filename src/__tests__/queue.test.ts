@@ -563,3 +563,65 @@ test('drain reports failure when work outlasts the timeout', async () => {
   release();
   await q.drain(5000);
 });
+
+test('queue posts nothing into the channel when an ambient turn fails', async () => {
+  const { deps, provider } = createMocks();
+  deps._mocks.send.mock.mockImplementation(async () => ({
+    success: false,
+    response: null,
+    error: 'maestro-cli exited 1',
+  }));
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage({ content: 'transcript' }), { ambient: true });
+  await settle();
+
+  assert.deepEqual(provider.sentTexts, [], 'a failed ambient turn must stay out of the channel');
+  assert.equal(deps._mocks.loggerError.mock.callCount(), 1, 'the failure is logged instead');
+});
+
+test('queue posts nothing when an ambient turn errors but still returns text', async () => {
+  const { deps, provider } = createMocks();
+  deps._mocks.send.mock.mockImplementation(async () => ({
+    success: false,
+    response: 'Error: rate limited',
+    error: 'rate limited',
+  }));
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage({ content: 'transcript' }), { ambient: true });
+  await settle();
+
+  assert.deepEqual(provider.sentTexts, [], 'raw error text must not reach an ambient channel');
+});
+
+test('queue still reports a failure for a non-ambient turn', async () => {
+  const { deps, provider } = createMocks();
+  deps._mocks.send.mock.mockImplementation(async () => ({
+    success: false,
+    response: null,
+    error: 'maestro-cli exited 1',
+  }));
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage({ content: 'hello' }));
+  await settle();
+
+  assert.ok(
+    provider.sentTexts.some((t) => t.includes('could not complete this request')),
+    'an addressed turn still gets an error reply',
+  );
+});
+
+test('queue posts a successful ambient reply with no usage footer', async () => {
+  const { deps, provider } = createMocks();
+  deps._mocks.send.mock.mockImplementation(async () =>
+    defaultSendResult({ response: 'The break-even win rate is 41%.' }),
+  );
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage({ content: 'transcript' }), { ambient: true });
+  await settle();
+
+  assert.deepEqual(provider.sentTexts, ['The break-even win rate is 41%.']);
+});

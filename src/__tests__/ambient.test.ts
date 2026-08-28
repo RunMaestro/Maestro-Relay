@@ -208,3 +208,38 @@ test('dispose clears timers so nothing fires afterwards', () => {
   clock.advance(5000);
   assert.equal(flushes.length, 0);
 });
+
+test('flush carries every entry so a mid-batch attachment is not lost', () => {
+  // The adapter anchors the turn on the newest message but must gather
+  // attachments across the whole batch: a screenshot posted mid-conversation
+  // belongs to the turn even when a later text message ends up as the anchor.
+  const timers = fakeTimers();
+  const flushes: AmbientFlush[] = [];
+  const buf = createAmbientBuffer({
+    windowMs: 20_000,
+    onFlush: (f) => {
+      flushes.push(f);
+    },
+    timers: timers.api,
+  });
+
+  const withImage = msg('m1', 'Ali', 'look at this');
+  (withImage as any).attachments = [
+    { url: 'https://cdn.example.com/chart.png', name: 'chart.png', size: 10 },
+  ];
+
+  buf.add('C1', { authorName: 'Ali', content: 'look at this', message: withImage });
+  buf.add('C1', {
+    authorName: 'Pedram',
+    content: 'the drawdown column is wrong',
+    message: msg('m2', 'Pedram', 'the drawdown column is wrong'),
+  });
+  timers.advance(20_000);
+
+  assert.equal(flushes.length, 1);
+  const flush = flushes[0];
+  assert.equal(flush.anchor.messageId, 'm2', 'anchor is the newest message');
+  const attachments = flush.entries.flatMap((e) => e.message.attachments);
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0].name, 'chart.png');
+});

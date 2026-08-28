@@ -16,7 +16,9 @@ There are now three shapes a conversation can take in an agent channel:
 | Thread            | `/session new`             | Existing per-thread session, unchanged           |
 | **Ambient**       | Anyone talking, ambient on | One batch of messages forwarded as a single turn |
 
-A **direct mention always short-circuits ambient**. Saying the bot's name should get a prompt answer, not a twenty-second wait, so mentions take the existing thread path untouched.
+A **direct mention always short-circuits ambient**. Saying the bot's name should get a prompt answer, not a twenty-second wait, so mentions take the existing thread path untouched. Both forms count: `@agent` and a ping of the bot's role.
+
+A **Discord reply does not** count as a mention here. Replying to a message auto-pings its author, so hitting Reply on the agent's own ambient answer would otherwise pull the exchange into an owner-bound thread — which is the opposite of what following up in the room should do. Replies stay in the channel and join the next batch.
 
 ## Batching
 
@@ -55,7 +57,9 @@ Ambient replies that _are_ posted carry no usage footer either — they read as 
 /agents ambient off
 ```
 
-Run it inside a registered agent channel. Like every other slash command it is gated by `DISCORD_ALLOWED_USER_IDS`, so only an operator can turn it on.
+Run it inside a registered agent channel. `/agents ambient` is **operator-only and fails closed**: unlike every other slash command, an empty `DISCORD_ALLOWED_USER_IDS` denies it rather than allowing everyone. Putting an agent into a standing listening posture is not something an unconfigured deployment should let a passer-by do.
+
+Re-running `/agents ambient on` without `scope:` keeps the scope already stored. Pass `scope:` to replace it.
 
 The optional `scope` is a one-line description of what the agent should care about, stored per channel and spliced into the ambient prompt. Without it the agent falls back to its own judgment about what is relevant.
 
@@ -68,6 +72,8 @@ AMBIENT_MAX_WAIT_MS=120000 # hard ceiling on how long a batch may wait
 ```
 
 All three are process-wide. Whether ambient is actually on is a per-channel flag in the database.
+
+A value that is not a positive number is rejected at read time with a warning and the default is used, and each is clamped to a floor (1s window, 1 message, 5s max wait). An unnoticed `AMBIENT_WINDOW_MS=2m` would otherwise parse to a two-millisecond window and turn every single message into its own agent turn — the exact cost blow-up batching exists to prevent.
 
 The window is the one number worth thinking about: too short and the agent answers half a thought, too long and it feels absent from the conversation.
 
@@ -93,5 +99,7 @@ The message buffer itself is in memory — a relay restart drops any partial bat
 ## Limitations
 
 - **No turn cap.** See "Cost" above.
+- **Voice notes are not buffered.** A Discord voice message carries no text, so ambient skips it rather than pushing an empty line into the transcript. Mention the bot to have a voice note transcribed and answered.
+- **Failed ambient turns post nothing.** Nobody addressed the bot, so an error goes to the log instead of into the conversation. Check `logs/errors.log` if an ambient channel has gone quiet.
 - **Discord only.** The buffer is provider-neutral, but no other adapter is wired to it yet.
 - **`ambient_scope` is spliced into the prompt as a plain string.** It comes from an operator-only slash command today, so it is not an injection surface — it would become one if that command were ever opened to non-operators.

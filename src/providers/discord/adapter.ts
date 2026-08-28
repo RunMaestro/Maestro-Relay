@@ -151,7 +151,7 @@ export class DiscordProvider implements BridgeProvider {
       maxBatch: ambientConfig.maxBatch,
       maxWaitMs: ambientConfig.maxWaitMs,
       logger: ctx.logger,
-      onFlush: ({ transcript, anchor, channelId }) => {
+      onFlush: ({ transcript, anchor, channelId, entries }) => {
         // The key may be a thread, in which case the ambient flag and purview
         // live on its parent. Resolve that before deciding anything.
         const direct = channelDb.get(channelId);
@@ -164,10 +164,20 @@ export class DiscordProvider implements BridgeProvider {
           ? (client.channels.cache.get(channelId) as { name?: string } | undefined)?.name
           : undefined;
 
+        // The turn is anchored on the newest message, but the batch is the
+        // whole exchange: a screenshot posted mid-batch belongs to it even when
+        // a later text message ends up as the anchor. Collect every entry's
+        // attachments, de-duplicated by URL, rather than the anchor's alone.
+        const seen = new Set<string>();
+        const attachments = entries
+          .flatMap((e) => e.message.attachments)
+          .filter((a) => (seen.has(a.url) ? false : (seen.add(a.url), true)));
+
         ctx.enqueue(anchor, {
           contentOverride: isThread
             ? buildThreadPrompt(transcript, threadName, info.ambient_scope ?? undefined)
             : buildAmbientPrompt(transcript, info.ambient_scope ?? undefined),
+          attachmentsOverride: attachments,
           // Only the open channel may answer with silence. A thread was opened
           // on purpose and gets a real reply.
           ambient: !isThread,
