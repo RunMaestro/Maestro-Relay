@@ -6,7 +6,55 @@ import { createQueue } from './core/queue';
 import { startServer } from './core/api';
 import { buildProviders } from './core/providers';
 import { createSusFactor } from './core/susfactor';
-import type { KernelContext } from './core/types';
+import { pendingDb, MAX_REPLAY_ATTEMPTS } from './core/db/pending';
+import type { IncomingMessage, KernelContext } from './core/types';
+
+/**
+ * Re-enqueue messages that were accepted but never answered.
+ *
+ * Discord hands a message to the gateway exactly once. Before this existed, a
+ * restart while a reply was being generated left the user staring at a ⏳ that
+ * never resolved, because the in-memory queue died with the process. The
+ * durable table gives startup a work list to finish.
+ *
+ * `raw` is not restored — it held a live discord.js object. Everything the
+ * queue reads is reconstructed from the plain columns.
+ */
+function replayPending(enqueue: KernelContext['enqueue']): void {
+  const rows = pendingDb.all();
+  if (rows.length === 0) return;
+
+  let replayed = 0;
+  for (const row of rows) {
+    const attempts = pendingDb.bumpAttempts(row.provider, row.message_id);
+    if (attempts > MAX_REPLAY_ATTEMPTS) {
+      // A message that keeps killing the process must not be retried forever.
+      pendingDb.clear(row.provider, row.message_id);
+      void logger.error(
+        'bridge/replay',
+        `dropping message ${row.message_id} after ${attempts} attempts`,
+      );
+      continue;
+    }
+
+    const message: IncomingMessage = {
+      provider: row.provider,
+      messageId: row.message_id,
+      channelId: row.channel_id,
+      authorId: row.author_id,
+      authorName: row.author_name,
+      content: row.content,
+      attachments: JSON.parse(row.attachments) as IncomingMessage['attachments'],
+      isThread: row.is_thread === 1,
+    };
+    enqueue(message, row.options ? JSON.parse(row.options) : undefined);
+    replayed += 1;
+  }
+
+  if (replayed > 0) {
+    logger.info('bridge/replay', `replayed ${replayed} unanswered message(s) from the last run`);
+  }
+}
 
 async function main() {
   const providers = await buildProviders(config.enabledProviders);
@@ -59,11 +107,32 @@ async function main() {
     }
   }
 
-  const server = startServer(providers);
+  const server = startServer(providers, { inFlight: queue.inFlight });
 
+  // Providers are live now, so anything left over from the last run can be
+  // answered as if it had just arrived.
+  replayPending(queue.enqueue);
+
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info('bridge/shutdown', `received ${signal}, shutting down...`);
     server.close();
+
+    // Finish replies already in progress. Cutting one off loses the user's
+    // message: Discord will not redeliver it, and the durable record only
+    // helps on the next boot.
+    const busy = queue.inFlight();
+    if (busy > 0) {
+      logger.info('bridge/shutdown', `draining ${busy} in-flight message(s)...`);
+      const drained = await queue.drain();
+      logger.info(
+        'bridge/shutdown',
+        drained ? 'drain complete' : 'drain timed out; unfinished work will replay on next start',
+      );
+    }
+
     for (const [name, provider] of providers) {
       try {
         await provider.stop();

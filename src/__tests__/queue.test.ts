@@ -81,7 +81,11 @@ function createMocks(overrides: Partial<ConversationRecord> = {}): MockSetup {
     sendTyping: async () => {},
   };
 
+  const pendingAdd = mock.fn();
+  const pendingClear = mock.fn();
+
   const deps: QueueDeps & { _mocks: Record<string, ReturnType<typeof mock.fn>> } = {
+    pending: { add: pendingAdd as any, clear: pendingClear as any },
     maestro: { getAgentCwd: mockGetAgentCwd as any, send: mockSend as any },
     getProvider: (name) => (name === 'mock' ? provider : undefined),
     splitMessage: (text: string) => [text],
@@ -100,6 +104,8 @@ function createMocks(overrides: Partial<ConversationRecord> = {}): MockSetup {
       format: mockFormat,
       loggerError: mockLoggerError,
       persistSession: mockPersistSession,
+      pendingAdd,
+      pendingClear,
     },
   };
 
@@ -373,4 +379,187 @@ test('queue logs and skips when the named provider is not registered', async () 
   assert.equal(deps._mocks.send.mock.callCount(), 0);
   assert.equal(deps._mocks.loggerError.mock.callCount(), 1);
   assert.equal(deps._mocks.loggerError.mock.calls[0].arguments[0], 'queue:no-provider');
+});
+
+// --- Transient-failure retry -------------------------------------------------
+// A momentary CLI hiccup used to reach the user as a red error they had to
+// react to by resending. These cover the retry that hides it.
+
+test('queue retries a transient send failure and delivers the eventual reply', async () => {
+  const { deps, provider } = createMocks();
+  deps.sleep = async () => {};
+  deps.showUsageFooter = false;
+
+  let attempts = 0;
+  deps._mocks.send.mock.mockImplementation(async () => {
+    attempts += 1;
+    if (attempts < 3) throw new Error("maestro-cli send failed: Expected ',' or ']' after array element in JSON");
+    return defaultSendResult({ response: 'recovered reply' });
+  });
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage());
+  await settle();
+
+  assert.equal(attempts, 3, 'should have retried twice before succeeding');
+  assert.ok(
+    provider.sentTexts.includes('recovered reply'),
+    `expected the recovered reply, got ${JSON.stringify(provider.sentTexts)}`,
+  );
+  assert.ok(
+    !provider.sentTexts.some((t) => t.includes('Failed to get response')),
+    'the user must never see the transient failure',
+  );
+});
+
+test('queue does not retry a terminal send failure', async () => {
+  const { deps, provider } = createMocks();
+  deps.sleep = async () => {};
+  deps.showUsageFooter = false;
+
+  let attempts = 0;
+  deps._mocks.send.mock.mockImplementation(async () => {
+    attempts += 1;
+    throw new Error('maestro-cli send failed: AGENT_NOT_FOUND');
+  });
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage());
+  await settle();
+
+  assert.equal(attempts, 1, 'a permanent failure must not be retried');
+  assert.ok(provider.sentTexts.some((t) => t.includes('Failed to get response')));
+});
+
+test('queue gives up after the attempt limit and reports once', async () => {
+  const { deps, provider } = createMocks();
+  deps.sleep = async () => {};
+  deps.showUsageFooter = false;
+
+  let attempts = 0;
+  deps._mocks.send.mock.mockImplementation(async () => {
+    attempts += 1;
+    throw new Error('maestro-cli send failed: ECONNRESET');
+  });
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage());
+  await settle();
+
+  assert.equal(attempts, 3, 'should stop at the attempt limit');
+  assert.equal(
+    provider.sentTexts.filter((t) => t.includes('Failed to get response')).length,
+    1,
+    'a persistent failure is reported exactly once',
+  );
+});
+
+// --- Usage footer ------------------------------------------------------------
+
+test('queue omits the usage footer when it is disabled', async () => {
+  const { deps, provider } = createMocks();
+  deps.showUsageFooter = false;
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage());
+  await settle();
+
+  assert.ok(provider.sentTexts.includes('Agent response'));
+  assert.ok(
+    !provider.sentTexts.some((t) => t.includes('tokens •')),
+    'no telemetry should reach the channel',
+  );
+});
+
+test('queue emits the usage footer when it is enabled', async () => {
+  const { deps, provider } = createMocks();
+  deps.showUsageFooter = true;
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage());
+  await settle();
+
+  assert.ok(provider.sentTexts.some((t) => t.includes('tokens •')));
+});
+
+// --- Durable message record --------------------------------------------------
+// A restart used to destroy the in-memory queue, and Discord never redelivers.
+// These cover the record that lets startup finish the work instead.
+
+test('queue records a message before working on it and clears it after replying', async () => {
+  const { deps } = createMocks();
+  deps.showUsageFooter = false;
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage({ messageId: 'msg-persist' }));
+  await settle();
+
+  assert.equal(deps._mocks.pendingAdd.mock.callCount(), 1, 'must be recorded before work starts');
+  assert.equal(deps._mocks.pendingClear.mock.callCount(), 1, 'must be cleared once answered');
+  assert.deepEqual(deps._mocks.pendingClear.mock.calls[0].arguments, ['mock', 'msg-persist']);
+});
+
+test('queue clears the record even when the agent fails permanently', async () => {
+  const { deps } = createMocks();
+  deps.sleep = async () => {};
+  deps.showUsageFooter = false;
+  deps._mocks.send.mock.mockImplementation(async () => {
+    throw new Error('maestro-cli send failed: AGENT_NOT_FOUND');
+  });
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage({ messageId: 'msg-doomed' }));
+  await settle();
+
+  // Otherwise a message that always fails would be replayed on every boot.
+  assert.equal(deps._mocks.pendingClear.mock.callCount(), 1);
+});
+
+test('queue reports in-flight work and drains to zero', async () => {
+  const { deps } = createMocks();
+  deps.showUsageFooter = false;
+
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  deps._mocks.send.mock.mockImplementation(async () => {
+    await gate;
+    return defaultSendResult();
+  });
+
+  const q = createQueue(deps);
+  q.enqueue(makeMessage({ messageId: 'm1' }));
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(q.inFlight() > 0, 'a message being answered must count as in flight');
+
+  release();
+  const drained = await q.drain(5000);
+  assert.equal(drained, true, 'drain should resolve once the reply is sent');
+  assert.equal(q.inFlight(), 0);
+});
+
+test('drain reports failure when work outlasts the timeout', async () => {
+  const { deps } = createMocks();
+  deps.showUsageFooter = false;
+
+  // Held open past the drain deadline, then released so the test process can
+  // exit — a genuinely never-resolving promise would hang the runner.
+  let release: () => void = () => {};
+  const stuck = new Promise<void>((r) => {
+    release = r;
+  });
+  deps._mocks.send.mock.mockImplementation(async () => {
+    await stuck;
+    return defaultSendResult();
+  });
+
+  const q = createQueue(deps);
+  q.enqueue(makeMessage({ messageId: 'm-stuck' }));
+  await new Promise((r) => setTimeout(r, 20));
+
+  assert.equal(await q.drain(300), false, 'a stuck turn must not block shutdown forever');
+
+  release();
+  await q.drain(5000);
 });

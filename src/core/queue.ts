@@ -11,6 +11,8 @@ import { renderTables } from './renderTables';
 import { downloadAttachments as defaultDownload, formatAttachmentRefs } from './attachments';
 import { isSilence } from './ambient';
 import type { SusFactorScreener } from './susfactor';
+import { config } from './config';
+import { pendingDb } from './db/pending';
 
 interface QueueEntry {
   message: IncomingMessage;
@@ -59,6 +61,19 @@ export type QueueDeps = {
    * the same behavior as `SUSFACTOR_MODE=off`.
    */
   susFactor?: SusFactorScreener;
+  /** Injectable delay so retry backoff does not make tests slow. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Override the usage-footer setting; defaults to config.showUsageFooter. */
+  showUsageFooter?: boolean;
+  /**
+   * Durable record of accepted-but-unanswered messages. Defaults to the real
+   * table; tests inject a stub. Without it a restart silently drops whatever
+   * was queued or in flight.
+   */
+  pending?: {
+    add(msg: IncomingMessage, options?: EnqueueOptions): void;
+    clear(provider: string, messageId: string): void;
+  };
   logger: KernelLogger;
 };
 
@@ -75,6 +90,26 @@ function flagBanner(score: number): string {
 
 const FLAG_FOOTER = '\n--- END UNTRUSTED MESSAGE ---';
 
+/** Attempts per inbound message, including the first. */
+const SEND_ATTEMPTS = 3;
+/** Backoff before attempt 2 and 3. Doubles each retry. */
+const SEND_RETRY_BASE_MS = 1500;
+
+/**
+ * Errors worth retrying: the agent was momentarily unavailable, or the CLI
+ * produced garbage we could not parse. Both clear on their own.
+ *
+ * Deliberately excluded are the terminal ones — an unknown agent id or a
+ * read-only rejection will fail identically forever, so retrying them only
+ * delays the message the user actually needs to see.
+ */
+function isTransientSendError(detail: string): boolean {
+  if (/AGENT_NOT_FOUND|Agent not found|read-only|READ_ONLY/i.test(detail)) return false;
+  return /is busy|AGENT_BUSY|EAGAIN|ECONNRESET|ETIMEDOUT|socket hang up|spawn|is not valid JSON|Unexpected token|Expected ',' or ']'/i.test(
+    detail,
+  );
+}
+
 /**
  * Build a per-conversation FIFO queue. Each conversation (provider+channel)
  * is processed serially; multiple conversations run concurrently.
@@ -89,6 +124,52 @@ export function createQueue(deps: QueueDeps) {
 
   const queues = new Map<string, QueueEntry[]>();
   const processing = new Set<string>();
+  const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const showUsageFooter = deps.showUsageFooter ?? config.showUsageFooter;
+  const pending = deps.pending ?? pendingDb;
+
+  /**
+   * Send to the agent, retrying transient failures before giving up.
+   *
+   * A momentary hiccup used to surface in the channel as a red error the user
+   * had to react to by resending. Retrying here means the common case is simply
+   * a slightly slower reply, and the user never learns the difference.
+   */
+  async function sendWithRetry(
+    agentId: string,
+    message: string,
+    opts: { sessionId?: string; readOnly?: boolean },
+  ): Promise<Awaited<ReturnType<QueueDeps['maestro']['send']>>> {
+    let lastErr: unknown;
+
+    for (let attempt = 1; attempt <= SEND_ATTEMPTS; attempt += 1) {
+      try {
+        const result = await deps.maestro.send(agentId, message, opts);
+        // A structured failure with no response is retryable on the same terms
+        // as a thrown error; the CLI reports both shapes.
+        if (!result.response && isTransientSendError(result.error ?? '') && attempt < SEND_ATTEMPTS) {
+          deps.logger.warn(
+            'queue:send-retry',
+            `agent=${agentId} attempt=${attempt} transient=${result.error}`,
+          );
+          await sleep(SEND_RETRY_BASE_MS * attempt);
+          continue;
+        }
+        return result;
+      } catch (err) {
+        lastErr = err;
+        const detail = err instanceof Error ? err.message : String(err);
+        if (attempt >= SEND_ATTEMPTS || !isTransientSendError(detail)) break;
+        deps.logger.warn(
+          'queue:send-retry',
+          `agent=${agentId} attempt=${attempt} transient=${detail}`,
+        );
+        await sleep(SEND_RETRY_BASE_MS * attempt);
+      }
+    }
+
+    throw lastErr;
+  }
 
   function key(message: IncomingMessage): string {
     return `${message.provider}:${message.channelId}`;
@@ -96,11 +177,42 @@ export function createQueue(deps: QueueDeps) {
 
   function enqueue(message: IncomingMessage, options?: EnqueueOptions): void {
     const k = key(message);
+    // Record before queueing: a crash between here and the reply must leave a
+    // work item behind, never a silently dropped message.
+    try {
+      pending.add(message, options);
+    } catch (err) {
+      void deps.logger.error(
+        'queue:persist',
+        `could not record pending message ${message.messageId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     if (!queues.has(k)) queues.set(k, []);
     queues.get(k)!.push({ message, options });
 
     if (!processing.has(k)) {
       void processNext(k);
+    }
+  }
+
+  /**
+   * Mark a message finished so the next boot does not replay it.
+   *
+   * Every terminal outcome has to call this, not just the answered one. A
+   * message dropped for an unknown provider, an unresolvable conversation, a
+   * SusFactor block, or an ambient turn the agent stayed silent on is just as
+   * done as one that got a reply — and ambient silence is the common case, so
+   * leaving those rows behind would fill the table with work that can never
+   * succeed.
+   */
+  function settle(message: IncomingMessage): void {
+    try {
+      pending.clear(message.provider, message.messageId);
+    } catch (err) {
+      void deps.logger.error(
+        'queue:persist',
+        `could not clear pending message ${message.messageId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -120,12 +232,14 @@ export function createQueue(deps: QueueDeps) {
         'queue:no-provider',
         `unknown provider="${message.provider}" channel=${message.channelId}`,
       );
+      settle(message);
       void processNext(k);
       return;
     }
 
     const conv = provider.resolveConversation(message);
     if (!conv) {
+      settle(message);
       void processNext(k);
       return;
     }
@@ -225,6 +339,7 @@ export function createQueue(deps: QueueDeps) {
             });
           }
 
+          settle(message);
           void processNext(k);
           return;
         }
@@ -257,7 +372,7 @@ export function createQueue(deps: QueueDeps) {
         }
       }
 
-      const result = await deps.maestro.send(conv.agentId, fullMessage, {
+      const result = await sendWithRetry(conv.agentId, fullMessage, {
         sessionId: conv.sessionId ?? undefined,
         readOnly: conv.readOnly,
       });
@@ -282,6 +397,7 @@ export function createQueue(deps: QueueDeps) {
           'queue:ambient-silence',
           `agent=${conv.agentId} channel=${message.channelId} stayed silent`,
         );
+        settle(message);
         void processNext(k);
         return;
       }
@@ -311,18 +427,17 @@ export function createQueue(deps: QueueDeps) {
         });
       }
 
-      if (options?.ambient) {
-        // Ambient replies read as conversation, so they carry no usage footer.
-        void processNext(k);
-        return;
+      // Ambient replies read as conversation, so they never carry a usage
+      // footer regardless of the setting. Skipping the footer must not skip
+      // the pending.clear below — an unanswered row would be replayed forever.
+      if (showUsageFooter && !options?.ambient) {
+        const cost = (result.usage?.totalCostUsd ?? 0).toFixed(4);
+        const ctx = (result.usage?.contextUsagePercent ?? 0).toFixed(1);
+        const tokens = (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0);
+        await provider.send(target, {
+          text: `-# 💬 ${tokens} tokens • $${cost} • ${ctx}% context${conv.readOnly ? ' • 📖 read-only' : ''}`,
+        });
       }
-
-      const cost = (result.usage?.totalCostUsd ?? 0).toFixed(4);
-      const ctx = (result.usage?.contextUsagePercent ?? 0).toFixed(1);
-      const tokens = (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0);
-      await provider.send(target, {
-        text: `-# 💬 ${tokens} tokens • $${cost} • ${ctx}% context${conv.readOnly ? ' • 📖 read-only' : ''}`,
-      });
     } catch (err) {
       if (typingInterval) clearInterval(typingInterval);
       try {
@@ -341,8 +456,31 @@ export function createQueue(deps: QueueDeps) {
       });
     }
 
+    settle(message);
     void processNext(k);
   }
 
-  return { enqueue };
+  /** Messages accepted but not yet answered, across every conversation. */
+  function inFlight(): number {
+    let n = 0;
+    for (const q of queues.values()) n += q.length;
+    return n + processing.size;
+  }
+
+  /**
+   * Resolve once every accepted message has been answered.
+   *
+   * Shutdown awaits this so a deploy or a watchdog restart cannot cut a reply
+   * off mid-turn — the failure that made the bot go silent on a live question.
+   */
+  async function drain(timeoutMs = 120_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (inFlight() > 0) {
+      if (Date.now() >= deadline) return false;
+      await sleep(250);
+    }
+    return true;
+  }
+
+  return { enqueue, inFlight, drain };
 }
