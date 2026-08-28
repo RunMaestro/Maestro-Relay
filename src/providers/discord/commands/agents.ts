@@ -305,7 +305,32 @@ async function handleShow(interaction: ChatInputCommandInteraction): Promise<voi
   await interaction.editReply({ embeds: [embed] });
 }
 
+/**
+ * Ambient is the one subcommand that fails closed on an empty allowlist.
+ *
+ * Every other command is gated by the adapter, which treats an empty
+ * `DISCORD_ALLOWED_USER_IDS` as "no restriction configured" and lets any member
+ * of the guild through. That default is defensible for commands that act on one
+ * channel on request. It is not defensible for ambient, which puts the agent
+ * into a standing listening posture over everything typed in the room. An
+ * unconfigured deployment should not let a passer-by switch that on.
+ */
+function isAmbientOperator(interaction: ChatInputCommandInteraction): boolean {
+  const allowed = discordConfig.allowedUserIds;
+  return allowed.length > 0 && allowed.includes(interaction.user.id);
+}
+
 async function handleAmbient(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!isAmbientOperator(interaction)) {
+    await interaction.reply({
+      content:
+        '❌ Only an operator can change ambient mode. Add your Discord user ID to ' +
+        '`DISCORD_ALLOWED_USER_IDS` and restart the relay.',
+      ephemeral: true,
+    });
+    return;
+  }
+
   const channelInfo = channelDb.get(interaction.channelId);
   if (!channelInfo) {
     await interaction.reply({ content: 'This channel is not an agent channel.', ephemeral: true });
@@ -313,7 +338,10 @@ async function handleAmbient(interaction: ChatInputCommandInteraction): Promise<
   }
 
   const on = interaction.options.getString('mode', true) === 'on';
-  const scope = interaction.options.getString('scope');
+  // The scope option is optional, and an operator re-running `/agents ambient
+  // on` to confirm it is on should not silently wipe a purview they set
+  // earlier. Omitting it keeps whatever is stored; passing it replaces.
+  const scope = interaction.options.getString('scope') ?? (on ? channelInfo.ambient_scope : null);
   channelDb.setAmbient(interaction.channelId, on, on ? scope : null);
 
   const embed = new EmbedBuilder()

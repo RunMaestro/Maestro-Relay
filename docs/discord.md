@@ -86,7 +86,7 @@ npm run deploy-commands
 - **Read-only mode** via `/agents readonly on` lets the bridge POST agent updates to the channel (via the HTTP API) without forwarding user messages back. Toggle off with `/agents readonly off`.
 - **Ambient mode** via `/agents ambient on` lets the agent follow the channel conversation without being mentioned, batching messages on a quiet window and staying silent unless it has something to add. Off by default, per channel. See [docs/ambient.md](ambient.md).
 - **Reactions**: `⏳` while a message is queued, `🎧` while a voice message is being transcribed.
-- **Usage stats** are appended below each agent reply (tokens, cost, context %).
+- **Usage stats** are appended below each non-ambient agent reply (tokens, cost, context %). Ambient replies read as conversation and carry no footer.
 - **Markdown tables** in agent replies are rendered as aligned, fenced ASCII tables so they display correctly (Discord has no native table syntax). See [architecture.md → Output rendering](architecture.md#output-rendering).
 
 ## Security

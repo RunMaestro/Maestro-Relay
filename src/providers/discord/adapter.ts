@@ -131,11 +131,20 @@ export class DiscordProvider implements BridgeProvider {
       maxBatch: ambientConfig.maxBatch,
       maxWaitMs: ambientConfig.maxWaitMs,
       logger: ctx.logger,
-      onFlush: ({ transcript, anchor, channelId }) => {
+      onFlush: ({ transcript, anchor, channelId, entries }) => {
         const info = channelDb.get(channelId);
         if (!info || info.ambient !== 1) return; // toggled off mid-batch
+        // The turn is anchored on the newest message, but the batch is the
+        // whole exchange: a screenshot posted mid-batch belongs to it even when
+        // a later text message ends up as the anchor. Collect every entry's
+        // attachments, de-duplicated by URL, rather than the anchor's alone.
+        const seen = new Set<string>();
+        const attachments = entries
+          .flatMap((e) => e.message.attachments)
+          .filter((a) => (seen.has(a.url) ? false : (seen.add(a.url), true)));
         ctx.enqueue(anchor, {
           contentOverride: buildAmbientPrompt(transcript, info.ambient_scope ?? undefined),
+          attachmentsOverride: attachments,
           ambient: true,
         });
       },

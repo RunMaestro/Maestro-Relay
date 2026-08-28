@@ -189,11 +189,24 @@ export function createQueue(deps: QueueDeps) {
       // An ambient turn the agent chose not to answer leaves nothing behind:
       // no message, no footer, not even a usage line. That silence is the
       // feature — a listener that comments on every exchange is unusable.
-      if (options?.ambient && result.success && isSilence(result.response)) {
-        deps.logger.debug(
-          'queue:ambient-silence',
-          `agent=${conv.agentId} channel=${message.channelId} stayed silent`,
-        );
+      //
+      // A failed ambient turn is the same case. Nobody addressed the bot, so
+      // there is nobody to apologise to, and a relay that is erroring would
+      // otherwise post a warning into the conversation every quiet window until
+      // an operator noticed and ran `/agents ambient off`. The failure goes to
+      // the error log, where an operator is looking for it anyway.
+      if (options?.ambient && (!result.success || isSilence(result.response))) {
+        if (result.success) {
+          deps.logger.debug(
+            'queue:ambient-silence',
+            `agent=${conv.agentId} channel=${message.channelId} stayed silent`,
+          );
+        } else {
+          void deps.logger.error(
+            'queue:ambient-failure',
+            `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${result.error ?? '(no error detail)'} (suppressed: ambient turn posts nothing on failure)`,
+          );
+        }
         void processNext(k);
         return;
       }

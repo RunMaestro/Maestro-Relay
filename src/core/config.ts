@@ -24,15 +24,32 @@ function csv(key: string): string[] {
  * answers half a thought; too long and it feels absent from the conversation.
  * Twenty seconds is a compromise that reads as "waited for a pause".
  */
+function positiveIntEnv(key: string, fallback: number, min: number): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  // Number(), not parseInt(): parseInt('2m') is 2, which would silently set a
+  // two-millisecond window and turn every message into its own agent turn.
+  const parsed = Number(raw.trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    console.warn(`[config] ${key}=${JSON.stringify(raw)} is not a positive number; using ${fallback}`);
+    return fallback;
+  }
+  const clamped = Math.max(min, Math.trunc(parsed));
+  if (clamped !== Math.trunc(parsed)) {
+    console.warn(`[config] ${key}=${raw} is below the minimum of ${min}; using ${clamped}`);
+  }
+  return clamped;
+}
+
 export const ambientConfig = {
   get windowMs(): number {
-    return parseInt(process.env.AMBIENT_WINDOW_MS || '20000', 10);
+    return positiveIntEnv('AMBIENT_WINDOW_MS', 20_000, 1_000);
   },
   get maxBatch(): number {
-    return parseInt(process.env.AMBIENT_MAX_BATCH || '25', 10);
+    return positiveIntEnv('AMBIENT_MAX_BATCH', 25, 1);
   },
   get maxWaitMs(): number {
-    return parseInt(process.env.AMBIENT_MAX_WAIT_MS || '120000', 10);
+    return positiveIntEnv('AMBIENT_MAX_WAIT_MS', 120_000, 5_000);
   },
 };
 
