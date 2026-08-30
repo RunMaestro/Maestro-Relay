@@ -27,9 +27,20 @@ function sanitize(value: string): string {
   return value.replace(/[\r\n]+/g, '\\n');
 }
 
+/**
+ * Discord bot-token shape: three base64url segments separated by dots.
+ * Provider-agnostic in intent — masks anything token-shaped before it hits a sink,
+ * so a leaked secret never lands in the console or `errors.log`.
+ */
+const TOKEN_PATTERN = /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}/g;
+
+function redactTokens(line: string): string {
+  return line.replace(TOKEN_PATTERN, '[REDACTED_TOKEN]');
+}
+
 function formatEntry(level: string, context: string, detail: string): string {
   const ts = new Date().toISOString();
-  return `[${ts}] ${level} [${sanitize(context)}] ${sanitize(detail)}\n`;
+  return redactTokens(`[${ts}] ${level} [${sanitize(context)}] ${sanitize(detail)}\n`);
 }
 
 function shouldEmit(level: LogLevel): boolean {
