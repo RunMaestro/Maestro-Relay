@@ -94,6 +94,9 @@ test('gist publishes and renders an embed with the gist url', async () => {
   assert.equal(reply.embeds[0].data.url, 'https://gist.example/abc');
   assert.ok(reply.embeds[0].data.title.includes('TestBot'));
   assert.ok(reply.embeds[0].data.description.includes('public'));
+  assert.match(reply.embeds[0].data.description, /desktop session/);
+  assert.match(reply.embeds[0].data.description, /all non-empty tabs/);
+  assert.match(reply.embeds[0].data.description, /not\* this conversation/);
 });
 
 test('gist surfaces a friendly error when createGist throws an Error', async () => {

@@ -60,14 +60,14 @@ The provider only loads if `discord` is in `ENABLED_PROVIDERS` (default: `discor
 | `/playbook show <id>`      | Show details for a playbook                                     |
 | `/playbook run <id>`       | Run a playbook and post the completion summary in-channel       |
 | `/auto-run start <doc>`    | Launch an Auto Run document for the current agent channel       |
-| `/gist`                    | Publish the agent's current **desktop tab** transcript as a GitHub gist (see note below) |
+| `/gist`                    | Publish the agent's **desktop session** transcript as a GitHub gist (see note below) |
 | `/notes synopsis`          | Post an AI-generated synopsis of recent activity                |
 | `/notes history`           | Post a unified history feed across agents                       |
 
 > [!WARNING]
 > **`/gist` does not publish the Discord conversation.** `maestro-cli gist create`
-> accepts only an agent id, so it publishes the transcript of whatever tab that
-> agent currently has open in the Maestro desktop app. Bridge conversations run as
+> accepts only an agent id, so it publishes the transcripts of all non-empty tabs in
+> that agent's desktop session. Bridge conversations run as
 > headless sessions, which that command cannot address. The published content may
 > therefore be unrelated to the channel you ran `/gist` in — and a public gist is
 > readable by anyone with the URL, so check what you are publishing before sharing
