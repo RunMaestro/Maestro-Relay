@@ -28,14 +28,40 @@ function sanitize(value: string): string {
 }
 
 /**
- * Discord bot-token shape: three base64url segments separated by dots.
- * Provider-agnostic in intent — masks anything token-shaped before it hits a sink,
- * so a leaked secret never lands in the console or `errors.log`.
+ * Credential shapes masked before a line reaches any sink, so a leaked secret
+ * never lands in the console or `errors.log`.
+ *
+ * Every provider the relay ships or plans to ship is covered. Matching on shape
+ * rather than on the configured value is deliberate: a token that reaches a log
+ * line via a dependency's error message was never read from our own config, so
+ * there is nothing to compare against.
+ *
+ * Each pattern is anchored on a distinctive prefix or separator layout, which is
+ * what keeps ordinary log content — snowflake ids, timestamps, file paths, URLs,
+ * `agent=…` pairs — out of scope. See `logger-redaction.test.ts` for the
+ * false-positive corpus this is held against.
  */
-const TOKEN_PATTERN = /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}/g;
+const TOKEN_PATTERNS: RegExp[] = [
+  // Discord bot tokens and JWTs: three base64url segments separated by dots.
+  /[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}/g,
+  // Slack bot/user/legacy tokens (xoxb-, xoxp-, xoxa-, xoxe-, xoxr-, xoxs-).
+  /\bxox[abeprs]-[A-Za-z0-9-]{10,}/g,
+  // Slack app-level tokens, used for Socket Mode.
+  /\bxapp-[A-Za-z0-9-]{10,}/g,
+  // Telegram bot tokens: <numeric bot id>:<secret>.
+  /\b\d{6,}:[A-Za-z0-9_-]{30,}/g,
+  // GitHub personal-access / app tokens, incl. the fine-grained `github_pat_` form.
+  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+];
 
 function redactTokens(line: string): string {
-  return line.replace(TOKEN_PATTERN, '[REDACTED_TOKEN]');
+  return TOKEN_PATTERNS.reduce((acc, pattern) => {
+    // These are module-level /g regexes, so `lastIndex` persists between calls
+    // and would make an identical line redact inconsistently on a later pass.
+    pattern.lastIndex = 0;
+    return acc.replace(pattern, '[REDACTED_TOKEN]');
+  }, line);
 }
 
 function formatEntry(level: string, context: string, detail: string): string {

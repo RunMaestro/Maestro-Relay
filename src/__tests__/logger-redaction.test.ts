@@ -25,6 +25,44 @@ const FAKE_TOKEN = makeFakeToken(
   'CcCcCcCcCcCcCcCcCcCcCcCcCcCcCc',
 );
 
+/**
+ * One synthetic credential per provider the relay ships or plans to ship, each
+ * assembled from parts for the same secret-scanner reason as `FAKE_TOKEN`.
+ * These are shapes, not live values.
+ */
+const PROVIDER_FIXTURES: Record<string, string> = {
+  'slack bot (xoxb)': ['xoxb', '1234567890', '1234567890123', 'abcdefghijklmnopqrstuvwx'].join('-'),
+  'slack user (xoxp)': ['xoxp', '1234567890', '1234567890123', 'abcdefghijklmnop'].join('-'),
+  'slack app-level (xapp)': [
+    'xapp',
+    '1',
+    'A0123456789',
+    '1234567890123',
+    'abcdefghijklmnopqrstuvwxyz',
+  ].join('-'),
+  'telegram bot': ['123456789', 'AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw'].join(':'),
+  'github pat (ghp_)': 'ghp_' + 'abcdefghijklmnopqrstuvwxyz0123456789',
+  'github fine-grained': 'github_pat_' + '11ABCDEFG0abcdefghijklmnopqrstuvwxyz0123456789',
+};
+
+/**
+ * Log content that merely *looks* structured and must survive untouched. A
+ * redactor that eats snowflake ids or file paths makes the logs useless, which
+ * is the failure mode that gets redaction turned off entirely.
+ */
+const BENIGN_LINES: Record<string, string> = {
+  'agent/session pairs': 'agent=agent-1 session=session-1 channel=chan-1 error=timeout',
+  'module path': 'some.module.name',
+  'discord snowflakes': 'channel=1234567890123456789 user=9876543210987654321',
+  'clock time and ratio': 'took 12:30 and 1234567:89',
+  'file path': '/home/chris/code/Maestro-Relay/src/core/logger.ts',
+  'api url': 'https://api.github.com/repos/RunMaestro/Maestro-Relay/pulls/73',
+  semver: 'v0.4.1-rc.2',
+  'session uuid': 'session=2dc65f8f-6b38-44bb-ac5c-296d1f72a1ea',
+  'gist url': 'https://gist.github.com/chr1syy/a1b2c3d4e5f6a7b8c9d0',
+  'nested error': 'Error: ENOENT: no such file or directory, open ok',
+};
+
 afterEach(async () => {
   const { logger } = await import('../core/logger');
   logger.setLevel('info');
@@ -99,4 +137,58 @@ test('the errors.log sink is redacted too, not just the console', async () => {
   assert.ok(written.includes('writing'), 'surrounding context should survive');
 
   rmSync(TMP_LOG_DIR, { recursive: true, force: true });
+});
+
+test('every shipped provider credential shape is redacted', async () => {
+  const { logger } = await import('../core/logger');
+  const orig = console.warn;
+  for (const [label, secret] of Object.entries(PROVIDER_FIXTURES)) {
+    const calls: string[] = [];
+    console.warn = (line: string) => calls.push(line);
+    try {
+      logger.warn('test/ctx', `connecting with ${secret} now`);
+    } finally {
+      console.warn = orig;
+    }
+    assert.equal(calls.length, 1, `${label}: expected one log line`);
+    assert.ok(!calls[0].includes(secret), `${label}: raw credential must not appear`);
+    assert.ok(calls[0].includes('[REDACTED_TOKEN]'), `${label}: should be redacted`);
+    assert.ok(calls[0].includes('connecting with'), `${label}: context should survive`);
+  }
+});
+
+test('structured but non-secret log content is never redacted', async () => {
+  const { logger } = await import('../core/logger');
+  const orig = console.info;
+  for (const [label, line] of Object.entries(BENIGN_LINES)) {
+    const calls: string[] = [];
+    console.info = (l: string) => calls.push(l);
+    try {
+      logger.info('test/ctx', line);
+    } finally {
+      console.info = orig;
+    }
+    assert.equal(calls.length, 1, `${label}: expected one log line`);
+    assert.ok(!calls[0].includes('[REDACTED_TOKEN]'), `${label}: must not be treated as a secret`);
+    assert.ok(calls[0].includes(line), `${label}: content should pass through verbatim`);
+  }
+});
+
+test('the same line redacts identically on repeated calls (no lastIndex drift)', async () => {
+  const { logger } = await import('../core/logger');
+  const orig = console.warn;
+  const calls: string[] = [];
+  console.warn = (line: string) => calls.push(line);
+  try {
+    // Module-level /g regexes carry `lastIndex` between calls. Without a reset,
+    // the second pass over an identical line can start mid-string and miss.
+    for (let i = 0; i < 3; i++) logger.warn('test/ctx', `token ${FAKE_TOKEN} here`);
+  } finally {
+    console.warn = orig;
+  }
+  assert.equal(calls.length, 3);
+  for (const [i, line] of calls.entries()) {
+    assert.ok(!line.includes(FAKE_TOKEN), `call ${i + 1} leaked the raw token`);
+    assert.ok(line.includes('[REDACTED_TOKEN]'), `call ${i + 1} was not redacted`);
+  }
 });
