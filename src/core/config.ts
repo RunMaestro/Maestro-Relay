@@ -59,7 +59,9 @@ function positiveIntEnv(key: string, fallback: number, min: number): number {
   // two-millisecond window and turn every message into its own agent turn.
   const parsed = Number(raw.trim());
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    console.warn(`[config] ${key}=${JSON.stringify(raw)} is not a positive number; using ${fallback}`);
+    console.warn(
+      `[config] ${key}=${JSON.stringify(raw)} is not a positive number; using ${fallback}`,
+    );
     return fallback;
   }
   const clamped = Math.max(min, Math.trunc(parsed));
@@ -145,6 +147,23 @@ export const config = {
       maxChars: positiveInt('SUSFACTOR_MAX_CHARS', 8000, MIN_SUSFACTOR_MAX_CHARS),
       tokenUrl: process.env.SUSFACTOR_TOKEN_URL || undefined,
       susUrl: process.env.SUSFACTOR_SUS_URL || undefined,
+    };
+  },
+  /**
+   * CSV audit trail for screening verdicts. Disabled unless
+   * `SUSFACTOR_AUDIT_LOG` names a path.
+   */
+  get susAudit() {
+    const minScore = optionalFloat('SUSFACTOR_AUDIT_MIN_SCORE') ?? 0.9;
+    if (!(minScore >= 0 && minScore <= 1)) {
+      throw new Error(
+        `SUSFACTOR_AUDIT_MIN_SCORE must be a number between 0 and 1 (got "${minScore}")`,
+      );
+    }
+    return {
+      path: process.env.SUSFACTOR_AUDIT_LOG || undefined,
+      minScore,
+      maxExcerptChars: positiveInt('SUSFACTOR_AUDIT_EXCERPT_CHARS', 2000),
     };
   },
 };

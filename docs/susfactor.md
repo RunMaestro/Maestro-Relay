@@ -76,6 +76,44 @@ Auth is a two-step exchange: the long-lived API token is traded at `POST /api/v1
 
 Screening adds one HTTP round trip to each forwarded message, inside the per-conversation queue, so it delays that conversation and no other.
 
+## Audit trail
+
+Set `SUSFACTOR_AUDIT_LOG` to a path and the relay appends one CSV row per
+screening verdict at or above `SUSFACTOR_AUDIT_MIN_SCORE` (0.9 by default).
+This is a record for a human to read, separate from `errors.log`: the log
+answers "what went wrong", the CSV answers "what has been probing the bridge,
+and how hard".
+
+```bash
+SUSFACTOR_AUDIT_LOG=logs/susfactor-audit.csv
+SUSFACTOR_AUDIT_MIN_SCORE=0.9
+SUSFACTOR_AUDIT_EXCERPT_CHARS=2000
+```
+
+Columns: `timestamp`, `score`, `action`, `mode`, `provider`, `channel_id`,
+`author_id`, `author_name`, `agent_id`, `sampled`, `prompt_chars`,
+`prompt_excerpt`.
+
+Three things to know when reading a row:
+
+- **`action` is what the relay did, and that depends on the mode at the time.**
+  A 0.99 score with `action=allow` means screening was in `log` mode and the
+  message still reached the agent. Only `action=block` stopped anything. `mode`
+  is recorded alongside, so a policy change stays visible in the history.
+- **Newlines inside `prompt_excerpt` are written as the two characters `\n`**,
+  not as real line breaks. RFC 4180 permits a break inside a quoted field, but
+  one record per physical line is what makes `tail`, `wc -l`, and grep work on
+  this file. Unescape `\n` to recover the original text.
+- **`prompt_chars` is the true length.** `prompt_excerpt` is truncated to
+  `SUSFACTOR_AUDIT_EXCERPT_CHARS` and marked `[truncated]` when it is.
+
+Screening failures are not recorded. An unreachable API has no score to write,
+and `errors.log` already carries the outage.
+
+Writes are serialized within the process, so concurrent conversations cannot
+interleave and corrupt a row. A write failure is logged and swallowed: losing an
+audit row must never cost a user their message.
+
 ## Logging
 
 | Event                         | Level        | Emitted when                                                    |

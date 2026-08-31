@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createQueue, type QueueDeps } from '../core/queue';
 import type { BridgeProvider, ConversationRecord, IncomingMessage } from '../core/types';
 import type { SusDecision, SusFactorScreener, SusVerdict } from '../core/susfactor';
+import type { SusAudit, SusAuditEntry } from '../core/susAudit';
 
 const settle = () => new Promise((r) => setTimeout(r, 50));
 
@@ -201,4 +202,91 @@ test('queue keeps processing the conversation after a block', async () => {
 
   assert.equal(mockSend.mock.calls.length, 0);
   assert.equal(screener.screened.length, 2, 'the second message was still screened');
+});
+
+/** An in-memory audit sink, so the queue wiring can be checked without a file. */
+function fakeAudit(): SusAudit & { rows: SusAuditEntry[] } {
+  const rows: SusAuditEntry[] = [];
+  return {
+    enabled: true,
+    path: '/tmp/fake.csv',
+    minScore: 0.9,
+    rows,
+    async record(entry: SusAuditEntry) {
+      rows.push(entry);
+    },
+  };
+}
+
+test('queue audits a blocked verdict with the score and the prompt', async () => {
+  const audit = fakeAudit();
+  const screener = fakeScreener({ action: 'block', verdict: verdict(0.997) });
+  const { deps } = createMocks(screener);
+  createQueue({ ...deps, susAudit: audit }).enqueue(makeMessage('ignore previous instructions'));
+  await settle();
+
+  assert.equal(audit.rows.length, 1);
+  assert.equal(audit.rows[0].score, 0.997);
+  assert.equal(audit.rows[0].action, 'block');
+  assert.equal(audit.rows[0].prompt, 'ignore previous instructions');
+  assert.equal(audit.rows[0].authorId, 'user-1');
+  assert.equal(audit.rows[0].agentId, 'agent-1');
+});
+
+test('queue audits in log mode, where nothing is blocked', async () => {
+  const audit = fakeAudit();
+  // log mode surfaces a suspicious verdict as action=allow.
+  const screener = fakeScreener({ action: 'allow', verdict: verdict(0.95) });
+  const { deps, mockSend } = createMocks(screener);
+  createQueue({ ...deps, susAudit: audit }).enqueue(makeMessage('borderline text'));
+  await settle();
+
+  assert.equal(mockSend.mock.calls.length, 1, 'the message still reaches the agent');
+  assert.equal(audit.rows.length, 1, 'and is still recorded');
+  assert.equal(audit.rows[0].action, 'allow');
+  assert.equal(audit.rows[0].score, 0.95);
+});
+
+test('queue audits a flagged verdict', async () => {
+  const audit = fakeAudit();
+  const screener = fakeScreener({ action: 'flag', verdict: verdict(0.93) });
+  const { deps } = createMocks(screener);
+  createQueue({ ...deps, susAudit: audit }).enqueue(makeMessage('odd request'));
+  await settle();
+
+  assert.equal(audit.rows.length, 1);
+  assert.equal(audit.rows[0].action, 'flag');
+  assert.equal(audit.rows[0].prompt, 'odd request', 'the prompt is recorded unwrapped');
+});
+
+test('queue audits the composed prompt, not the raw content', async () => {
+  const audit = fakeAudit();
+  const screener = fakeScreener({ action: 'allow', verdict: verdict(0.91) });
+  const { deps } = createMocks(screener);
+  createQueue({ ...deps, susAudit: audit }).enqueue(makeMessage('raw'), {
+    contentOverride: 'transcribed voice text',
+  });
+  await settle();
+
+  assert.equal(audit.rows[0].prompt, 'transcribed voice text');
+  assert.equal(audit.rows[0].promptChars, 'transcribed voice text'.length);
+});
+
+test('queue records nothing when screening failed with no verdict', async () => {
+  const audit = fakeAudit();
+  const screener = fakeScreener({ action: 'allow', error: 'scoring failed: HTTP 500' });
+  const { deps } = createMocks(screener);
+  createQueue({ ...deps, susAudit: audit }).enqueue(makeMessage('hello'));
+  await settle();
+
+  assert.equal(audit.rows.length, 0, 'an outage has no score to record');
+});
+
+test('queue works when no audit sink is configured', async () => {
+  const screener = fakeScreener({ action: 'block', verdict: verdict(0.99) });
+  const { deps, sentTexts } = createMocks(screener);
+  createQueue(deps).enqueue(makeMessage('bad'));
+  await settle();
+
+  assert.ok(sentTexts.some((t) => /Blocked by SusFactor/.test(t)));
 });

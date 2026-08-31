@@ -6,6 +6,7 @@ import { createQueue } from './core/queue';
 import { startServer } from './core/api';
 import { buildProviders } from './core/providers';
 import { createSusFactor } from './core/susfactor';
+import { createSusAudit } from './core/susAudit';
 import { pendingDb, MAX_REPLAY_ATTEMPTS } from './core/db/pending';
 import type { IncomingMessage, KernelContext } from './core/types';
 
@@ -78,6 +79,13 @@ async function main() {
     );
     process.exit(1);
   }
+  const susAudit = createSusAudit(config.susAudit);
+  if (susFactor.enabled && susAudit.enabled) {
+    logger.info(
+      'bridge/startup',
+      `SusFactor audit trail at ${susAudit.path} (score >= ${susAudit.minScore})`,
+    );
+  }
   if (susFactor.enabled) {
     logger.info(
       'bridge/startup',
@@ -89,6 +97,7 @@ async function main() {
     maestro,
     getProvider: (name) => providers.get(name),
     susFactor,
+    susAudit,
     logger,
   });
 
