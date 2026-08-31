@@ -178,6 +178,8 @@ export class DiscordProvider implements BridgeProvider {
             ? buildThreadPrompt(transcript, threadName, info.ambient_scope ?? undefined)
             : buildAmbientPrompt(transcript, info.ambient_scope ?? undefined),
           attachmentsOverride: attachments,
+          // The wrapper above is ours; only the transcript came from outside.
+          screenText: transcript,
           // Only the open channel may answer with silence. A thread was opened
           // on purpose and gets a real reply.
           ambient: !isThread,

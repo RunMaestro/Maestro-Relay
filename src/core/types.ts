@@ -117,6 +117,18 @@ export type EnqueueOptions = {
    * so an idle listener leaves no trace in the channel.
    */
   ambient?: boolean;
+  /**
+   * The untrusted part of `contentOverride`, when the relay itself wrote the
+   * rest. Screening scores this instead of the whole composed prompt.
+   *
+   * The ambient and thread wrappers assign a role, override instructions, and
+   * demand an exact sentinel reply. That is, correctly, what a prompt-injection
+   * classifier is trained to catch: the ambient wrapper alone scores 0.998. The
+   * relay authored that text, so scoring it means screening ourselves and
+   * flagging every ambient turn. The transcript inside is the part that
+   * actually arrived from a human.
+   */
+  screenText?: string;
 };
 
 export interface KernelLogger {

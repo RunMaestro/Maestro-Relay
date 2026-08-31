@@ -314,7 +314,11 @@ export function createQueue(deps: QueueDeps) {
       // rather than the raw message. Voice transcripts, ambient batches and
       // attachment refs are then all covered by one check.
       if (deps.susFactor?.enabled) {
-        const decision = await deps.susFactor.screen(fullMessage);
+        // Screen only what arrived from outside. `screenText` is set when the
+        // relay composed a wrapper around the user's text; scoring our own
+        // scaffolding flags every wrapped turn.
+        const screened = options?.screenText ?? fullMessage;
+        const decision = await deps.susFactor.screen(screened);
         const where = `provider=${message.provider} channel=${message.channelId} author=${message.authorId} agent=${conv.agentId}`;
 
         // Audited here, before the action branches, so no path can skip it.
@@ -331,8 +335,8 @@ export function createQueue(deps: QueueDeps) {
             authorName: message.authorName,
             agentId: conv.agentId,
             sampled: decision.verdict.sampled,
-            promptChars: fullMessage.length,
-            prompt: fullMessage,
+            promptChars: screened.length,
+            prompt: screened,
           });
         }
 
