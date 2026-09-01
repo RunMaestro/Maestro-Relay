@@ -35,6 +35,29 @@ function positiveInt(key: string, fallback: number, min = 1): number {
  */
 const MIN_SUSFACTOR_MAX_CHARS = 256;
 
+const TRUE_WORDS = ['true', '1', 'yes', 'on'];
+const FALSE_WORDS = ['false', '0', 'no', 'off'];
+
+/**
+ * Parse a boolean env var, rejecting anything unrecognised.
+ *
+ * Deliberately not `!== 'false'`. A security switch that reads an unrecognised
+ * value as its permissive default is the failure this module's other startup
+ * checks exist to prevent: `SUSFACTOR_FAIL_OPEN=0` written to mean fail-closed
+ * would have quietly meant fail-open, and the startup log would have agreed
+ * with the typo rather than the intent.
+ */
+function boolean(key: string, fallback: boolean): boolean {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const val = raw.trim().toLowerCase();
+  if (TRUE_WORDS.includes(val)) return true;
+  if (FALSE_WORDS.includes(val)) return false;
+  throw new Error(
+    `${key} must be one of ${[...TRUE_WORDS, ...FALSE_WORDS].join('|')} (got "${raw}")`,
+  );
+}
+
 function csv(key: string): string[] {
   const val = process.env[key];
   if (!val) return [];
@@ -93,7 +116,7 @@ export const config = {
       apiToken: process.env.SUSFACTOR_API_TOKEN || '',
       threshold: optionalFloat('SUSFACTOR_THRESHOLD'),
       timeoutMs: positiveInt('SUSFACTOR_TIMEOUT_MS', 8000),
-      failOpen: (process.env.SUSFACTOR_FAIL_OPEN || 'true').trim().toLowerCase() !== 'false',
+      failOpen: boolean('SUSFACTOR_FAIL_OPEN', true),
       maxChars: positiveInt('SUSFACTOR_MAX_CHARS', 8000, MIN_SUSFACTOR_MAX_CHARS),
       tokenUrl: process.env.SUSFACTOR_TOKEN_URL || undefined,
       susUrl: process.env.SUSFACTOR_SUS_URL || undefined,

@@ -59,6 +59,25 @@ test('config.susFactor validates mode, threshold bounds, and maxChars floor', as
     process.env.SUSFACTOR_FAIL_OPEN = 'false';
     assert.equal(config.susFactor.failOpen, false);
 
+    // Regression: only the literal string 'false' used to mean fail-closed, so
+    // SUSFACTOR_FAIL_OPEN=0 written to mean fail-closed silently meant the
+    // opposite -- and every other malformed SUSFACTOR_* value throws.
+    for (const falsy of ['0', 'no', 'off', 'FALSE', ' Off ']) {
+      reset();
+      process.env.SUSFACTOR_FAIL_OPEN = falsy;
+      assert.equal(config.susFactor.failOpen, false, `"${falsy}" must mean fail-closed`);
+    }
+
+    for (const truthy of ['true', '1', 'yes', 'on', ' TRUE ']) {
+      reset();
+      process.env.SUSFACTOR_FAIL_OPEN = truthy;
+      assert.equal(config.susFactor.failOpen, true, `"${truthy}" must mean fail-open`);
+    }
+
+    reset();
+    process.env.SUSFACTOR_FAIL_OPEN = 'maybe';
+    assert.throws(() => config.susFactor, /SUSFACTOR_FAIL_OPEN must be one of/);
+
     // A sample smaller than the floor would leave screening on but blind.
     reset();
     process.env.SUSFACTOR_MAX_CHARS = '10';

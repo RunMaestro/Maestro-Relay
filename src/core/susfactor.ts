@@ -19,8 +19,16 @@ export interface SusVerdict {
   isSuspicious: boolean;
   label: string;
   model: string;
-  /** Server-side decision threshold, echoed back on every response. */
+  /** The threshold reported alongside the score. */
   threshold: number;
+  /**
+   * Whether suspicion was decided by a locally configured `SUSFACTOR_THRESHOLD`
+   * (`score >= threshold` holds) or by the server's own `is_suspicious` flag
+   * (in which case `threshold` is only the server's echoed value and the
+   * comparison may well be false). Callers rendering a reason must not claim
+   * the comparison unless this is `'local'`.
+   */
+  thresholdSource: 'local' | 'server';
   timingMs: number;
   /** True when the prompt was longer than `maxChars` and was head/tail sampled. */
   sampled: boolean;
@@ -29,8 +37,11 @@ export interface SusVerdict {
 export type SusDecision =
   /** Forward the prompt unchanged. */
   | { action: 'allow'; verdict?: SusVerdict; error?: string }
-  /** Forward the prompt, but warn the agent and the channel. */
-  | { action: 'flag'; verdict: SusVerdict }
+  /**
+   * Forward the prompt, but warn the agent and the channel. `verdict` is absent
+   * when the flag came from a fail-closed screening error rather than a score.
+   */
+  | { action: 'flag'; verdict?: SusVerdict; error?: string }
   /** Do not forward. `verdict` is absent when the block came from a fail-closed error. */
   | { action: 'block'; verdict?: SusVerdict; error?: string };
 
@@ -45,7 +56,13 @@ export interface SusFactorOptions {
   threshold?: number;
   /** Per-request timeout for both the token exchange and the scoring call. */
   timeoutMs?: number;
-  /** On API error or timeout: true forwards the prompt, false blocks it. Default true. */
+  /**
+   * On API error or timeout: true forwards the prompt unchanged. False refuses
+   * to forward it *in `block` mode* — in `log` and `flag` the failure is
+   * degraded to that mode's own strongest action (forward, and forward with a
+   * banner) rather than escalated to a block the operator never asked for.
+   * Default true.
+   */
   failOpen?: boolean;
   /** Prompts longer than this are head/tail sampled down to it before scoring. */
   maxChars?: number;
@@ -71,6 +88,11 @@ const DEFAULT_MAX_CHARS = 8000;
 /** Refresh the JWT this far ahead of its stated expiry. */
 const EXPIRY_SKEW_MS = 60_000;
 const SAMPLE_MARKER = '\n\n[... middle of prompt omitted for screening ...]\n\n';
+/**
+ * Smallest `maxChars` at which `sampleForScreening` will spend budget on the
+ * elision marker. Below this the marker would be most of the sample.
+ */
+const MIN_MARKER_BUDGET = SAMPLE_MARKER.length * 2;
 
 class SusFactorError extends Error {
   constructor(
@@ -89,10 +111,13 @@ class SusFactorError extends Error {
  */
 export function sampleForScreening(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
-  // Below the marker's own length there is no room to explain the elision.
-  // Drop the marker rather than the user text: a sample that is all marker
-  // scores as benign every time, which silently disables screening.
-  if (maxChars <= SAMPLE_MARKER.length) {
+  // The marker only earns its place when real text still dominates the sample.
+  // At a budget barely above the marker's own length the result is a couple of
+  // characters of user text wrapped in a ~52-char constant, which scores as
+  // benign every time and silently disables screening. Requiring twice the
+  // marker length makes this function safe for any caller, not just the one
+  // behind MIN_SUSFACTOR_MAX_CHARS in config.ts.
+  if (maxChars < MIN_MARKER_BUDGET) {
     const head = Math.ceil(maxChars / 2);
     return text.slice(0, head) + text.slice(text.length - (maxChars - head));
   }
@@ -217,6 +242,7 @@ export function createSusFactor(options: SusFactorOptions): SusFactorScreener {
       label: body.label ?? (isSuspicious ? 'suspicious' : 'safe'),
       model: body.model ?? 'unknown',
       threshold: options.threshold ?? serverThreshold,
+      thresholdSource: options.threshold !== undefined ? 'local' : 'server',
       timingMs: typeof body.timing_ms === 'number' ? body.timing_ms : 0,
       sampled,
     };
@@ -234,7 +260,20 @@ export function createSusFactor(options: SusFactorOptions): SusFactorScreener {
         verdict = await score(text);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return failOpen ? { action: 'allow', error: message } : { action: 'block', error: message };
+        if (failOpen) return { action: 'allow', error: message };
+        // Fail-closed means "do not silently forward unscreened", not "enforce
+        // a policy the operator did not select". `log` is documented as never
+        // enforcing, so an outage must not start dropping messages just because
+        // SUSFACTOR_FAIL_OPEN=false; `flag` degrades to its own action, which
+        // is forwarding with the untrusted-input banner. Only `block` blocks.
+        switch (mode) {
+          case 'log':
+            return { action: 'allow', error: message };
+          case 'flag':
+            return { action: 'flag', error: message };
+          case 'block':
+            return { action: 'block', error: message };
+        }
       }
 
       if (!verdict.isSuspicious) return { action: 'allow', verdict };
