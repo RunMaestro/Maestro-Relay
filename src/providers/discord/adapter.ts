@@ -32,6 +32,8 @@ import { requiredTier, isAuthorized, configWarning, configError } from './access
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { createMessageCreateHandler } from './messageCreate';
+import { buildAmbientPrompt, createAmbientBuffer, type AmbientBuffer } from '../../core/ambient';
+import { ambientConfig } from '../../core/config';
 import { isVoiceMessage, isVoiceAttachment } from './voice';
 import { transcribeVoiceAttachment, isTranscriberAvailable } from '../../core/transcription';
 import { splitMessage } from '../../core/splitMessage';
@@ -54,6 +56,7 @@ const COMMANDS: CommandModule[] = [health, agents, session, playbook, gist, note
 export class DiscordProvider implements BridgeProvider {
   readonly name = 'discord';
   private client: Client | null = null;
+  private ambient: AmbientBuffer | null = null;
   private pendingChannels = new Map<string, Promise<AgentChannelInfo>>();
   private pendingCategory: Promise<CategoryChannel> | null = null;
 
@@ -146,9 +149,38 @@ export class DiscordProvider implements BridgeProvider {
       }
     });
 
+    // One buffer per process, keyed internally by channel. Flushing hands the
+    // whole batch to the queue as a single turn anchored on the newest message,
+    // so the reaction and any reply land where the conversation actually is.
+    const ambient = createAmbientBuffer({
+      windowMs: ambientConfig.windowMs,
+      maxBatch: ambientConfig.maxBatch,
+      maxWaitMs: ambientConfig.maxWaitMs,
+      logger: ctx.logger,
+      onFlush: ({ transcript, anchor, channelId, entries }) => {
+        const info = channelDb.get(channelId);
+        if (!info || info.ambient !== 1) return; // toggled off mid-batch
+        // The turn is anchored on the newest message, but the batch is the
+        // whole exchange: a screenshot posted mid-batch belongs to it even when
+        // a later text message ends up as the anchor. Collect every entry's
+        // attachments, de-duplicated by URL, rather than the anchor's alone.
+        const seen = new Set<string>();
+        const attachments = entries
+          .flatMap((e) => e.message.attachments)
+          .filter((a) => (seen.has(a.url) ? false : (seen.add(a.url), true)));
+        ctx.enqueue(anchor, {
+          contentOverride: buildAmbientPrompt(transcript, info.ambient_scope ?? undefined),
+          attachmentsOverride: attachments,
+          ambient: true,
+        });
+      },
+    });
+    this.ambient = ambient;
+
     const handleMessageCreate = createMessageCreateHandler({
       channelDb,
       threadDb,
+      ambient,
       getBotUserId: (message) => message.client.user?.id,
       enqueue: ctx.enqueue,
       isVoiceMessage,
@@ -164,6 +196,8 @@ export class DiscordProvider implements BridgeProvider {
   }
 
   async stop(): Promise<void> {
+    this.ambient?.dispose();
+    this.ambient = null;
     if (this.client) {
       this.client.destroy();
       this.client = null;

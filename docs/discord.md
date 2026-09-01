@@ -62,6 +62,7 @@ The provider only loads if `discord` is in `ENABLED_PROVIDERS` (default: `discor
 | `/agents revoke <user>`    | (Run inside an agent channel) Remove someone's access           |
 | `/agents disconnect`       | (Run inside an agent channel) Remove and delete the channel     |
 | `/agents readonly on\|off` | Toggle read-only mode for the current agent channel             |
+| `/agents ambient on\|off`  | Toggle ambient listening for the current agent channel          |
 | `/session new`             | Create a new owner-bound thread for the current agent channel   |
 | `/session list`            | List session threads for the current agent channel              |
 | `/playbook list`           | List playbooks (optionally filter by agent)                     |
@@ -103,8 +104,9 @@ npm run deploy-commands
 - **Mentioning the bot** in an agent channel creates a new owner-bound thread (equivalent to running `/session new`).
 - **Owner-bound threads**: only the user who created the thread can trigger the agent. Other users' messages are silently ignored — no error reply, no forwarding.
 - **Read-only mode** via `/agents readonly on` lets the bridge POST agent updates to the channel (via the HTTP API) without forwarding user messages back. Toggle off with `/agents readonly off`.
+- **Ambient mode** via `/agents ambient on` lets the agent follow the channel conversation without being mentioned, batching messages on a quiet window and staying silent unless it has something to add. Off by default, per channel. See [docs/ambient.md](ambient.md).
 - **Reactions**: `⏳` while a message is queued, `🎧` while a voice message is being transcribed.
-- **Usage stats** are appended below each agent reply (tokens, cost, context %).
+- **Usage stats** are appended below each non-ambient agent reply (tokens, cost, context %). Ambient replies read as conversation and carry no footer.
 - **Markdown tables** in agent replies are rendered as aligned, fenced ASCII tables so they display correctly (Discord has no native table syntax). See [architecture.md → Output rendering](architecture.md#output-rendering).
 
 ## Channel visibility
@@ -165,6 +167,7 @@ This restores the pre-existing behavior — the channel is visible to `@everyone
 | `/notes synopsis`                                       | ✅    | ❌     |
 | `/agents new`, `/agents disconnect`, `/agents readonly` | ✅    | ❌     |
 | `/agents grant`, `/agents revoke`                       | ✅    | ❌     |
+| `/agents ambient`                                       | ✅    | ❌     |
 | `/playbook run`, `/auto-run start`                      | ✅    | ❌     |
 | `/gist`                                                 | ✅    | ❌     |
 
@@ -210,7 +213,7 @@ The callout body becomes the embed **description** and the emoji + label (e.g. `
 
 ## Security
 
-- Slash command access can be locked down with `DISCORD_ALLOWED_USER_IDS` for full access and `DISCORD_VIEWER_USER_IDS` for read-only access — see [Command access tiers](#command-access-tiers).
+- Slash command access can be locked down with `DISCORD_ALLOWED_USER_IDS` for full access and `DISCORD_VIEWER_USER_IDS` for read-only access — see [Command access tiers](#command-access-tiers). `/agents ambient` is unclassified and therefore admin-tier, so only an operator can put an agent into a channel-listening posture.
 - **Agent channels are private by default** — see [Channel visibility](#channel-visibility). The relay's own gating and Discord's permissions are independent layers: relay gating decides what reaches an agent, Discord permissions decide who can see and post at all.
 - Threads created by mention or `/session new` are bound to a single owner; non-owner messages are ignored silently.
 - The bot only auto-creates channels under the **Maestro Agents** category.

@@ -20,6 +20,8 @@ db.exec(`
     agent_name   TEXT NOT NULL,
     session_id   TEXT,
     read_only    INTEGER NOT NULL DEFAULT 0,
+    ambient      INTEGER NOT NULL DEFAULT 0,
+    ambient_scope TEXT,
     created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
     PRIMARY KEY (provider, channel_id)
   )
@@ -35,6 +37,8 @@ export interface AgentChannel {
   agent_name: string;
   session_id: string | null;
   read_only: number;
+  ambient: number;
+  ambient_scope: string | null;
   created_at: number;
 }
 
@@ -74,6 +78,17 @@ export const channelDb = {
     db.prepare(
       'UPDATE agent_channels SET read_only = ? WHERE provider = ? AND channel_id = ?',
     ).run(readOnly ? 1 : 0, provider, channelId);
+  },
+
+  setAmbient(
+    provider: string,
+    channelId: string,
+    ambient: boolean,
+    scope: string | null = null,
+  ): void {
+    db.prepare(
+      'UPDATE agent_channels SET ambient = ?, ambient_scope = ? WHERE provider = ? AND channel_id = ?',
+    ).run(ambient ? 1 : 0, scope, provider, channelId);
   },
 
   remove(provider: string, channelId: string): void {

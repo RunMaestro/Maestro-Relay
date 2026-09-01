@@ -82,6 +82,23 @@ export const data = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub
+      .setName('ambient')
+      .setDescription('Let the agent follow this channel and chime in without being mentioned')
+      .addStringOption((opt) =>
+        opt
+          .setName('mode')
+          .setDescription('Turn ambient listening on or off')
+          .setRequired(true)
+          .addChoices({ name: 'on', value: 'on' }, { name: 'off', value: 'off' }),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName('scope')
+          .setDescription("What the agent should speak up about (e.g. 'trading research'). Optional."),
+      ),
+  )
+  .addSubcommand((sub) =>
+    sub
       .setName('readonly')
       .setDescription('Toggle read-only mode for this agent channel')
       .addStringOption((opt) =>
@@ -138,6 +155,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     await handleDisconnect(interaction);
   } else if (sub === 'readonly') {
     await handleReadonly(interaction);
+  } else if (sub === 'ambient') {
+    await handleAmbient(interaction);
   }
 }
 
@@ -484,6 +503,61 @@ async function handleShow(interaction: ChatInputCommandInteraction): Promise<voi
   }
 
   await interaction.editReply({ embeds: [embed] });
+}
+
+/**
+ * Ambient is the one subcommand that fails closed on an empty allowlist.
+ *
+ * Every other command is gated by the adapter, which treats an empty
+ * `DISCORD_ALLOWED_USER_IDS` as "no restriction configured" and lets any member
+ * of the guild through. That default is defensible for commands that act on one
+ * channel on request. It is not defensible for ambient, which puts the agent
+ * into a standing listening posture over everything typed in the room. An
+ * unconfigured deployment should not let a passer-by switch that on.
+ */
+function isAmbientOperator(interaction: ChatInputCommandInteraction): boolean {
+  const allowed = discordConfig.allowedUserIds;
+  return allowed.length > 0 && allowed.includes(interaction.user.id);
+}
+
+async function handleAmbient(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!isAmbientOperator(interaction)) {
+    await interaction.reply({
+      content:
+        '❌ Only an operator can change ambient mode. Add your Discord user ID to ' +
+        '`DISCORD_ALLOWED_USER_IDS` and restart the relay.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const channelInfo = channelDb.get(interaction.channelId);
+  if (!channelInfo) {
+    await interaction.reply({ content: 'This channel is not an agent channel.', ephemeral: true });
+    return;
+  }
+
+  const on = interaction.options.getString('mode', true) === 'on';
+  // The scope option is optional, and an operator re-running `/agents ambient
+  // on` to confirm it is on should not silently wipe a purview they set
+  // earlier. Omitting it keeps whatever is stored; passing it replaces.
+  const scope = interaction.options.getString('scope') ?? (on ? channelInfo.ambient_scope : null);
+  channelDb.setAmbient(interaction.channelId, on, on ? scope : null);
+
+  const embed = new EmbedBuilder()
+    .setColor(on ? 0x9146ff : 0x99aab5)
+    .setDescription(
+      on
+        ? `👂 **${channelInfo.agent_name}** is now following this channel. ` +
+          `No need to mention it — talk normally and it will chime in when it has ` +
+          `something to add.` +
+          (scope ? `
+-# Speaking up about: ${scope}` : '')
+        : `🔇 **${channelInfo.agent_name}** has stopped following this channel. ` +
+          `Mention it to get its attention.`,
+    );
+
+  await interaction.reply({ embeds: [embed] });
 }
 
 async function handleReadonly(interaction: ChatInputCommandInteraction): Promise<void> {

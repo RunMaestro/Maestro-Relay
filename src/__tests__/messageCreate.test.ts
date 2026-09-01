@@ -551,3 +551,146 @@ test('handleMessageCreate reports transcription failures and falls back to enque
   assert.ok(reactions.includes('🎧'), 'should have 🎧 reaction even on failure');
   assert.ok(replies.some((r) => r.includes('Failed to transcribe this voice message')));
 });
+
+// ---------------------------------------------------------------------------
+// Ambient mode routing
+// ---------------------------------------------------------------------------
+
+function makeAmbientBuffer() {
+  const added: any[] = [];
+  return {
+    added,
+    buffer: {
+      add: (channelId: string, entry: any) => added.push({ channelId, entry }),
+      flushNow: () => undefined,
+      discard: () => undefined,
+      pending: () => added.length,
+      dispose: () => undefined,
+    } as any,
+  };
+}
+
+function makeAmbientChannelMessage(overrides: Partial<Record<string, unknown>> = {}) {
+  return makeMessage({
+    id: 'msg-1',
+    channel: {
+      id: 'channel-1',
+      isThread: () => false,
+      sendTyping: async () => undefined,
+    },
+    guild: { id: 'guild-1', members: { me: { roles: { botRole: { id: 'bot-role-1' } } } } },
+    mentions: { users: { has: () => false }, roles: { has: () => false } },
+    ...overrides,
+  });
+}
+
+function createAmbientDeps(ambient: any, enqueue: (...args: any[]) => void) {
+  const deps = createDeps(enqueue) as any;
+  deps.channelDb = { get: () => ({ agent_id: 'agent-1', ambient: 1, ambient_scope: null }) as any };
+  deps.ambient = ambient;
+  deps.isVoiceMessage = () => false;
+  return deps;
+}
+
+test('ambient buffers an ordinary channel message instead of creating a thread', async () => {
+  const { added, buffer } = makeAmbientBuffer();
+  let enqueued = 0;
+  const handler = createMessageCreateHandler(
+    createAmbientDeps(buffer, () => {
+      enqueued += 1;
+    }),
+  );
+
+  await handler(makeAmbientChannelMessage({ content: 'ali and I were looking at MNQ' }) as any);
+
+  assert.equal(added.length, 1, 'message should join the ambient batch');
+  assert.equal(added[0].channelId, 'channel-1');
+  assert.equal(added[0].entry.content, 'ali and I were looking at MNQ');
+  assert.equal(enqueued, 0, 'ambient messages are not enqueued directly');
+});
+
+test('ambient does not swallow a role mention of the bot', async () => {
+  const { added, buffer } = makeAmbientBuffer();
+  const threads: string[] = [];
+  const handler = createMessageCreateHandler(
+    createAmbientDeps(buffer, () => undefined),
+  );
+
+  await handler(
+    makeAmbientChannelMessage({
+      content: '<@&bot-role-1> what is the Wilson interval here?',
+      mentions: { users: { has: () => false }, roles: { has: (id: string) => id === 'bot-role-1' } },
+      channel: {
+        id: 'channel-1',
+        isThread: () => false,
+        sendTyping: async () => undefined,
+        threads: {
+          create: async ({ name }: { name: string }) => {
+            threads.push(name);
+            return {
+              id: 'thread-new',
+              send: async () => ({ id: 'thread-msg' }),
+            };
+          },
+        },
+      },
+    }) as any,
+  );
+
+  assert.equal(added.length, 0, 'a role mention must not be buffered as ambient');
+  assert.equal(threads.length, 1, 'a role mention takes the thread path');
+});
+
+test('ambient keeps a plain reply in the channel rather than opening a thread', async () => {
+  const { added, buffer } = makeAmbientBuffer();
+  let threadsCreated = 0;
+  const handler = createMessageCreateHandler(
+    createAmbientDeps(buffer, () => undefined),
+  );
+
+  // Discord puts the replied-to author in mentions.users for a default reply
+  // ping, with no mention token in the content. Following up on the agent's own
+  // ambient answer must stay in the channel.
+  await handler(
+    makeAmbientChannelMessage({
+      content: 'why 1.2 years?',
+      mentions: { users: { has: () => true }, roles: { has: () => false } },
+      channel: {
+        id: 'channel-1',
+        isThread: () => false,
+        sendTyping: async () => undefined,
+        threads: {
+          create: async () => {
+            threadsCreated += 1;
+            return { id: 'thread-new', send: async () => ({ id: 'thread-msg' }) };
+          },
+        },
+      },
+    }) as any,
+  );
+
+  assert.equal(threadsCreated, 0, 'a reply ping must not spawn a thread');
+  assert.equal(added.length, 1, 'the reply joins the ambient batch');
+});
+
+test('ambient skips voice notes instead of buffering an empty transcript line', async () => {
+  const { added, buffer } = makeAmbientBuffer();
+  let enqueued = 0;
+  const deps = createAmbientDeps(buffer, () => {
+    enqueued += 1;
+  });
+  deps.isVoiceMessage = () => true;
+  const handler = createMessageCreateHandler(deps);
+
+  await handler(
+    makeAmbientChannelMessage({
+      content: '',
+      attachments: makeAttachments([
+        { url: 'https://cdn.discord.com/voice.ogg', name: 'voice.ogg' },
+      ]),
+    }) as any,
+  );
+
+  assert.equal(added.length, 0, 'a voice note must not enter the batch with empty content');
+  assert.equal(enqueued, 0);
+});

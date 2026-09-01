@@ -15,11 +15,14 @@ import { splitMessage } from '../../core/splitMessage';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { discordAttachmentToIncoming, isVoiceAttachment, isVoiceMessage } from './voice';
+import type { AmbientBuffer } from '../../core/ambient';
 
 type Enqueue = (msg: IncomingMessage, options?: EnqueueOptions) => void;
 
 export type MessageCreateDeps = {
   channelDb: Pick<typeof channelDb, 'get'>;
+  /** Present only when ambient mode is compiled in; absent in tests that ignore it. */
+  ambient?: AmbientBuffer;
   threadDb: Pick<typeof threadDb, 'get' | 'register'>;
   getBotUserId: (message: Message) => string | undefined;
   enqueue: Enqueue;
@@ -78,6 +81,42 @@ export function createMessageCreateHandler(deps: MessageCreateDeps) {
         message.content.includes(`<@${botUserId}>`) ||
         message.content.includes(`<@!${botUserId}>`) ||
         (!!botRoleId && message.content.includes(`<@&${botRoleId}>`));
+
+      // Ambient mode: no mention required, no thread created, anyone in the
+      // channel counts. The message joins a batch that is handed to the agent
+      // once the conversation pauses. Addressing the bot by name still
+      // short-circuits to the thread path below, because someone who typed the
+      // bot's name is waiting on an answer, not on the quiet window.
+      //
+      // "Addressed" here means the author typed a mention — by user or by bot
+      // role. It deliberately excludes `message.mentions.users`, which Discord
+      // also populates for a plain reply: hitting Reply on the agent's own
+      // ambient answer is the most natural way to follow up, and it should stay
+      // in the channel rather than yanking the exchange into an owner-bound
+      // thread.
+      const addressedDirectly = mentionedByContent || mentionedByRole;
+      const ambientOn = channelInfo.ambient === 1 && !!deps.ambient;
+      if (ambientOn && !addressedDirectly) {
+        // A Discord voice note carries no text. Buffering it would push a bare
+        // `[Name]` line into the transcript and drop the audio on the floor,
+        // because the transcription path lives past this return. Leave voice
+        // notes on the pre-ambient contract: they reach the agent when the bot
+        // is addressed, and are ignored otherwise.
+        if (deps.isVoiceMessage(message)) {
+          log.info(
+            'messageCreate/ambient',
+            `voice message ${message.id} in ambient channel ${message.channel.id} not buffered (mention the bot to have it transcribed)`,
+          );
+          return;
+        }
+        deps.ambient!.add(message.channel.id, {
+          authorName:
+            message.member?.displayName ?? message.author.username ?? message.author.id,
+          content: message.content,
+          message: toIncoming(message),
+        });
+        return;
+      }
       log.debug(
         'messageCreate/mention',
         `botUserId=${botUserId} botRoleId=${botRoleId} user=${mentionedByUser} role=${mentionedByRole} content=${mentionedByContent} raw=${JSON.stringify(message.content)}`,

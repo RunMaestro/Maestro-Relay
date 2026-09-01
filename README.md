@@ -11,6 +11,7 @@
 - Provider-pluggable kernel — Discord and Slack today, Teams/Matrix next
 - Creates dedicated channels for Maestro agents
 - Per-user session threads (`/session new` or by mentioning the bot)
+- Optional ambient mode — the agent follows a channel conversation and speaks only when it has something to add ([docs/ambient.md](docs/ambient.md))
 - Per-conversation FIFO queue with typing/reaction indicators
 - Streams agent replies back into chat with usage stats
 - Voice transcription pipeline (whisper.cpp) for Discord voice messages
@@ -142,6 +143,7 @@ npm run build && node --test --experimental-test-coverage dist/__tests__/**/*.te
 
 Optional voice transcription (whisper.cpp, Discord-only today): [docs/voice.md](docs/voice.md).
 
+Optional ambient mode (Discord-only today): [docs/ambient.md](docs/ambient.md).
 Optional prompt-injection screening for every provider: [docs/susfactor.md](docs/susfactor.md).
 
 ## How it works

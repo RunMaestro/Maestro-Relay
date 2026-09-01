@@ -601,6 +601,153 @@ test('autocomplete returns empty on error', async () => {
   assert.deepEqual(items, []);
 });
 
+// --- /agents ambient ---
+
+function makeAmbientInteraction(
+  mode: string,
+  scope: string | null,
+  overrides: Record<string, unknown> = {},
+) {
+  return makeInteraction({
+    options: {
+      getSubcommand: () => 'ambient',
+      getString: (name: string) => (name === 'mode' ? mode : scope),
+    },
+    ...overrides,
+  });
+}
+
+test('agents ambient is denied when no operator allowlist is configured', async () => {
+  const previous = process.env.DISCORD_ALLOWED_USER_IDS;
+  process.env.DISCORD_ALLOWED_USER_IDS = '';
+
+  try {
+    const { channelDb } = await import('../providers/discord/channelsDb');
+    const setAmbient = mock.method(channelDb, 'setAmbient', () => undefined);
+    mock.method(
+      channelDb,
+      'get',
+      () => ({ agent_id: 'a-1', agent_name: 'Alpha', ambient: 0, ambient_scope: null }) as any,
+    );
+
+    const interaction = makeAmbientInteraction('on', null);
+    await execute(interaction);
+
+    assert.equal(setAmbient.mock.callCount(), 0, 'ambient must not be togglable by anyone');
+    const reply = interaction.reply.mock.calls[0].arguments[0];
+    assert.ok(reply.content.includes('Only an operator'));
+    assert.equal(reply.ephemeral, true);
+  } finally {
+    if (previous === undefined) delete process.env.DISCORD_ALLOWED_USER_IDS;
+    else process.env.DISCORD_ALLOWED_USER_IDS = previous;
+  }
+});
+
+test('agents ambient is denied for a non-operator', async () => {
+  const previous = process.env.DISCORD_ALLOWED_USER_IDS;
+  process.env.DISCORD_ALLOWED_USER_IDS = 'operator-1';
+
+  try {
+    const { channelDb } = await import('../providers/discord/channelsDb');
+    const setAmbient = mock.method(channelDb, 'setAmbient', () => undefined);
+    mock.method(
+      channelDb,
+      'get',
+      () => ({ agent_id: 'a-1', agent_name: 'Alpha', ambient: 0, ambient_scope: null }) as any,
+    );
+
+    const interaction = makeAmbientInteraction('on', null, { user: { id: 'someone-else' } });
+    await execute(interaction);
+
+    assert.equal(setAmbient.mock.callCount(), 0);
+  } finally {
+    if (previous === undefined) delete process.env.DISCORD_ALLOWED_USER_IDS;
+    else process.env.DISCORD_ALLOWED_USER_IDS = previous;
+  }
+});
+
+test('agents ambient on preserves an existing scope when the option is omitted', async () => {
+  const previous = process.env.DISCORD_ALLOWED_USER_IDS;
+  process.env.DISCORD_ALLOWED_USER_IDS = 'user-1';
+
+  try {
+    const { channelDb } = await import('../providers/discord/channelsDb');
+    const setAmbient = mock.method(channelDb, 'setAmbient', () => undefined);
+    mock.method(
+      channelDb,
+      'get',
+      () =>
+        ({
+          agent_id: 'a-1',
+          agent_name: 'Alpha',
+          ambient: 1,
+          ambient_scope: 'quantitative trading research',
+        }) as any,
+    );
+
+    const interaction = makeAmbientInteraction('on', null);
+    await execute(interaction);
+
+    assert.equal(setAmbient.mock.callCount(), 1);
+    assert.deepEqual(setAmbient.mock.calls[0].arguments, [
+      'ch-1',
+      true,
+      'quantitative trading research',
+    ]);
+  } finally {
+    if (previous === undefined) delete process.env.DISCORD_ALLOWED_USER_IDS;
+    else process.env.DISCORD_ALLOWED_USER_IDS = previous;
+  }
+});
+
+test('agents ambient on replaces the scope when one is supplied', async () => {
+  const previous = process.env.DISCORD_ALLOWED_USER_IDS;
+  process.env.DISCORD_ALLOWED_USER_IDS = 'user-1';
+
+  try {
+    const { channelDb } = await import('../providers/discord/channelsDb');
+    const setAmbient = mock.method(channelDb, 'setAmbient', () => undefined);
+    mock.method(
+      channelDb,
+      'get',
+      () =>
+        ({ agent_id: 'a-1', agent_name: 'Alpha', ambient: 1, ambient_scope: 'old scope' }) as any,
+    );
+
+    const interaction = makeAmbientInteraction('on', 'new scope');
+    await execute(interaction);
+
+    assert.deepEqual(setAmbient.mock.calls[0].arguments, ['ch-1', true, 'new scope']);
+  } finally {
+    if (previous === undefined) delete process.env.DISCORD_ALLOWED_USER_IDS;
+    else process.env.DISCORD_ALLOWED_USER_IDS = previous;
+  }
+});
+
+test('agents ambient off clears the stored scope', async () => {
+  const previous = process.env.DISCORD_ALLOWED_USER_IDS;
+  process.env.DISCORD_ALLOWED_USER_IDS = 'user-1';
+
+  try {
+    const { channelDb } = await import('../providers/discord/channelsDb');
+    const setAmbient = mock.method(channelDb, 'setAmbient', () => undefined);
+    mock.method(
+      channelDb,
+      'get',
+      () =>
+        ({ agent_id: 'a-1', agent_name: 'Alpha', ambient: 1, ambient_scope: 'old scope' }) as any,
+    );
+
+    const interaction = makeAmbientInteraction('off', null);
+    await execute(interaction);
+
+    assert.deepEqual(setAmbient.mock.calls[0].arguments, ['ch-1', false, null]);
+  } finally {
+    if (previous === undefined) delete process.env.DISCORD_ALLOWED_USER_IDS;
+    else process.env.DISCORD_ALLOWED_USER_IDS = previous;
+  }
+});
+
 // --- /agents new: channel visibility ---
 
 /**

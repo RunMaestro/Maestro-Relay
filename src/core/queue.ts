@@ -11,6 +11,7 @@ import { renderTables } from './renderTables';
 import { toOutgoing } from './callouts';
 import { sendWithRetry } from './sendRetry';
 import { downloadAttachments as defaultDownload, formatAttachmentRefs } from './attachments';
+import { isSilence } from './ambient';
 import type { SusFactorScreener } from './susfactor';
 
 interface QueueEntry {
@@ -311,6 +312,31 @@ export function createQueue(deps: QueueDeps) {
         // ignore cleanup failure
       }
 
+      // An ambient turn the agent chose not to answer leaves nothing behind:
+      // no message, no footer, not even a usage line. That silence is the
+      // feature — a listener that comments on every exchange is unusable.
+      //
+      // A failed ambient turn is the same case. Nobody addressed the bot, so
+      // there is nobody to apologise to, and a relay that is erroring would
+      // otherwise post a warning into the conversation every quiet window until
+      // an operator noticed and ran `/agents ambient off`. The failure goes to
+      // the error log, where an operator is looking for it anyway.
+      if (options?.ambient && (!result.success || isSilence(result.response))) {
+        if (result.success) {
+          deps.logger.debug(
+            'queue:ambient-silence',
+            `agent=${conv.agentId} channel=${message.channelId} stayed silent`,
+          );
+        } else {
+          void deps.logger.error(
+            'queue:ambient-failure',
+            `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${result.error ?? '(no error detail)'} (suppressed: ambient turn posts nothing on failure)`,
+          );
+        }
+        void processNext(k);
+        return;
+      }
+
       if (result.response) {
         if (!result.success) {
           void deps.logger.error(
@@ -335,6 +361,12 @@ export function createQueue(deps: QueueDeps) {
         });
       }
 
+      if (options?.ambient) {
+        // Ambient replies read as conversation, so they carry no usage footer.
+        void processNext(k);
+        return;
+      }
+
       const cost = (result.usage?.totalCostUsd ?? 0).toFixed(4);
       const ctx = (result.usage?.contextUsagePercent ?? 0).toFixed(1);
       const tokens = (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0);
@@ -354,9 +386,15 @@ export function createQueue(deps: QueueDeps) {
         'queue:send-error',
         `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${errMsg}`,
       );
-      await provider.send(target, {
-        text: '❌ Failed to get response from agent. Check relay logs for details.',
-      });
+      // Same reasoning as the resolved-failure branch above: nobody addressed
+      // the bot, so an ambient turn that throws must not narrate its failure
+      // into the channel every quiet window. The guard up there only sees a
+      // resolved `result`, so a rejected `maestro.send()` lands here instead.
+      if (!options?.ambient) {
+        await provider.send(target, {
+          text: '❌ Failed to get response from agent. Check relay logs for details.',
+        });
+      }
     }
 
     void processNext(k);
