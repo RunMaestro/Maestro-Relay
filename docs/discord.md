@@ -9,18 +9,23 @@ The Discord provider is the default, in-the-box chat interface for Maestro Relay
 3. Invite the bot with both `bot` and `applications.commands` scopes:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=<DISCORD_CLIENT_ID>&scope=bot+applications.commands&permissions=309237681232
+https://discord.com/oauth2/authorize?client_id=<DISCORD_CLIENT_ID>&scope=bot+applications.commands&permissions=309506182224
 ```
 
-The `309237681232` permissions integer grants:
+The `309506182224` permissions integer grants:
 
 - **Manage Channels** — create/delete agent channels (`/agents new`, `/agents disconnect`)
+- **Manage Roles** — set the per-channel permission overwrites that make agent channels private, and edit them from `/agents grant` / `/agents revoke`
 - **View Channels**
 - **Send Messages**
+- **Read Message History**
 - **Attach Files** — re-upload user attachments when forwarding to a session thread
 - **Add Reactions** — `⏳` / `🎧` queue and transcription indicators
 - **Create Public Threads** — owner-bound session threads
 - **Send Messages in Threads**
+
+> [!IMPORTANT]
+> **Manage Roles and Read Message History are new.** A bot invited with the previous integer (`309237681232`) cannot set channel overwrites, so `/agents new` fails with `Missing Permissions` and `/agents grant` / `/agents revoke` fail on every call. **Existing installs must re-invite the bot** with the link above — re-inviting an already-present bot updates its permissions in place and does not disturb channels, threads or the registry.
 
 4. Enable **Message Content Intent** under Privileged Gateway Intents at:
 
@@ -109,11 +114,15 @@ If the **Maestro Agents** category does not exist yet, it is created with the sa
 ### Adding people
 
 ```
-/agents grant @ali     # run inside the agent channel
+/agents grant @ali     # run inside the agent channel, or inside a session thread of one
 /agents revoke @ali
 ```
 
 Both need **Manage Roles** on the bot; without it the command reports that rather than failing silently.
+
+Both also need **Manage Channels** or **Manage Roles** on _you_, or your user ID in `DISCORD_ALLOWED_USER_IDS`. Being able to use an agent channel does not let you decide who else can — otherwise a collaborator you granted could grant anyone else a shell on your machine, and nothing would ask you first.
+
+They work from inside an owner-bound session thread too, which is the natural place to be when you want to pull someone in. A thread has no permission overwrites of its own, so the change is applied to the parent agent channel.
 
 `/agents revoke` removes the _channel-level_ overwrite. Someone who can see the channel through a role still can — the reply says so rather than implying a stronger guarantee than it delivers.
 
@@ -123,7 +132,9 @@ Both need **Manage Roles** on the bot; without it the command reports that rathe
 /agents new agent:Kensho visibility:public
 ```
 
-This restores the pre-existing behavior, where the channel inherits the category and is typically visible to `@everyone`. The confirmation reply says so explicitly when you choose it.
+Public creation sets an explicit `@everyone: allow ViewChannel` overwrite rather than inheriting the category. Inheriting would silently produce an invisible channel whenever the **Maestro Agents** category had been created by an earlier private `/agents new`, while the reply claimed the channel was visible to everyone.
+
+This restores the pre-existing behavior — the channel is visible to `@everyone`. The confirmation reply says so explicitly when you choose it.
 
 > **Upgrading?** This changes what `/agents new` does. Channels created before the upgrade are untouched — their permissions are whatever they already were. Only newly created channels are private.
 

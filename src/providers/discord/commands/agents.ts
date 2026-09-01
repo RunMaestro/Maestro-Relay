@@ -9,7 +9,7 @@ import {
   type OverwriteResolvable,
 } from 'discord.js';
 import { maestro } from '../../../core/maestro';
-import { channelDb } from '../channelsDb';
+import { channelDb, getChannelInfoForInteraction } from '../channelsDb';
 import { threadDb } from '../threadsDb';
 import { cleanupAgentFiles } from '../../../core/attachments';
 import { clampFieldValue, clampTitle } from '../embed';
@@ -195,19 +195,39 @@ function botId(interaction: ChatInputCommandInteraction): string {
   return interaction.client.user.id;
 }
 
+/**
+ * Bits the bot grants itself on a channel it creates. Deliberately a subset of
+ * the documented invite integer: Discord refuses an overwrite for a permission
+ * the bot does not itself hold, so a bit listed here but absent from the invite
+ * link turns `guild.channels.create()` into a 50013 and `/agents new` fails
+ * outright. `ManageMessages` used to be here and was never used by anything.
+ */
+const BOT_CHANNEL_BITS = [
+  ...PARTICIPANT_BITS,
+  PermissionFlagsBits.CreatePublicThreads,
+  PermissionFlagsBits.SendMessagesInThreads,
+] as const;
+
 /** Deny @everyone, allow the bot. Threads are included so replies stay reachable. */
 function categoryOverwrites(everyoneId: string, botUserId: string): OverwriteResolvable[] {
   return [
     { id: everyoneId, deny: [PermissionFlagsBits.ViewChannel] },
-    {
-      id: botUserId,
-      allow: [
-        ...PARTICIPANT_BITS,
-        PermissionFlagsBits.ManageMessages,
-        PermissionFlagsBits.CreatePublicThreads,
-        PermissionFlagsBits.SendMessagesInThreads,
-      ],
-    },
+    { id: botUserId, allow: [...BOT_CHANNEL_BITS] },
+  ];
+}
+
+/**
+ * Overwrites for `visibility:public`.
+ *
+ * Explicit rather than inherited. Passing `undefined` lets the channel take the
+ * `Maestro Agents` category's overwrites, and a category created by an earlier
+ * private `/agents new` denies `@everyone` ViewChannel — so a "public" channel
+ * would be invisible to the server while the reply claimed the opposite.
+ */
+function publicChannelOverwrites(everyoneId: string, botUserId: string): OverwriteResolvable[] {
+  return [
+    { id: everyoneId, allow: [PermissionFlagsBits.ViewChannel] },
+    { id: botUserId, allow: [...BOT_CHANNEL_BITS] },
   ];
 }
 
@@ -228,6 +248,26 @@ function channelOverwrites(
 }
 
 /**
+ * Who may re-key an agent channel.
+ *
+ * Without this, anyone who can see the channel can widen it: grant Bob so he
+ * can help and Bob can grant Mallory a shell on the operator's machine. So
+ * changing access needs a Discord-side channel-management permission, or
+ * membership in the relay's explicit operator list.
+ *
+ * `setDefaultMemberPermissions` cannot express this — it applies to `/agents`
+ * as a whole, which would also hide `/agents list` from everyone.
+ */
+function mayChangeAccess(interaction: ChatInputCommandInteraction): boolean {
+  if (discordConfig.allowedUserIds.includes(interaction.user.id)) return true;
+  const perms = interaction.memberPermissions;
+  if (!perms) return false;
+  return (
+    perms.has(PermissionFlagsBits.ManageChannels) || perms.has(PermissionFlagsBits.ManageRoles)
+  );
+}
+
+/**
  * `/agents grant` and `/agents revoke` — the key to the lock that
  * private-by-default creation puts on the door. Without these the operator has
  * to leave chat and edit channel permissions in the Discord UI by hand.
@@ -238,7 +278,17 @@ async function handleAccess(
 ): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
 
-  const channelInfo = channelDb.get(interaction.channelId);
+  if (!mayChangeAccess(interaction)) {
+    await interaction.editReply(
+      `❌ You need **Manage Channels** or **Manage Roles** to ${action} access to an agent channel.\n` +
+        '-# Being able to use a channel does not let you decide who else can.',
+    );
+    return;
+  }
+
+  // Thread-aware: agent conversations happen in owner-bound session threads, so
+  // the natural place to run `/agents grant` is inside the thread you are in.
+  const channelInfo = getChannelInfoForInteraction(interaction);
   if (!channelInfo) {
     await interaction.editReply(
       `❌ This is not an agent channel. Run \`/agents ${action}\` inside one.`,
@@ -246,7 +296,10 @@ async function handleAccess(
     return;
   }
 
-  const channel = interaction.channel as GuildBasedChannel | null;
+  // A ThreadChannel carries no overwrites of its own; visibility is decided by
+  // the parent agent channel, so that is what has to be edited.
+  const here = interaction.channel;
+  const channel = (here?.isThread() ? here.parent : here) as GuildBasedChannel | null;
   if (!channel || !('permissionOverwrites' in channel)) {
     await interaction.editReply('❌ This channel does not support permission overwrites.');
     return;
@@ -342,7 +395,7 @@ async function handleNew(interaction: ChatInputCommandInteraction): Promise<void
     // a moment has already been seen by everyone watching the server.
     permissionOverwrites: isPrivate
       ? channelOverwrites(guild.id, botId(interaction), interaction.user.id)
-      : undefined,
+      : publicChannelOverwrites(guild.id, botId(interaction)),
   });
   if (!newChannel.isSendable()) {
     await interaction.editReply(
