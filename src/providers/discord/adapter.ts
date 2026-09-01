@@ -4,6 +4,7 @@ import {
   ChannelType,
   ChatInputCommandInteraction,
   Client,
+  EmbedBuilder,
   GatewayIntentBits,
   Interaction,
   SendableChannels,
@@ -24,16 +25,16 @@ import { maestro } from '../../core/maestro';
 import { logger } from '../../core/logger';
 import { checkTranscriptionDependencies } from '../../core/transcription';
 import { AgentNotFoundError, RateLimitError } from '../../core/errors';
+import { CALLOUT_META } from '../../core/callouts';
+import { clampTitle, clampDescription } from './embed';
 import { discordConfig } from './config';
+import { requiredTier, isAuthorized, configWarning, configError } from './access';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { createMessageCreateHandler } from './messageCreate';
 import { buildAmbientPrompt, createAmbientBuffer, type AmbientBuffer } from '../../core/ambient';
 import { ambientConfig } from '../../core/config';
-import {
-  isVoiceMessage,
-  isVoiceAttachment,
-} from './voice';
+import { isVoiceMessage, isVoiceAttachment } from './voice';
 import { transcribeVoiceAttachment, isTranscriberAvailable } from '../../core/transcription';
 import { splitMessage } from '../../core/splitMessage';
 import * as health from './commands/health';
@@ -60,6 +61,15 @@ export class DiscordProvider implements BridgeProvider {
   private pendingCategory: Promise<CategoryChannel> | null = null;
 
   async start(ctx: KernelContext): Promise<void> {
+    // Checked before the client connects, not at ready: an access-list
+    // combination that would leave every command open to everyone must stop
+    // the provider rather than log about it after the bot is already live.
+    const accessError = configError({
+      admins: discordConfig.allowedUserIds,
+      viewers: discordConfig.viewerUserIds,
+    });
+    if (accessError) throw new Error(accessError);
+
     const client = new Client({
       intents: [
         GatewayIntentBits.Guilds,
@@ -69,19 +79,32 @@ export class DiscordProvider implements BridgeProvider {
     });
     this.client = client;
 
-    const commandsByName = new Map<string, CommandModule>(
-      COMMANDS.map((c) => [c.data.name, c]),
-    );
+    const commandsByName = new Map<string, CommandModule>(COMMANDS.map((c) => [c.data.name, c]));
 
     client.once('ready', async (c) => {
       logger.info('discord/ready', `logged in as ${c.user.tag}`);
+      const warning = configWarning({
+        admins: discordConfig.allowedUserIds,
+        viewers: discordConfig.viewerUserIds,
+      });
+      if (warning) logger.warn('discord/access', warning);
       await checkTranscriptionDependencies();
     });
 
     client.on('interactionCreate', async (interaction: Interaction) => {
-      const allowed = discordConfig.allowedUserIds;
-      const isUnauthorized =
-        allowed.length > 0 && !allowed.includes(interaction.user.id);
+      const lists = {
+        admins: discordConfig.allowedUserIds,
+        viewers: discordConfig.viewerUserIds,
+      };
+      // Autocomplete carries the subcommand too, so both paths resolve the
+      // same tier and a viewer never gets completions for a command they
+      // cannot run. Anything that is neither resolves to admin, since only
+      // these two interaction types carry a command name at all.
+      const isCommandLike = interaction.isChatInputCommand() || interaction.isAutocomplete();
+      const tier = isCommandLike
+        ? requiredTier(interaction.commandName, interaction.options.getSubcommand(false))
+        : 'admin';
+      const isUnauthorized = !isAuthorized(interaction.user.id, tier, lists);
 
       if (interaction.isAutocomplete()) {
         if (isUnauthorized) {
@@ -101,8 +124,11 @@ export class DiscordProvider implements BridgeProvider {
 
       if (!interaction.isChatInputCommand()) return;
       if (isUnauthorized) {
+        const isViewer = lists.viewers.includes(interaction.user.id);
         await interaction.reply({
-          content: '❌ You are not authorized to use this bot.',
+          content: isViewer
+            ? '❌ That command needs full access. You can use read-only commands here.'
+            : '❌ You are not authorized to use this bot.',
           ephemeral: true,
         });
         return;
@@ -202,13 +228,56 @@ export class DiscordProvider implements BridgeProvider {
       agentId: channelInfo.agent_id,
       sessionId: channelInfo.session_id ?? null,
       readOnly: !!channelInfo.read_only,
-      persistSession: (sessionId: string) =>
-        channelDb.updateSession(message.channelId, sessionId),
+      persistSession: (sessionId: string) => channelDb.updateSession(message.channelId, sessionId),
     };
   }
 
   async send(target: ChannelTarget, msg: OutgoingMessage): Promise<void> {
     const channel = await this.fetchSendable(target.channelId);
+
+    // Callout messages render as a colored embed; the human mention (when any)
+    // rides in `content` so the ping fires alongside the embed. Plain messages
+    // keep the original mention-prefixed string behavior below.
+    if (msg.callout) {
+      const meta = CALLOUT_META[msg.callout.variant];
+      const embed = new EmbedBuilder()
+        .setTitle(clampTitle(msg.callout.title ?? `${meta.emoji} ${meta.label}`))
+        .setColor(parseInt(meta.hex.slice(1), 16));
+      // Discord requires a title OR description; only set description when the
+      // body is non-empty, leaving a valid title-only embed otherwise.
+      if (msg.callout.body.length > 0) {
+        embed.setDescription(clampDescription(msg.callout.body));
+      }
+      const content =
+        msg.mention && discordConfig.mentionUserId
+          ? `<@${discordConfig.mentionUserId}>`
+          : undefined;
+      try {
+        await channel.send({ content, embeds: [embed] });
+      } catch (err) {
+        const rl = toRateLimitError(err);
+        if (rl) throw rl;
+        // The embed can fail on grounds plain text won't hit (a rejected field,
+        // missing Embed Links in this channel). `msg.text` holds a lossless
+        // `> [!VARIANT]` blockquote of the same content (see core/callouts.ts
+        // `toOutgoing`), so degrade to it rather than drop the message. Rate
+        // limits are excluded above — those retry via sendRetry.
+        void logger.error(
+          'discord/send:callout-fallback',
+          err instanceof Error ? err.message : String(err),
+        );
+        const fallback = content ? `${content} ${msg.text}` : msg.text;
+        try {
+          await channel.send(fallback);
+        } catch (fallbackErr) {
+          const fallbackRl = toRateLimitError(fallbackErr);
+          if (fallbackRl) throw fallbackRl;
+          throw fallbackErr;
+        }
+      }
+      return;
+    }
+
     let text = msg.text;
     if (msg.mention && discordConfig.mentionUserId) {
       text = `<@${discordConfig.mentionUserId}> ${text}`;

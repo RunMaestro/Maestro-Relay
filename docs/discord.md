@@ -9,18 +9,23 @@ The Discord provider is the default, in-the-box chat interface for Maestro Relay
 3. Invite the bot with both `bot` and `applications.commands` scopes:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=<DISCORD_CLIENT_ID>&scope=bot+applications.commands&permissions=309237681232
+https://discord.com/oauth2/authorize?client_id=<DISCORD_CLIENT_ID>&scope=bot+applications.commands&permissions=309506182224
 ```
 
-   The `309237681232` permissions integer grants:
+The `309506182224` permissions integer grants:
 
-   - **Manage Channels** — create/delete agent channels (`/agents new`, `/agents disconnect`)
-   - **View Channels**
-   - **Send Messages**
-   - **Attach Files** — re-upload user attachments when forwarding to a session thread
-   - **Add Reactions** — `⏳` / `🎧` queue and transcription indicators
-   - **Create Public Threads** — owner-bound session threads
-   - **Send Messages in Threads**
+- **Manage Channels** — create/delete agent channels (`/agents new`, `/agents disconnect`)
+- **Manage Roles** — set the per-channel permission overwrites that make agent channels private, and edit them from `/agents grant` / `/agents revoke`
+- **View Channels**
+- **Send Messages**
+- **Read Message History**
+- **Attach Files** — re-upload user attachments when forwarding to a session thread
+- **Add Reactions** — `⏳` / `🎧` queue and transcription indicators
+- **Create Public Threads** — owner-bound session threads
+- **Send Messages in Threads**
+
+> [!IMPORTANT]
+> **Manage Roles and Read Message History are new.** A bot invited with the previous integer (`309237681232`) cannot set channel overwrites, so `/agents new` fails with `Missing Permissions` and `/agents grant` / `/agents revoke` fail on every call. **Existing installs must re-invite the bot** with the link above — re-inviting an already-present bot updates its permissions in place and does not disturb channels, threads or the registry.
 
 4. Enable **Message Content Intent** under Privileged Gateway Intents at:
 
@@ -28,19 +33,20 @@ https://discord.com/oauth2/authorize?client_id=<DISCORD_CLIENT_ID>&scope=bot+app
 https://discord.com/developers/applications/<DISCORD_CLIENT_ID>/bot
 ```
 
-   Without this the bot fails to connect with a *"Used disallowed intents"* error.
+Without this the bot fails to connect with a _"Used disallowed intents"_ error.
 
 ## Configuration
 
 Discord provider keys read from `.env`:
 
-| Key                        | Required | Purpose                                                    |
-| -------------------------- | -------- | ---------------------------------------------------------- |
-| `DISCORD_BOT_TOKEN`        | yes      | Bot token from the Discord Developer Portal                |
-| `DISCORD_CLIENT_ID`        | yes      | Application ID from the Discord Developer Portal           |
-| `DISCORD_GUILD_ID`         | yes      | Server ID where slash commands are registered              |
-| `DISCORD_ALLOWED_USER_IDS` | no       | Comma-separated user IDs allowed to use slash commands     |
-| `DISCORD_MENTION_USER_ID`  | no       | User ID to `@mention` when API callers pass `mention=true` |
+| Key                        | Required | Purpose                                                     |
+| -------------------------- | -------- | ----------------------------------------------------------- |
+| `DISCORD_BOT_TOKEN`        | yes      | Bot token from the Discord Developer Portal                 |
+| `DISCORD_CLIENT_ID`        | yes      | Application ID from the Discord Developer Portal            |
+| `DISCORD_GUILD_ID`         | yes      | Server ID where slash commands are registered               |
+| `DISCORD_ALLOWED_USER_IDS` | no       | Comma-separated user IDs with **full** slash-command access |
+| `DISCORD_VIEWER_USER_IDS`  | no       | Comma-separated user IDs limited to **read-only** commands  |
+| `DISCORD_MENTION_USER_ID`  | no       | User ID to `@mention` when API callers pass `mention=true`  |
 
 The provider only loads if `discord` is in `ENABLED_PROVIDERS` (default: `discord`).
 
@@ -52,6 +58,8 @@ The provider only loads if `discord` is in `ENABLED_PROVIDERS` (default: `discor
 | `/agents list`             | Show all available agents                                       |
 | `/agents new <agent>`      | Create a dedicated channel for an agent (autocomplete)          |
 | `/agents show <agent>`     | Show an agent's stats and recent activity                       |
+| `/agents grant <user>`     | (Run inside an agent channel) Give someone access to it         |
+| `/agents revoke <user>`    | (Run inside an agent channel) Remove someone's access           |
 | `/agents disconnect`       | (Run inside an agent channel) Remove and delete the channel     |
 | `/agents readonly on\|off` | Toggle read-only mode for the current agent channel             |
 | `/agents ambient on\|off`  | Toggle ambient listening for the current agent channel          |
@@ -61,9 +69,20 @@ The provider only loads if `discord` is in `ENABLED_PROVIDERS` (default: `discor
 | `/playbook show <id>`      | Show details for a playbook                                     |
 | `/playbook run <id>`       | Run a playbook and post the completion summary in-channel       |
 | `/auto-run start <doc>`    | Launch an Auto Run document for the current agent channel       |
-| `/gist`                    | Publish the current agent's session transcript as a GitHub gist |
+| `/gist`                    | Publish the agent's **desktop session** transcript as a GitHub gist (see note below) |
 | `/notes synopsis`          | Post an AI-generated synopsis of recent activity                |
 | `/notes history`           | Post a unified history feed across agents                       |
+
+> [!WARNING]
+> **`/gist` does not publish the Discord conversation.** `maestro-cli gist create`
+> accepts only an agent id, so it publishes the transcripts of all non-empty tabs in
+> that agent's desktop session. Bridge conversations run as
+> headless sessions, which that command cannot address. The published content may
+> therefore be unrelated to the channel you ran `/gist` in — and a public gist is
+> readable by anyone with the URL, so check what you are publishing before sharing
+> the link. Tracked in
+> [#56](https://github.com/RunMaestro/Maestro-Relay/issues/56); a proper fix needs
+> a `--session` option in `maestro-cli`.
 
 ### Deploying slash commands
 
@@ -81,6 +100,7 @@ npm run deploy-commands
 
 ## Runtime behavior
 
+- **Agent channels are private by default.** `/agents new` creates the channel with `@everyone` denied **View Channel**, granting only the bot and whoever ran the command. Add people with `/agents grant @user`, remove them with `/agents revoke @user`. Pass `visibility:public` to `/agents new` for the old behavior. See [Channel visibility](#channel-visibility).
 - **Mentioning the bot** in an agent channel creates a new owner-bound thread (equivalent to running `/session new`).
 - **Owner-bound threads**: only the user who created the thread can trigger the agent. Other users' messages are silently ignored — no error reply, no forwarding.
 - **Read-only mode** via `/agents readonly on` lets the bridge POST agent updates to the channel (via the HTTP API) without forwarding user messages back. Toggle off with `/agents readonly off`.
@@ -89,9 +109,112 @@ npm run deploy-commands
 - **Usage stats** are appended below each non-ambient agent reply (tokens, cost, context %). Ambient replies read as conversation and carry no footer.
 - **Markdown tables** in agent replies are rendered as aligned, fenced ASCII tables so they display correctly (Discord has no native table syntax). See [architecture.md → Output rendering](architecture.md#output-rendering).
 
+## Channel visibility
+
+An agent channel is a text box wired to a process on someone's machine. Anyone who can post in it can send instructions to that agent, so the default has to be closed.
+
+`/agents new` creates the channel with permission overwrites set **at creation time**:
+
+| Principal                 | View Channel | Send Messages |
+| ------------------------- | ------------ | ------------- |
+| `@everyone`               | denied       | —             |
+| The bot                   | allowed      | allowed       |
+| Whoever ran `/agents new` | allowed      | allowed       |
+
+Overwrites are passed to the create call rather than patched on afterwards. A channel that is public for even a moment has already been seen by everyone watching the server.
+
+If the **Maestro Agents** category does not exist yet, it is created with the same `@everyone` deny. An existing category is left as the operator arranged it — the channel-level overwrite is what decides visibility either way.
+
+### Adding people
+
+```
+/agents grant @ali     # run inside the agent channel, or inside a session thread of one
+/agents revoke @ali
+```
+
+Both need **Manage Roles** on the bot; without it the command reports that rather than failing silently.
+
+Both also need **Manage Channels** or **Manage Roles** on _you_, or your user ID in `DISCORD_ALLOWED_USER_IDS`. Being able to use an agent channel does not let you decide who else can — otherwise a collaborator you granted could grant anyone else a shell on your machine, and nothing would ask you first.
+
+They work from inside an owner-bound session thread too, which is the natural place to be when you want to pull someone in. A thread has no permission overwrites of its own, so the change is applied to the parent agent channel.
+
+`/agents revoke` removes the _channel-level_ overwrite. Someone who can see the channel through a role still can — the reply says so rather than implying a stronger guarantee than it delivers.
+
+### Opting out
+
+```
+/agents new agent:Kensho visibility:public
+```
+
+Public creation sets an explicit `@everyone: allow ViewChannel` overwrite rather than inheriting the category. Inheriting would silently produce an invisible channel whenever the **Maestro Agents** category had been created by an earlier private `/agents new`, while the reply claimed the channel was visible to everyone.
+
+This restores the pre-existing behavior — the channel is visible to `@everyone`. The confirmation reply says so explicitly when you choose it.
+
+> **Upgrading?** This changes what `/agents new` does. Channels created before the upgrade are untouched — their permissions are whatever they already were. Only newly created channels are private.
+
+## Command access tiers
+
+`DISCORD_ALLOWED_USER_IDS` grants **full** access: every command, including the ones that make an agent execute something. `DISCORD_VIEWER_USER_IDS` grants a weaker tier for collaborators who need to see what is going on without being able to run anything.
+
+|                                                         | Admin | Viewer |
+| ------------------------------------------------------- | ----- | ------ |
+| `/health`                                               | ✅    | ✅     |
+| `/agents list`, `/agents show`                          | ✅    | ✅     |
+| `/session list`                                         | ✅    | ✅     |
+| `/playbook list`, `/playbook show`                      | ✅    | ✅     |
+| `/notes history`                                        | ✅    | ✅     |
+| `/session new`                                          | ✅    | ❌     |
+| `/notes synopsis`                                       | ✅    | ❌     |
+| `/agents new`, `/agents disconnect`, `/agents readonly` | ✅    | ❌     |
+| `/agents grant`, `/agents revoke`                       | ✅    | ❌     |
+| `/agents ambient`                                       | ✅    | ❌     |
+| `/playbook run`, `/auto-run start`                      | ✅    | ❌     |
+| `/gist`                                                 | ✅    | ❌     |
+
+The line is **execution and outbound disclosure**: a viewer cannot make an agent run anything, cannot change relay state, and cannot publish a transcript outward. Reading is allowed.
+
+Two commands sit on the admin side despite reading like queries. `/session new` is a write — it creates a Discord thread and persists a row in the thread registry. `/notes synopsis` runs `director-notes synopsis`, which is an AI inference on the host and therefore costs money on every call.
+
+A command that is not classified is **admin**. A command added to the relay later is closed to viewers until someone classifies it deliberately, which is the safe direction for that mistake to point. The same applies per subcommand — `/agents` being partly viewer-visible does not make a new `/agents` subcommand viewer-visible.
+
+Autocomplete is gated by the same tier, so a viewer never sees completions for a command they cannot run.
+
+> [!IMPORTANT]
+> **Viewer is an execution boundary, not a confidentiality one.** A viewer can run `/agents list` and `/agents show`, which disclose agent names, tool types, and working directories. If someone should not know what agents exist on the machine, leave them out of **both** lists — an unlisted user reaching an agent channel can still talk to that one agent, and nothing else.
+
+### Behavior with each list unset
+
+| `ALLOWED` | `VIEWER` | Result                                                                            |
+| --------- | -------- | --------------------------------------------------------------------------------- |
+| empty     | empty    | No restriction — every user may run every command (unchanged default)             |
+| set       | empty    | Previous behavior exactly: listed users have full access, everyone else has none  |
+| set       | set      | Listed admins have full access, listed viewers have read-only, everyone else none |
+| empty     | set      | **Rejected at startup.** The relay refuses to start rather than guess             |
+
+Setting `DISCORD_VIEWER_USER_IDS` is the only way to reach the new behavior, so an existing deployment is unaffected.
+
+The last row is a deliberate refusal rather than a default. A viewer list says some users should be restricted; an empty admin list says nobody is. Reading that as "open to everyone" would give the whole guild `/playbook run` on a config whose evident intent was to restrict, so the provider fails startup with a message naming both variables.
+
+## Callout embeds
+
+Outbound text (agent replies and `/api/send` pushes) is scanned for **GitHub alert callouts** — a blockquote whose first line is `> [!NOTE]` (or `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`). The marker must be **uppercase** and **alone on its line** (GitHub-exact syntax); a plain `> quote` stays a normal grey Discord blockquote. Each detected callout is rendered as a **colored Discord embed emitted as its own message**, in order with the surrounding prose, so it visually stands apart from ordinary text.
+
+The five variants map to a matching emoji and accent color (the embed's left stripe):
+
+| Callout          | Emoji | Color     |
+| ---------------- | ----- | --------- |
+| `> [!NOTE]`      | ℹ️    | `#1f6feb` |
+| `> [!TIP]`       | 💡    | `#238636` |
+| `> [!IMPORTANT]` | ❗    | `#8957e5` |
+| `> [!WARNING]`   | ⚠️    | `#d29922` |
+| `> [!CAUTION]`   | 🛑    | `#da3633` |
+
+The callout body becomes the embed **description** and the emoji + label (e.g. `ℹ️ Note`) becomes the **title**. Discord's embed limits apply: descriptions are clamped to 4096 characters and titles to 256 — a longer body is truncated with a trailing ellipsis. Markdown tables inside a callout body are rendered the same way as elsewhere (fenced ASCII). Because each callout is its own message, a **callout-heavy response fans out into multiple messages**.
+
 ## Security
 
-- Slash command access can be locked down with `DISCORD_ALLOWED_USER_IDS`. This gates `/agents ambient` too, so only an operator can put an agent into a channel-listening posture.
+- Slash command access can be locked down with `DISCORD_ALLOWED_USER_IDS` for full access and `DISCORD_VIEWER_USER_IDS` for read-only access — see [Command access tiers](#command-access-tiers). `/agents ambient` is unclassified and therefore admin-tier, so only an operator can put an agent into a channel-listening posture.
+- **Agent channels are private by default** — see [Channel visibility](#channel-visibility). The relay's own gating and Discord's permissions are independent layers: relay gating decides what reaches an agent, Discord permissions decide who can see and post at all.
 - Threads created by mention or `/session new` are bound to a single owner; non-owner messages are ignored silently.
 - The bot only auto-creates channels under the **Maestro Agents** category.
 

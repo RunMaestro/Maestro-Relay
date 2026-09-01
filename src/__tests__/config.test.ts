@@ -85,3 +85,75 @@ test('ambientConfig rejects unparseable values and clamps to safe floors', async
     }
   }
 });
+
+test('config.susFactor validates mode, threshold bounds, and maxChars floor', async () => {
+  const previousEnv = { ...process.env };
+  const { config } = await import('../core/config');
+
+  const reset = () => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('SUSFACTOR_')) delete process.env[key];
+    }
+  };
+
+  try {
+    // Unset means off, so an existing install picks up no new behavior.
+    reset();
+    assert.equal(config.susFactor.mode, 'off');
+    assert.equal(config.susFactor.maxChars, 8000);
+    assert.equal(config.susFactor.failOpen, true);
+
+    reset();
+    process.env.SUSFACTOR_MODE = ' BLOCK ';
+    assert.equal(config.susFactor.mode, 'block', 'mode is trimmed and lowercased');
+
+    reset();
+    process.env.SUSFACTOR_MODE = 'warn';
+    assert.throws(() => config.susFactor, /SUSFACTOR_MODE must be one of/);
+
+    reset();
+    process.env.SUSFACTOR_FAIL_OPEN = 'false';
+    assert.equal(config.susFactor.failOpen, false);
+
+    // Regression: only the literal string 'false' used to mean fail-closed, so
+    // SUSFACTOR_FAIL_OPEN=0 written to mean fail-closed silently meant the
+    // opposite -- and every other malformed SUSFACTOR_* value throws.
+    for (const falsy of ['0', 'no', 'off', 'FALSE', ' Off ']) {
+      reset();
+      process.env.SUSFACTOR_FAIL_OPEN = falsy;
+      assert.equal(config.susFactor.failOpen, false, `"${falsy}" must mean fail-closed`);
+    }
+
+    for (const truthy of ['true', '1', 'yes', 'on', ' TRUE ']) {
+      reset();
+      process.env.SUSFACTOR_FAIL_OPEN = truthy;
+      assert.equal(config.susFactor.failOpen, true, `"${truthy}" must mean fail-open`);
+    }
+
+    reset();
+    process.env.SUSFACTOR_FAIL_OPEN = 'maybe';
+    assert.throws(() => config.susFactor, /SUSFACTOR_FAIL_OPEN must be one of/);
+
+    // A sample smaller than the floor would leave screening on but blind.
+    reset();
+    process.env.SUSFACTOR_MAX_CHARS = '10';
+    assert.throws(() => config.susFactor, /SUSFACTOR_MAX_CHARS must be an integer >= 256/);
+
+    reset();
+    process.env.SUSFACTOR_MAX_CHARS = '256';
+    assert.equal(config.susFactor.maxChars, 256);
+
+    reset();
+    process.env.SUSFACTOR_TIMEOUT_MS = '0';
+    assert.throws(() => config.susFactor, /SUSFACTOR_TIMEOUT_MS must be an integer >= 1/);
+
+    reset();
+    process.env.SUSFACTOR_THRESHOLD = 'abc';
+    assert.throws(() => config.susFactor, /SUSFACTOR_THRESHOLD must be a number/);
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in previousEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, previousEnv);
+  }
+});

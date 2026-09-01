@@ -73,6 +73,18 @@ Request: `Content-Type: application/json`
 
 `mention` is rendered by the provider in a platform-appropriate way (Discord prepends `<@DISCORD_MENTION_USER_ID>` to the first part of a multi-part message).
 
+#### Rich rendering
+
+The `message` body is rendered richly per provider — there is **no request-shape change**, detection is automatic:
+
+- **GitHub alert callouts** (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]` — uppercase, alone on their line) are auto-detected and rendered as a **colored Discord embed** / **colored Slack attachment**. A message containing multiple callouts **fans out into multiple provider messages**, each emitted in order with the surrounding prose. See [docs/discord.md → Callout embeds](discord.md#callout-embeds) and [docs/slack.md → Callout attachments](slack.md#callout-attachments).
+- **Markdown tables** in the body are rendered as aligned, fenced ASCII tables. **Behavior change:** the push path (`/api/send`) now applies this table rendering (`renderTables`) to text as it already did for agent replies — prior versions did not transform push text.
+
+Provider fallbacks:
+
+- **Teams** currently renders callouts as their raw `> [!TYPE]` blockquote via the text fallback (an Adaptive Card rendering is a future enhancement) — see [docs/teams.md → Runtime behavior](teams.md#runtime-behavior).
+- **Multi-agent rooms** do not yet render colored callouts (planned follow-up); callout text is delivered as-is.
+
 ### GET /api/health
 
 Returns bridge status:
