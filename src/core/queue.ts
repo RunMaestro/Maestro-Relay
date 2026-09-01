@@ -261,9 +261,15 @@ export function createQueue(deps: QueueDeps) {
         'queue:send-error',
         `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${errMsg}`,
       );
-      await provider.send(target, {
-        text: '❌ Failed to get response from agent. Check relay logs for details.',
-      });
+      // Same reasoning as the resolved-failure branch above: nobody addressed
+      // the bot, so an ambient turn that throws must not narrate its failure
+      // into the channel every quiet window. The guard up there only sees a
+      // resolved `result`, so a rejected `maestro.send()` lands here instead.
+      if (!options?.ambient) {
+        await provider.send(target, {
+          text: '❌ Failed to get response from agent. Check relay logs for details.',
+        });
+      }
     }
 
     void processNext(k);
