@@ -28,13 +28,11 @@ import { AgentNotFoundError, RateLimitError } from '../../core/errors';
 import { CALLOUT_META } from '../../core/callouts';
 import { clampTitle, clampDescription } from './embed';
 import { discordConfig } from './config';
+import { requiredTier, isAuthorized, configWarning, configError } from './access';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { createMessageCreateHandler } from './messageCreate';
-import {
-  isVoiceMessage,
-  isVoiceAttachment,
-} from './voice';
+import { isVoiceMessage, isVoiceAttachment } from './voice';
 import { transcribeVoiceAttachment, isTranscriberAvailable } from '../../core/transcription';
 import { splitMessage } from '../../core/splitMessage';
 import * as health from './commands/health';
@@ -60,6 +58,15 @@ export class DiscordProvider implements BridgeProvider {
   private pendingCategory: Promise<CategoryChannel> | null = null;
 
   async start(ctx: KernelContext): Promise<void> {
+    // Checked before the client connects, not at ready: an access-list
+    // combination that would leave every command open to everyone must stop
+    // the provider rather than log about it after the bot is already live.
+    const accessError = configError({
+      admins: discordConfig.allowedUserIds,
+      viewers: discordConfig.viewerUserIds,
+    });
+    if (accessError) throw new Error(accessError);
+
     const client = new Client({
       intents: [
         GatewayIntentBits.Guilds,
@@ -69,19 +76,32 @@ export class DiscordProvider implements BridgeProvider {
     });
     this.client = client;
 
-    const commandsByName = new Map<string, CommandModule>(
-      COMMANDS.map((c) => [c.data.name, c]),
-    );
+    const commandsByName = new Map<string, CommandModule>(COMMANDS.map((c) => [c.data.name, c]));
 
     client.once('ready', async (c) => {
       logger.info('discord/ready', `logged in as ${c.user.tag}`);
+      const warning = configWarning({
+        admins: discordConfig.allowedUserIds,
+        viewers: discordConfig.viewerUserIds,
+      });
+      if (warning) logger.warn('discord/access', warning);
       await checkTranscriptionDependencies();
     });
 
     client.on('interactionCreate', async (interaction: Interaction) => {
-      const allowed = discordConfig.allowedUserIds;
-      const isUnauthorized =
-        allowed.length > 0 && !allowed.includes(interaction.user.id);
+      const lists = {
+        admins: discordConfig.allowedUserIds,
+        viewers: discordConfig.viewerUserIds,
+      };
+      // Autocomplete carries the subcommand too, so both paths resolve the
+      // same tier and a viewer never gets completions for a command they
+      // cannot run. Anything that is neither resolves to admin, since only
+      // these two interaction types carry a command name at all.
+      const isCommandLike = interaction.isChatInputCommand() || interaction.isAutocomplete();
+      const tier = isCommandLike
+        ? requiredTier(interaction.commandName, interaction.options.getSubcommand(false))
+        : 'admin';
+      const isUnauthorized = !isAuthorized(interaction.user.id, tier, lists);
 
       if (interaction.isAutocomplete()) {
         if (isUnauthorized) {
@@ -101,8 +121,11 @@ export class DiscordProvider implements BridgeProvider {
 
       if (!interaction.isChatInputCommand()) return;
       if (isUnauthorized) {
+        const isViewer = lists.viewers.includes(interaction.user.id);
         await interaction.reply({
-          content: '❌ You are not authorized to use this bot.',
+          content: isViewer
+            ? '❌ That command needs full access. You can use read-only commands here.'
+            : '❌ You are not authorized to use this bot.',
           ephemeral: true,
         });
         return;
@@ -171,8 +194,7 @@ export class DiscordProvider implements BridgeProvider {
       agentId: channelInfo.agent_id,
       sessionId: channelInfo.session_id ?? null,
       readOnly: !!channelInfo.read_only,
-      persistSession: (sessionId: string) =>
-        channelDb.updateSession(message.channelId, sessionId),
+      persistSession: (sessionId: string) => channelDb.updateSession(message.channelId, sessionId),
     };
   }
 
