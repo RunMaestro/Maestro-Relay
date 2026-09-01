@@ -23,16 +23,19 @@ export type Tier = 'admin' | 'viewer';
  * The line is *execution and outbound disclosure*: a viewer cannot make an
  * agent run anything, cannot change relay state, and cannot publish outward.
  * Reading is allowed.
+ *
+ * Two commands that read on the surface sit on the admin side of that line:
+ * `/session new` writes (it creates a Discord thread and registers a row in
+ * the thread registry), and `/notes synopsis` runs `director-notes synopsis`,
+ * which is an AI inference on the host and therefore costs money per call.
  */
 const VIEWER_COMMANDS = new Set([
   'health',
   'agents:list',
   'agents:show',
-  'session:new',
   'session:list',
   'playbook:list',
   'playbook:show',
-  'notes:synopsis',
   'notes:history',
 ]);
 
@@ -56,25 +59,45 @@ export interface AccessLists {
  * An empty admin list means no restriction at all, which is the documented
  * behavior of `DISCORD_ALLOWED_USER_IDS` today and must not change: a
  * deployment that never set it stays open.
+ *
+ * That back-compat only covers the case where *neither* list is set. Admins
+ * empty with viewers set is a configuration that could not exist before this
+ * file, so it carries no obligation — and reading it as "open to everyone"
+ * inverts the operator's obvious intent. `configError` rejects it at startup;
+ * this fails closed too, so the boundary does not depend on that check having
+ * run.
  */
 export function isAuthorized(userId: string, tier: Tier, lists: AccessLists): boolean {
-  if (lists.admins.length === 0) return true;
+  if (lists.admins.length === 0) {
+    if (lists.viewers.length === 0) return true;
+    return tier === 'viewer' && lists.viewers.includes(userId);
+  }
   if (lists.admins.includes(userId)) return true;
   return tier === 'viewer' && lists.viewers.includes(userId);
 }
 
 /**
- * A viewer list with no admin list does nothing — everyone is already an admin.
- * Returns a warning to log at startup, or null when the config is coherent.
+ * A viewer list with no admin list is incoherent: the operator has said who
+ * should be restricted without saying who should not be. Returns a message to
+ * refuse startup with, or null when the combination is fine.
  */
-export function configWarning(lists: AccessLists): string | null {
+export function configError(lists: AccessLists): string | null {
   if (lists.viewers.length > 0 && lists.admins.length === 0) {
     return (
-      'DISCORD_VIEWER_USER_IDS is set but DISCORD_ALLOWED_USER_IDS is empty, so every user ' +
-      'is already an admin and the viewer list has no effect. Set DISCORD_ALLOWED_USER_IDS ' +
-      'to the operators who should hold full access.'
+      'DISCORD_VIEWER_USER_IDS is set but DISCORD_ALLOWED_USER_IDS is empty. That pairing has ' +
+      'no coherent meaning: setting a viewer list says some users should be restricted, while ' +
+      'an empty admin list says nobody is. Set DISCORD_ALLOWED_USER_IDS to the operators who ' +
+      'should hold full access, or unset DISCORD_VIEWER_USER_IDS to leave the bot open.'
     );
   }
+  return null;
+}
+
+/**
+ * Non-fatal configuration notes to log at startup, or null when there is
+ * nothing to say. Fatal combinations live in `configError`.
+ */
+export function configWarning(lists: AccessLists): string | null {
   const both = lists.viewers.filter((id) => lists.admins.includes(id));
   if (both.length > 0) {
     return `User(s) ${both.join(', ')} appear in both DISCORD_ALLOWED_USER_IDS and DISCORD_VIEWER_USER_IDS; admin wins.`;

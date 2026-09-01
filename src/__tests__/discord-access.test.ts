@@ -4,6 +4,7 @@ import {
   requiredTier,
   isAuthorized,
   configWarning,
+  configError,
   type AccessLists,
 } from '../providers/discord/access';
 
@@ -32,6 +33,7 @@ test('read-only commands are open to viewers', () => {
   assert.equal(requiredTier('agents', 'list'), 'viewer');
   assert.equal(requiredTier('playbook', 'list'), 'viewer');
   assert.equal(requiredTier('session', 'list'), 'viewer');
+  assert.equal(requiredTier('notes', 'history'), 'viewer');
 });
 
 test('an unclassified command defaults to admin', () => {
@@ -55,6 +57,28 @@ test('a bare command name does not match its own subcommand entries', () => {
 test('an empty admin list leaves the bot open, as before', () => {
   assert.equal(isAuthorized('anyone', 'admin', NOBODY), true);
   assert.equal(isAuthorized('anyone', 'viewer', NOBODY), true);
+});
+
+// Regression: a viewer list with an empty admin list used to short-circuit to
+// `true` for every user at every tier, so setting only DISCORD_VIEWER_USER_IDS
+// left /playbook run open to the whole guild.
+test('a viewer list with no admin list does not fall open to everyone', () => {
+  const l = lists([], ['viewer-1']);
+  assert.equal(isAuthorized('stranger', 'admin', l), false);
+  assert.equal(isAuthorized('stranger', 'viewer', l), false);
+  assert.equal(isAuthorized('viewer-1', 'admin', l), false);
+  assert.equal(isAuthorized('viewer-1', 'viewer', l), true);
+});
+
+// Regression: /session new writes (thread create + registry row) and
+// /notes synopsis runs an AI inference on the host; neither is viewer-tier.
+test('writes and host inference are admin-tier even though they look read-only', () => {
+  assert.equal(requiredTier('session', 'new'), 'admin');
+  assert.equal(requiredTier('notes', 'synopsis'), 'admin');
+
+  const l = lists(['admin-1'], ['viewer-1']);
+  assert.equal(isAuthorized('viewer-1', requiredTier('session', 'new'), l), false);
+  assert.equal(isAuthorized('viewer-1', requiredTier('notes', 'synopsis'), l), false);
 });
 
 test('an admin may run every tier', () => {
@@ -88,10 +112,16 @@ test('being in both lists grants admin', () => {
 
 // --- configuration coherence ---
 
-test('a viewer list with no admin list is reported as ineffective', () => {
-  const warning = configWarning(lists([], ['viewer-1']));
-  assert.ok(warning);
-  assert.ok(warning.includes('DISCORD_ALLOWED_USER_IDS'));
+test('a viewer list with no admin list is a fatal configuration', () => {
+  const err = configError(lists([], ['viewer-1']));
+  assert.ok(err);
+  assert.ok(err.includes('DISCORD_ALLOWED_USER_IDS'));
+});
+
+test('coherent list combinations produce no configuration error', () => {
+  assert.equal(configError(NOBODY), null);
+  assert.equal(configError(lists(['admin-1'])), null);
+  assert.equal(configError(lists(['admin-1'], ['viewer-1'])), null);
 });
 
 test('a user in both lists is reported', () => {
@@ -104,6 +134,7 @@ test('a coherent configuration produces no warning', () => {
   assert.equal(configWarning(lists(['admin-1'], ['viewer-1'])), null);
   assert.equal(configWarning(NOBODY), null);
   assert.equal(configWarning(lists(['admin-1'])), null);
+  assert.equal(configWarning(lists([], ['viewer-1'])), null);
 });
 
 // --- environment wiring ---

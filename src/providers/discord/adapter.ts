@@ -25,7 +25,7 @@ import { logger } from '../../core/logger';
 import { checkTranscriptionDependencies } from '../../core/transcription';
 import { AgentNotFoundError, RateLimitError } from '../../core/errors';
 import { discordConfig } from './config';
-import { requiredTier, isAuthorized, configWarning } from './access';
+import { requiredTier, isAuthorized, configWarning, configError } from './access';
 import { channelDb } from './channelsDb';
 import { threadDb } from './threadsDb';
 import { createMessageCreateHandler } from './messageCreate';
@@ -55,6 +55,15 @@ export class DiscordProvider implements BridgeProvider {
   private pendingCategory: Promise<CategoryChannel> | null = null;
 
   async start(ctx: KernelContext): Promise<void> {
+    // Checked before the client connects, not at ready: an access-list
+    // combination that would leave every command open to everyone must stop
+    // the provider rather than log about it after the bot is already live.
+    const accessError = configError({
+      admins: discordConfig.allowedUserIds,
+      viewers: discordConfig.viewerUserIds,
+    });
+    if (accessError) throw new Error(accessError);
+
     const client = new Client({
       intents: [
         GatewayIntentBits.Guilds,

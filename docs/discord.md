@@ -96,14 +96,18 @@ npm run deploy-commands
 | ------------------------------------------------------- | ----- | ------ |
 | `/health`                                               | ✅    | ✅     |
 | `/agents list`, `/agents show`                          | ✅    | ✅     |
-| `/session new`, `/session list`                         | ✅    | ✅     |
+| `/session list`                                         | ✅    | ✅     |
 | `/playbook list`, `/playbook show`                      | ✅    | ✅     |
-| `/notes synopsis`, `/notes history`                     | ✅    | ✅     |
+| `/notes history`                                        | ✅    | ✅     |
+| `/session new`                                          | ✅    | ❌     |
+| `/notes synopsis`                                       | ✅    | ❌     |
 | `/agents new`, `/agents disconnect`, `/agents readonly` | ✅    | ❌     |
 | `/playbook run`, `/auto-run start`                      | ✅    | ❌     |
 | `/gist`                                                 | ✅    | ❌     |
 
 The line is **execution and outbound disclosure**: a viewer cannot make an agent run anything, cannot change relay state, and cannot publish a transcript outward. Reading is allowed.
+
+Two commands sit on the admin side despite reading like queries. `/session new` is a write — it creates a Discord thread and persists a row in the thread registry. `/notes synopsis` runs `director-notes synopsis`, which is an AI inference on the host and therefore costs money on every call.
 
 A command that is not classified is **admin**. A command added to the relay later is closed to viewers until someone classifies it deliberately, which is the safe direction for that mistake to point. The same applies per subcommand — `/agents` being partly viewer-visible does not make a new `/agents` subcommand viewer-visible.
 
@@ -114,14 +118,16 @@ Autocomplete is gated by the same tier, so a viewer never sees completions for a
 
 ### Behavior with each list unset
 
-| `ALLOWED` | `VIEWER` | Result                                                                                        |
-| --------- | -------- | --------------------------------------------------------------------------------------------- |
-| empty     | empty    | No restriction — every user may run every command (unchanged default)                         |
-| set       | empty    | Previous behavior exactly: listed users have full access, everyone else has none              |
-| set       | set      | Listed admins have full access, listed viewers have read-only, everyone else none             |
-| empty     | set      | Viewer list has no effect, since everyone is already an admin. Logged as a warning at startup |
+| `ALLOWED` | `VIEWER` | Result                                                                            |
+| --------- | -------- | --------------------------------------------------------------------------------- |
+| empty     | empty    | No restriction — every user may run every command (unchanged default)             |
+| set       | empty    | Previous behavior exactly: listed users have full access, everyone else has none  |
+| set       | set      | Listed admins have full access, listed viewers have read-only, everyone else none |
+| empty     | set      | **Rejected at startup.** The relay refuses to start rather than guess             |
 
 Setting `DISCORD_VIEWER_USER_IDS` is the only way to reach the new behavior, so an existing deployment is unaffected.
+
+The last row is a deliberate refusal rather than a default. A viewer list says some users should be restricted; an empty admin list says nobody is. Reading that as "open to everyone" would give the whole guild `/playbook run` on a config whose evident intent was to restrict, so the provider fails startup with a message naming both variables.
 
 ## Security
 
