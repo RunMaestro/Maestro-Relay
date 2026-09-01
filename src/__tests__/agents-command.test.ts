@@ -27,6 +27,7 @@ function makeInteraction(overrides: Record<string, unknown> = {}) {
       },
     },
     channel: { delete: mock.fn(async () => {}) },
+    client: { user: { id: 'bot-1' } },
     user: { id: 'user-1' },
     options: {
       getSubcommand: () => 'list',
@@ -598,4 +599,345 @@ test('autocomplete returns empty on error', async () => {
   assert.equal(interaction.respond.mock.callCount(), 1);
   const items = interaction.respond.mock.calls[0].arguments[0];
   assert.deepEqual(items, []);
+});
+
+// --- /agents new: channel visibility ---
+
+/**
+ * Pull the permissionOverwrites the command passed when it created the text
+ * channel. Selected by name rather than call index: `/agents new` also creates
+ * the category, and which call comes first is not the point of these tests.
+ */
+function overwritesFor(interaction: any) {
+  const call = interaction.guild.channels.create.mock.calls
+    .map((c: any) => c.arguments[0])
+    .find((o: any) => o.name !== 'Maestro Agents');
+  assert.ok(call, 'expected the agent channel to be created');
+  return call.permissionOverwrites;
+}
+
+function newInteraction(visibility: string | null, extra: Record<string, unknown> = {}) {
+  return makeInteraction({
+    options: {
+      getSubcommand: () => 'new',
+      getString: (name: string) => (name === 'visibility' ? visibility : 'agent-abc'),
+    },
+    ...extra,
+  });
+}
+
+async function stubAgentAndDb() {
+  const { maestro } = await import('../core/maestro');
+  mock.method(maestro, 'listAgents', async () => [
+    { id: 'agent-abc', name: 'TestBot', toolType: 'claude', cwd: '/proj' },
+  ]);
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  mock.method(channelDb, 'register', () => {});
+}
+
+test('agents new defaults to a private channel', async () => {
+  await stubAgentAndDb();
+  const interaction = newInteraction(null);
+
+  await execute(interaction);
+
+  const overwrites = overwritesFor(interaction);
+  assert.ok(Array.isArray(overwrites), 'expected permissionOverwrites to be set');
+
+  const everyone = overwrites.find((o: any) => o.id === 'guild-1');
+  assert.ok(everyone, '@everyone (guild id) must appear in the overwrites');
+  assert.ok(everyone.deny?.length, '@everyone must be denied ViewChannel');
+});
+
+test('agents new grants the bot and the creator on a private channel', async () => {
+  await stubAgentAndDb();
+  const interaction = newInteraction('private');
+
+  await execute(interaction);
+
+  const ids = overwritesFor(interaction).map((o: any) => o.id);
+  assert.ok(ids.includes('bot-1'), 'the bot must keep access to the channel it posts in');
+  assert.ok(ids.includes('user-1'), 'the creator must be able to see the channel they made');
+});
+
+test('agents new does not duplicate an overwrite when the creator is the bot', async () => {
+  await stubAgentAndDb();
+  const interaction = newInteraction('private', { user: { id: 'bot-1' } });
+
+  await execute(interaction);
+
+  const ids = overwritesFor(interaction).map((o: any) => o.id);
+  assert.equal(
+    ids.filter((id: string) => id === 'bot-1').length,
+    1,
+    'the bot should appear exactly once',
+  );
+});
+
+// Regression: public creation used to pass `permissionOverwrites: undefined`,
+// which inherits the Maestro Agents category. A category created by an earlier
+// private /agents new denies @everyone ViewChannel, so the "public" channel was
+// invisible while the reply said it was visible to everyone.
+test('agents new makes a public channel visible to @everyone explicitly', async () => {
+  await stubAgentAndDb();
+  const interaction = newInteraction('public');
+
+  await execute(interaction);
+
+  const overwrites = overwritesFor(interaction);
+  assert.ok(Array.isArray(overwrites), 'public creation must set overwrites, not inherit them');
+
+  const everyone = overwrites.find((o: any) => o.id === 'guild-1');
+  assert.ok(everyone, "@everyone must appear in a public channel's overwrites");
+  assert.ok(everyone.allow?.length, '@everyone must be allowed ViewChannel');
+  assert.ok(!everyone.deny?.length, '@everyone must not be denied anything on a public channel');
+
+  const ids = overwrites.map((o: any) => o.id);
+  assert.ok(ids.includes('bot-1'), 'the bot must keep access to the channel it posts in');
+});
+
+// Regression: ManageMessages was granted to the bot but is not in the
+// documented invite integer, and Discord rejects an overwrite for a bit the bot
+// does not hold -- turning /agents new into a hard 50013 failure.
+test('agents new does not grant the bot permissions the invite link omits', async () => {
+  const { PermissionFlagsBits } = await import('discord.js');
+  await stubAgentAndDb();
+  const interaction = newInteraction(null);
+
+  await execute(interaction);
+
+  const bot = overwritesFor(interaction).find((o: any) => o.id === 'bot-1');
+  assert.ok(bot, 'the bot overwrite must exist');
+  assert.ok(
+    !bot.allow.includes(PermissionFlagsBits.ManageMessages),
+    'ManageMessages is not in the documented invite integer and is unused',
+  );
+});
+
+test('agents new warns in the reply when the channel is public', async () => {
+  await stubAgentAndDb();
+  const interaction = newInteraction('public');
+
+  await execute(interaction);
+
+  const reply = interaction.editReply.mock.calls[0].arguments[0];
+  assert.ok(reply.includes('visible to everyone'), 'a public channel must say so');
+});
+
+test('agents new points at /agents grant when the channel is private', async () => {
+  await stubAgentAndDb();
+  const interaction = newInteraction(null);
+
+  await execute(interaction);
+
+  const reply = interaction.editReply.mock.calls[0].arguments[0];
+  assert.ok(reply.includes('/agents grant'), 'a private channel must say how to add someone');
+});
+
+test('agents new locks a category it creates itself', async () => {
+  await stubAgentAndDb();
+  const interaction = newInteraction(null);
+
+  await execute(interaction);
+
+  // call 0 is the category (cache.find returns undefined), call 1 the channel
+  const created = interaction.guild.channels.create.mock.calls.map((c: any) => c.arguments[0]);
+  const category = created.find((o: any) => o.name === 'Maestro Agents');
+  assert.ok(category, 'expected the category to be created');
+  const everyone = category.permissionOverwrites.find((o: any) => o.id === 'guild-1');
+  assert.ok(everyone?.deny?.length, 'a category created for private agents must deny @everyone');
+});
+
+// --- /agents grant | revoke ---
+
+/** A member who holds every permission -- the default for these tests. */
+const ALL_PERMS = { has: () => true };
+/** A member who holds none, i.e. a collaborator who was merely granted access. */
+const NO_PERMS = { has: () => false };
+
+function accessInteraction(
+  action: 'grant' | 'revoke',
+  targetId = 'user-2',
+  overrides: Record<string, unknown> = {},
+) {
+  const edit = mock.fn(async (_id: string, _perms: Record<string, boolean>) => {});
+  const del = mock.fn(async (_id: string) => {});
+  const interaction = makeInteraction({
+    options: {
+      getSubcommand: () => action,
+      getUser: () => ({ id: targetId }),
+    },
+    memberPermissions: ALL_PERMS,
+    channel: {
+      id: 'ch-1',
+      isThread: () => false,
+      permissionOverwrites: { edit, delete: del },
+    },
+    ...overrides,
+  });
+  return { interaction, edit, del };
+}
+
+async function stubRegisteredChannel() {
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  mock.method(channelDb, 'get', () => ({
+    channel_id: 'ch-1',
+    agent_id: 'agent-abc',
+    agent_name: 'TestBot',
+  }));
+}
+
+test('agents grant adds a channel overwrite for the target user', async () => {
+  await stubRegisteredChannel();
+  const { interaction, edit } = accessInteraction('grant');
+
+  await execute(interaction);
+
+  assert.equal(edit.mock.callCount(), 1);
+  assert.equal(edit.mock.calls[0].arguments[0], 'user-2');
+  assert.deepEqual(edit.mock.calls[0].arguments[1], {
+    ViewChannel: true,
+    SendMessages: true,
+    ReadMessageHistory: true,
+  });
+});
+
+test('agents revoke deletes the target user overwrite', async () => {
+  await stubRegisteredChannel();
+  const { interaction, del } = accessInteraction('revoke');
+
+  await execute(interaction);
+
+  assert.equal(del.mock.callCount(), 1);
+  assert.equal(del.mock.calls[0].arguments[0], 'user-2');
+});
+
+test('agents revoke warns that a role grant can still apply', async () => {
+  await stubRegisteredChannel();
+  const { interaction } = accessInteraction('revoke');
+
+  await execute(interaction);
+
+  const reply = interaction.editReply.mock.calls[0].arguments[0];
+  assert.ok(reply.includes('role'), 'revoke must not imply more than it delivers');
+});
+
+test('agents grant refuses outside a registered agent channel', async () => {
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  mock.method(channelDb, 'get', () => undefined);
+  const { interaction, edit } = accessInteraction('grant');
+
+  await execute(interaction);
+
+  assert.equal(edit.mock.callCount(), 0, 'an unregistered channel must not be modified');
+  const reply = interaction.editReply.mock.calls[0].arguments[0];
+  assert.ok(reply.includes('not an agent channel'));
+});
+
+test('agents revoke refuses to remove the bot itself', async () => {
+  await stubRegisteredChannel();
+  const { interaction, del } = accessInteraction('revoke', 'bot-1');
+
+  await execute(interaction);
+
+  assert.equal(del.mock.callCount(), 0, 'locking the bot out would orphan the channel');
+  const reply = interaction.editReply.mock.calls[0].arguments[0];
+  assert.ok(reply.includes('Refusing'));
+});
+
+test('agents grant reports a missing Manage Roles permission instead of throwing', async () => {
+  await stubRegisteredChannel();
+  const edit = mock.fn(async (_id: string, _perms: Record<string, boolean>) => {
+    throw new Error('Missing Permissions');
+  });
+  const interaction = makeInteraction({
+    options: { getSubcommand: () => 'grant', getUser: () => ({ id: 'user-2' }) },
+    memberPermissions: ALL_PERMS,
+    channel: {
+      id: 'ch-1',
+      isThread: () => false,
+      permissionOverwrites: { edit, delete: mock.fn(async () => {}) },
+    },
+  });
+
+  await execute(interaction);
+
+  const reply = interaction.editReply.mock.calls[0].arguments[0];
+  assert.ok(reply.includes('Manage Roles'), 'the operator needs to know what to fix');
+});
+
+// Regression: /agents grant and /agents revoke had no permission gate at all,
+// so anyone who could see the channel could widen it -- a granted collaborator
+// could grant a stranger a shell on the operator's machine.
+test('agents grant refuses a caller without channel-management permissions', async () => {
+  await stubRegisteredChannel();
+  const { interaction, edit } = accessInteraction('grant', 'user-2', {
+    memberPermissions: NO_PERMS,
+  });
+
+  await execute(interaction);
+
+  assert.equal(edit.mock.callCount(), 0, 'a mere participant must not re-key the channel');
+  const reply = interaction.editReply.mock.calls[0].arguments[0];
+  assert.ok(reply.includes('Manage Channels'), 'the reply must name what is missing');
+});
+
+test('agents revoke refuses a caller without channel-management permissions', async () => {
+  await stubRegisteredChannel();
+  const { interaction, del } = accessInteraction('revoke', 'user-2', {
+    memberPermissions: NO_PERMS,
+  });
+
+  await execute(interaction);
+
+  assert.equal(del.mock.callCount(), 0);
+});
+
+test('agents grant allows a listed relay operator without Discord permissions', async () => {
+  await stubRegisteredChannel();
+  const prev = process.env.DISCORD_ALLOWED_USER_IDS;
+  process.env.DISCORD_ALLOWED_USER_IDS = 'user-1';
+  try {
+    const { interaction, edit } = accessInteraction('grant', 'user-2', {
+      memberPermissions: NO_PERMS,
+    });
+    await execute(interaction);
+    assert.equal(edit.mock.callCount(), 1, 'the relay operator is an operator by definition');
+  } finally {
+    if (prev === undefined) delete process.env.DISCORD_ALLOWED_USER_IDS;
+    else process.env.DISCORD_ALLOWED_USER_IDS = prev;
+  }
+});
+
+// Regression: channelDb.get(interaction.channelId) only matches the parent
+// agent channel, so running /agents grant from inside a session thread -- the
+// natural place to be -- replied "This is not an agent channel."
+test('agents grant works from inside a session thread and edits the parent', async () => {
+  const { channelDb } = await import('../providers/discord/channelsDb');
+  mock.method(channelDb, 'get', (id: string) =>
+    id === 'ch-1'
+      ? { channel_id: 'ch-1', agent_id: 'agent-abc', agent_name: 'TestBot' }
+      : undefined,
+  );
+
+  const edit = mock.fn(async (_id: string, _perms: Record<string, boolean>) => {});
+  const interaction = makeInteraction({
+    channelId: 'thread-9',
+    options: { getSubcommand: () => 'grant', getUser: () => ({ id: 'user-2' }) },
+    memberPermissions: ALL_PERMS,
+    channel: {
+      id: 'thread-9',
+      isThread: () => true,
+      parentId: 'ch-1',
+      parent: { id: 'ch-1', permissionOverwrites: { edit, delete: mock.fn(async () => {}) } },
+    },
+  });
+
+  await execute(interaction);
+
+  assert.equal(edit.mock.callCount(), 1, 'the overwrite belongs on the parent agent channel');
+  assert.equal(edit.mock.calls[0].arguments[0], 'user-2');
+  const reply = interaction.editReply.mock.calls[0].arguments[0];
+  assert.ok(!reply.includes('not an agent channel'), reply);
+  assert.ok(reply.includes('<#ch-1>'), 'the reply must point at the parent channel');
 });
