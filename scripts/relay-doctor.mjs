@@ -375,6 +375,57 @@ async function checkService({ dryRun }) {
  * *missing*. So the file-completeness check below is the one that matters:
  * every module on the deploy branch must exist in the running dist.
  */
+/**
+ * A configured feature that silently does nothing is worse than an absent one.
+ *
+ * Outbound attachments are the case that proved it. The extraction code shipped
+ * and worked, but `OUTBOUND_ATTACH_ROOT` was never set, so every `[[attach:]]`
+ * marker was stripped and every image was dropped. The message still arrived,
+ * minus its chart, and nothing on either side reported the difference. The
+ * sender believed a chart had been delivered for as long as nobody checked.
+ *
+ * So the doctor asserts the pairing directly: if the running build can carry
+ * files, the root must be configured, and it must exist.
+ */
+function checkOutboundAttachments() {
+  const deployed = join(CONFIG.installDir, 'dist/core/outboundAttachments.js');
+  if (!existsSync(deployed)) {
+    record('ok', 'outbound-attachments', 'not in this build; nothing to configure');
+    return;
+  }
+
+  // The relay reads the value from its own env file, so read it the same way
+  // rather than from this process's environment, which may differ.
+  const envFile = join(HOME, '.config/maestro-relay/.env');
+  let root = process.env.OUTBOUND_ATTACH_ROOT || '';
+  if (!root && existsSync(envFile)) {
+    for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+      const t = line.trim();
+      if (!t || t.startsWith('#') || !t.includes('=')) continue;
+      const [k, ...rest] = t.split('=');
+      if (k.trim() === 'OUTBOUND_ATTACH_ROOT') {
+        root = rest.join('=').trim().replace(/^["']|["']$/g, '');
+      }
+    }
+  }
+
+  if (!root) {
+    record(
+      'warn',
+      'outbound-attachments',
+      'the build can carry files but OUTBOUND_ATTACH_ROOT is unset, so every ' +
+        '[[attach:]] marker is stripped and its image is dropped without an error. ' +
+        'Add the line to ~/.config/maestro-relay/.env and restart.',
+    );
+    return;
+  }
+  if (!existsSync(root)) {
+    record('fault', 'outbound-attachments', `attachment root does not exist: ${root}`);
+    return;
+  }
+  record('ok', 'outbound-attachments', `root configured: ${root}`);
+}
+
 function checkPatchDrift() {
   const deployed = join(CONFIG.installDir, 'dist/core/maestro.js');
   const source = join(CONFIG.sourceDir, 'src/core/maestro.ts');
@@ -683,6 +734,7 @@ async function main() {
   let drift = { healthy: true };
   if (service.healthy) {
     drift = checkPatchDrift();
+    checkOutboundAttachments();
     logResult = checkErrorLog(state);
     if (opts.probe) await checkProbe(state, { force: opts.forceProbe, dryRun: opts.dryRun });
   } else {
