@@ -49,6 +49,11 @@ export interface OutgoingMessage {
    * Slack would use SLACK_MENTION_USER_ID, etc.).
    */
   mention?: boolean;
+  /**
+   * Absolute paths to upload alongside the text. Already validated by
+   * `extractAttachments`; an adapter must not re-resolve or widen them.
+   */
+  files?: string[];
 }
 
 /**

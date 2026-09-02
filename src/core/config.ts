@@ -88,6 +88,20 @@ export const ambientConfig = {
  * own platform credentials (DISCORD_BOT_TOKEN, SLACK_BOT_TOKEN, ...) on
  * `start()` so missing creds for a disabled provider don't fail the bot.
  */
+/**
+ * Outbound attachments. An agent reply may carry a file by writing
+ * `[[attach: rel/path]]` on its own line; the path resolves against this root
+ * and may not escape it. Unset means the feature is OFF and every marker is
+ * dropped, because publishing local files from text that is partly derived
+ * from untrusted chat is an exfiltration channel. Point this at generated
+ * output such as an `artifacts/` tree, never at a home or repository root.
+ */
+export const outboundAttachmentConfig = {
+  get root(): string {
+    return process.env.OUTBOUND_ATTACH_ROOT || '';
+  },
+};
+
 export const config = {
   /** Comma-separated list of provider names to enable, e.g. `discord` or `discord,slack`. */
   get enabledProviders(): string[] {

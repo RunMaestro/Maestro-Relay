@@ -1,8 +1,9 @@
 import http from 'http';
 import type { BridgeProvider } from './types';
-import { config } from './config';
+import { config, outboundAttachmentConfig } from './config';
 import { logger } from './logger';
 import { splitMessage as defaultSplit } from './splitMessage';
+import { extractOutboundAttachments } from './outboundAttachments';
 import { AgentNotFoundError, RateLimitError } from './errors';
 
 export interface SendRequest {
@@ -136,7 +137,27 @@ export function createServerHandler(deps: ApiDeps) {
     }
 
     const target = { provider: providerName, channelId: info.channelId };
-    const parts = split(body.message);
+
+    // A push through this path carries files exactly as an agent reply does.
+    // Without this, a `[[attach: ...]]` marker sent by the CLI reached the
+    // channel as literal text while the image it named silently never went,
+    // which is worse than not supporting attachments at all: the sender
+    // believes a chart was delivered and the reader sees a stray marker.
+    const extracted = await extractOutboundAttachments(
+      body.message,
+      outboundAttachmentConfig.root,
+    );
+    if (extracted.rejected.length > 0) {
+      await log.error(
+        'api:attachment-rejected',
+        `agent=${body.agentId} ${extracted.rejected.join('; ')}`,
+      );
+    }
+    const parts = split(extracted.text);
+    // A message that is only a marker still sends, carrying the file alone.
+    if (parts.length === 0 && extracted.files.length > 0) {
+      parts.push('');
+    }
 
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
@@ -144,7 +165,12 @@ export function createServerHandler(deps: ApiDeps) {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           // Mention only on the first part; provider decides how to render.
-          await provider.send(target, { text: part, mention: i === 0 && !!body.mention });
+          // Files ride with the first part so they appear above the prose.
+          await provider.send(target, {
+            text: part,
+            mention: i === 0 && !!body.mention,
+            files: i === 0 && extracted.files.length > 0 ? extracted.files : undefined,
+          });
           lastError = undefined;
           break;
         } catch (err) {

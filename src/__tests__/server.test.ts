@@ -515,3 +515,118 @@ test('parseBody rejects invalid JSON', async () => {
   req.destroy = () => {};
   await assert.rejects(mod.parseBody!(req), /Invalid JSON/);
 });
+
+// --- outbound attachments on the push path ---
+//
+// The queue path (an agent replying to chat) already extracted these. This path
+// is the one a scheduled job or a CLI push uses, and it did not. The marker
+// therefore reached the channel as literal text while the file it named was
+// never uploaded, so the sender believed a chart had been delivered and the
+// reader saw a stray marker. These tests pin the fix.
+
+test('POST /api/send uploads a marked file and strips the marker from the text', async () => {
+  const os = await import('node:os');
+  const fsp = await import('node:fs/promises');
+  const nodePath = await import('node:path');
+
+  const root = await fsp.mkdtemp(nodePath.join(os.tmpdir(), 'relay-outbound-'));
+  await fsp.writeFile(nodePath.join(root, 'chart.png'), 'not-really-a-png');
+  const prev = process.env.OUTBOUND_ATTACH_ROOT;
+  process.env.OUTBOUND_ATTACH_ROOT = root;
+
+  const seen: { text: string; files?: string[] }[] = [];
+  const provider = makeProvider('discord');
+  provider.send = async (_t, msg) => {
+    seen.push({ text: msg.text, files: msg.files });
+  };
+  const server = await startTestServer(
+    makeDeps({ providers: new Map([['discord', provider]]) }),
+  );
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'Here is the chart.\n[[attach: chart.png]]' },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].text, 'Here is the chart.');
+    assert.equal(seen[0].files?.length, 1);
+    assert.match(String(seen[0].files?.[0]), /chart\.png$/);
+  } finally {
+    server.close();
+    process.env.OUTBOUND_ATTACH_ROOT = prev;
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('POST /api/send refuses a path escaping the attachment root and still sends the text', async () => {
+  const os = await import('node:os');
+  const fsp = await import('node:fs/promises');
+  const nodePath = await import('node:path');
+
+  const base = await fsp.mkdtemp(nodePath.join(os.tmpdir(), 'relay-outbound-'));
+  const root = nodePath.join(base, 'public');
+  await fsp.mkdir(root);
+  await fsp.writeFile(nodePath.join(base, 'secret.png'), 'private');
+  const prev = process.env.OUTBOUND_ATTACH_ROOT;
+  process.env.OUTBOUND_ATTACH_ROOT = root;
+
+  const seen: { text: string; files?: string[] }[] = [];
+  const provider = makeProvider('discord');
+  provider.send = async (_t, msg) => {
+    seen.push({ text: msg.text, files: msg.files });
+  };
+  const server = await startTestServer(
+    makeDeps({ providers: new Map([['discord', provider]]) }),
+  );
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: 'text\n[[attach: ../secret.png]]' },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].text, 'text');
+    assert.equal(seen[0].files, undefined);
+  } finally {
+    server.close();
+    process.env.OUTBOUND_ATTACH_ROOT = prev;
+    await fsp.rm(base, { recursive: true, force: true });
+  }
+});
+
+test('POST /api/send sends a file even when the message is only a marker', async () => {
+  const os = await import('node:os');
+  const fsp = await import('node:fs/promises');
+  const nodePath = await import('node:path');
+
+  const root = await fsp.mkdtemp(nodePath.join(os.tmpdir(), 'relay-outbound-'));
+  await fsp.writeFile(nodePath.join(root, 'solo.png'), 'bytes');
+  const prev = process.env.OUTBOUND_ATTACH_ROOT;
+  process.env.OUTBOUND_ATTACH_ROOT = root;
+
+  const seen: { text: string; files?: string[] }[] = [];
+  const provider = makeProvider('discord');
+  provider.send = async (_t, msg) => {
+    seen.push({ text: msg.text, files: msg.files });
+  };
+  const server = await startTestServer(
+    makeDeps({ providers: new Map([['discord', provider]]) }),
+  );
+  try {
+    const res = await request(server, {
+      method: 'POST',
+      path: '/api/send',
+      body: { agentId: 'a-1', message: '[[attach: solo.png]]' },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].files?.length, 1);
+  } finally {
+    server.close();
+    process.env.OUTBOUND_ATTACH_ROOT = prev;
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});

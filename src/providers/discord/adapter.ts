@@ -250,7 +250,12 @@ export class DiscordProvider implements BridgeProvider {
       text = `<@${discordConfig.mentionUserId}> ${text}`;
     }
     try {
-      await channel.send(text);
+      // Text-only stays a bare string so the existing send path is unchanged.
+      await channel.send(
+        msg.files && msg.files.length > 0
+          ? { content: text || undefined, files: msg.files }
+          : text,
+      );
     } catch (err) {
       const rl = toRateLimitError(err);
       if (rl) throw rl;

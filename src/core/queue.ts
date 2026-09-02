@@ -8,11 +8,12 @@ import type {
 } from './types';
 import { splitMessage as defaultSplitMessage } from './splitMessage';
 import { renderTables } from './renderTables';
+import { extractOutboundAttachments } from './outboundAttachments';
 import { downloadAttachments as defaultDownload, formatAttachmentRefs } from './attachments';
 import { isSilence } from './ambient';
 import type { SusFactorScreener } from './susfactor';
 import type { SusAudit } from './susAudit';
-import { config } from './config';
+import { config, outboundAttachmentConfig } from './config';
 import { pendingDb } from './db/pending';
 
 interface QueueEntry {
@@ -452,9 +453,30 @@ export function createQueue(deps: QueueDeps) {
             `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${result.error}`,
           );
         }
-        const parts = split(renderTables(result.response));
-        for (const part of parts) {
-          await provider.send(target, { text: part });
+        // Attachment markers come out BEFORE table rendering and splitting, so a
+        // path never reaches renderTables, never counts toward the split budget,
+        // and never appears in the channel.
+        const extracted = await extractOutboundAttachments(
+          result.response,
+          outboundAttachmentConfig.root,
+        );
+        if (extracted.rejected.length > 0) {
+          void deps.logger.error(
+            'queue:attachment-rejected',
+            `agent=${conv.agentId} channel=${message.channelId} ${extracted.rejected.join('; ')}`,
+          );
+        }
+        const parts = split(renderTables(extracted.text));
+        // Files ride with the first part so they appear above the prose, and a
+        // reply that is nothing but an image still sends.
+        if (parts.length === 0 && extracted.files.length > 0) {
+          await provider.send(target, { text: '', files: extracted.files });
+        }
+        for (let i = 0; i < parts.length; i++) {
+          await provider.send(target, {
+            text: parts[i],
+            files: i === 0 && extracted.files.length > 0 ? extracted.files : undefined,
+          });
         }
       } else {
         const hint = conv.readOnly
