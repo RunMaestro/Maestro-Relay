@@ -5,6 +5,7 @@ import { maestro } from './core/maestro';
 import { createQueue } from './core/queue';
 import { startServer } from './core/api';
 import { buildProviders } from './core/providers';
+import { createLateNetworkErrorHandler, startProviderWithRetry } from './core/providerStart';
 import { createSusFactor } from './core/susfactor';
 import { createSusAudit } from './core/susAudit';
 import { pendingDb, MAX_REPLAY_ATTEMPTS } from './core/db/pending';
@@ -106,21 +107,10 @@ async function main() {
     logger,
   };
 
-  for (const [name, provider] of providers) {
-    try {
-      await provider.start(ctx);
-      logger.info('bridge/startup', `provider "${name}" started`);
-    } catch (err) {
-      await logger.error('bridge/startup', `provider "${name}" failed to start: ${String(err)}`);
-      process.exit(1);
-    }
-  }
-
+  // Serve the API before any provider connects. A platform outage then reads
+  // as a relay that is up and not ready (503), which is true. Before this the
+  // port stayed closed until Discord answered, so an outage looked like a crash.
   const server = startServer(providers, { inFlight: queue.inFlight });
-
-  // Providers are live now, so anything left over from the last run can be
-  // answered as if it had just arrived.
-  replayPending(queue.enqueue);
 
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
@@ -160,6 +150,25 @@ async function main() {
 
   process.on('SIGINT', () => void shutdown('SIGINT'));
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('uncaughtException', createLateNetworkErrorHandler(logger));
+
+  for (const [name, provider] of providers) {
+    try {
+      const started = await startProviderWithRetry(name, provider, ctx, {
+        logger,
+        shouldStop: () => shuttingDown,
+      });
+      if (!started) return;
+      logger.info('bridge/startup', `provider "${name}" started`);
+    } catch (err) {
+      await logger.error('bridge/startup', `provider "${name}" failed to start: ${String(err)}`);
+      process.exit(1);
+    }
+  }
+
+  // Providers are live now, so anything left over from the last run can be
+  // answered as if it had just arrived.
+  replayPending(queue.enqueue);
 }
 
 void main();

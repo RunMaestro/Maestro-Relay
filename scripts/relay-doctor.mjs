@@ -53,6 +53,13 @@ const CONFIG = {
   escalateCooldownMinutes: Number(process.env.RELAY_DOCTOR_COOLDOWN_MINUTES || 45),
   /** Repairs attempted for one signature before the doctor stops trying. */
   maxRepairAttempts: Number(process.env.RELAY_DOCTOR_MAX_REPAIRS || 3),
+  /**
+   * What the doctor probes to tell a network outage from a relay fault. Any
+   * HTTP answer counts as reachable. Only a failed connection counts as down.
+   */
+  upstreamProbeUrl: process.env.RELAY_DOCTOR_UPSTREAM_URL || 'https://discord.com/api/v10/gateway',
+  /** Minutes an upstream outage lasts before the desktop is told, once. */
+  upstreamNotifyMinutes: Number(process.env.RELAY_DOCTOR_UPSTREAM_NOTIFY_MINUTES || 60),
 };
 
 const STATE_PATH =
@@ -120,6 +127,16 @@ const SIGNATURES = [
     repair: null,
     summary: 'maestro-cli exceeded its timeout',
   },
+  {
+    id: 'upstream-unreachable',
+    // Read by checkService against the relay's provider startup failure, and by
+    // checkErrorLog against queue lines like every other entry. The host could
+    // not reach the platform, so the network is at fault and a restart cannot
+    // help. checkService acts on it only when its own probe also fails.
+    match: /ConnectTimeoutError|Connect Timeout Error|Opening handshake has timed out|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH/i,
+    repair: null,
+    summary: 'this host cannot reach the chat platform; the network is down, not the relay',
+  },
 ];
 
 // --- State ---------------------------------------------------------------
@@ -131,6 +148,10 @@ const EMPTY_STATE = {
   /** Inode of the log the offset belongs to, so rotation resets it. */
   logInode: null,
   lastProbeIso: null,
+  /** When the doctor first saw the platform unreachable. Null while it is reachable. */
+  upstreamOutageSinceIso: null,
+  /** When the desktop was told about the current outage, so it is told once. */
+  upstreamNotifiedIso: null,
   /** signatureId → { lastEscalatedIso, repairAttempts } */
   signatures: {},
 };
@@ -321,33 +342,111 @@ const REPAIRS = {
 
 // --- Checks --------------------------------------------------------------
 
-/** C1/C2/C3: is the service up, serving, and attached to its provider? */
-async function checkService({ dryRun }) {
+/** True while the relay API answers, whether or not its providers are connected. */
+async function isServing() {
+  const r = await probeUrl(`http://127.0.0.1:${CONFIG.apiPort}/api/health`);
+  return r.ok && r.json !== null && typeof r.json.providers === 'object';
+}
+
+/** The newest provider startup failure in the relay's error log, or null. */
+function lastStartupFailure() {
+  if (!existsSync(RELAY_ERROR_LOG)) return null;
+  const lines = readFileSync(RELAY_ERROR_LOG, 'utf8')
+    .split('\n')
+    .filter((l) => l.includes('[bridge/startup]') && l.includes('failed to start'));
+  return lines.at(-1) ?? null;
+}
+
+/**
+ * Can this host reach the chat platform at all?
+ *
+ * Returns null when it can. Otherwise returns a description of the outage and
+ * how long it has lasted. The probe is the evidence. The relay's own startup
+ * failure is named beside it when it carries the upstream-unreachable
+ * signature, so the report shows both sides agreeing.
+ */
+async function checkUpstream(state) {
+  const probe = await probeUrl(CONFIG.upstreamProbeUrl, 10_000);
+  if (probe.ok) {
+    state.upstreamOutageSinceIso = null;
+    state.upstreamNotifiedIso = null;
+    return null;
+  }
+  if (!state.upstreamOutageSinceIso) state.upstreamOutageSinceIso = new Date().toISOString();
+  const minutes = Math.round(minutesSince(state.upstreamOutageSinceIso));
+  const sig = SIGNATURES.find((s) => s.id === 'upstream-unreachable');
+  const last = lastStartupFailure();
+  const agrees = last && sig.match.test(last) ? '; the relay log shows the same failure' : '';
+  return `${CONFIG.upstreamProbeUrl} is unreachable from this host (${probe.error}) for ${minutes}m${agrees}`;
+}
+
+/** Record an upstream outage, and tell the desktop once when it lasts. */
+function noteUpstreamOutage(state, detail, { dryRun }) {
+  record('warn', 'upstream-unreachable', detail);
+  const lasting = minutesSince(state.upstreamOutageSinceIso) >= CONFIG.upstreamNotifyMinutes;
+  if (lasting && !state.upstreamNotifiedIso && !dryRun) {
+    state.upstreamNotifiedIso = new Date().toISOString();
+    notifyDesktop('Maestro Relay cannot reach its chat platform', detail);
+  }
+}
+
+/**
+ * C1/C2/C3: is the service up, serving, and attached to its provider?
+ *
+ * A restart repairs the relay. It cannot repair the network between this host
+ * and the platform. On 2026-09-14 discord.com timed out for ten hours. Every
+ * heartbeat restarted the relay, every restart failed its 45s readiness wait,
+ * and an agent was paged for an outage nobody here could fix. So the doctor
+ * probes the platform before it blames the relay.
+ */
+async function checkService({ dryRun }, state) {
   const health = await probeUrl(`http://127.0.0.1:${CONFIG.apiPort}/api/health`);
 
-  const reachable = health.ok && health.status === 200 && health.json?.success === true;
-  if (reachable) {
+  // The relay answers 503 while a provider is still connecting. A body with a
+  // providers map therefore means the process is serving, whatever the status.
+  const serving = health.ok && health.json !== null && typeof health.json.providers === 'object';
+  if (serving) {
     const providers = health.json.providers || {};
     const down = Object.entries(providers)
       .filter(([, ready]) => !ready)
       .map(([name]) => name);
-    if (down.length === 0) {
+    if (health.status === 200 && health.json.success === true && down.length === 0) {
+      state.upstreamOutageSinceIso = null;
+      state.upstreamNotifiedIso = null;
       record('ok', 'service', `up ${Math.round(health.json.uptime)}s, providers ready`, {
         uptimeSeconds: health.json.uptime,
         providers,
       });
       return { healthy: true };
     }
-    record('fault', 'provider-down', `provider(s) not ready: ${down.join(', ')}`);
+    record('fault', 'provider-down', `provider(s) not ready: ${down.join(', ') || 'none reported'}`);
   } else {
     const why = health.ok ? `HTTP ${health.status}` : health.error;
     record('fault', 'service-down', `relay API unreachable on :${CONFIG.apiPort} (${why})`);
+  }
+
+  const outage = await checkUpstream(state);
+
+  // A serving relay retries its own provider start. A restart would only throw
+  // that progress away and start the connection wait again.
+  if (serving && outage) {
+    noteUpstreamOutage(state, `${outage}. The relay is serving and retrying by itself, so it was not restarted.`, {
+      dryRun,
+    });
+    return { healthy: false, repaired: false };
   }
 
   // The relay is already unreachable or degraded here, so there is no live
   // reply to protect and waiting for idle would just stall the recovery.
   const repair = await REPAIRS.restart({ dryRun, force: true });
   if (!repair.ok) {
+    // The dead process came back and serves, but cannot connect. The relay is
+    // repaired. The network is the part still broken, and no restart fixes it.
+    if (outage && (await isServing())) {
+      record('repaired', 'service', `${repair.note.split(',')[0]}; API serving again`);
+      noteUpstreamOutage(state, `${outage}. The relay is serving and retrying by itself.`, { dryRun });
+      return { healthy: false, repaired: true };
+    }
     record('escalate', 'service-restart-failed', repair.note);
     return { healthy: false, repaired: false };
   }
@@ -727,7 +826,7 @@ async function main() {
   const state = opts.reset ? { ...EMPTY_STATE } : loadState();
   state.lastRunIso = new Date().toISOString();
 
-  const service = await checkService(opts);
+  const service = await checkService(opts, state);
 
   // Every downstream check reads state the relay only produces while running.
   let logResult = { faults: [] };
@@ -782,7 +881,16 @@ async function main() {
   const report = {
     timestamp: state.lastRunIso,
     exitCode,
-    status: exitCode === 0 ? 'healthy' : exitCode === 1 ? 'repaired' : 'needs-attention',
+    // Exit 0 with a fault on record is an upstream outage: nothing here can
+    // repair it, so nobody is paged, but the report must not call it healthy.
+    status:
+      exitCode === 0
+        ? findings.some((f) => f.level === 'fault')
+          ? 'degraded'
+          : 'healthy'
+        : exitCode === 1
+          ? 'repaired'
+          : 'needs-attention',
     findings,
   };
 
