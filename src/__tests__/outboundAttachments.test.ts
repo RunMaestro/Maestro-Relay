@@ -20,6 +20,9 @@ async function fixture(): Promise<{ root: string; outside: string; cleanup: () =
   await fs.writeFile(path.join(root, 'notes.md'), '# secret-ish');
   await fs.writeFile(path.join(outside, 'id_ed25519'), 'PRIVATE KEY');
   await fs.writeFile(path.join(outside, 'stolen.png'), 'PNG');
+  await fs.mkdir(path.join(root, 'pedcast'), { recursive: true });
+  await fs.writeFile(path.join(root, 'pedcast', 'episode.mp3'), 'ID3');
+  await fs.writeFile(path.join(outside, 'episode.mp3'), 'ID3');
   return { root, outside, cleanup: () => fs.rm(base, { recursive: true, force: true }) };
 }
 
@@ -49,6 +52,20 @@ test('a path inside the root resolves', async () => {
   const f = await fixture();
   const r = await resolveOutboundFile('table.png', f.root);
   assert.equal(r.ok, true);
+  await f.cleanup();
+});
+
+test('an mp3 inside the root resolves', async () => {
+  const f = await fixture();
+  const r = await resolveOutboundFile('pedcast/episode.mp3', f.root);
+  assert.equal(r.ok, true);
+  await f.cleanup();
+});
+
+test('an mp3 outside the root is refused', async () => {
+  const f = await fixture();
+  const r = await resolveOutboundFile('../private/episode.mp3', f.root);
+  assert.equal(r.ok, false);
   await f.cleanup();
 });
 
