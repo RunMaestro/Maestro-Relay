@@ -6,6 +6,7 @@ import type {
   ConversationRecord,
   IncomingAttachment,
   IncomingMessage,
+  OutgoingMessage,
 } from '../core/types';
 
 function makeMessage(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
@@ -34,6 +35,7 @@ function defaultSendResult(extra: Record<string, unknown> = {}) {
 
 interface MockProviderInstance extends BridgeProvider {
   sentTexts: string[];
+  sentMessages: OutgoingMessage[];
 }
 
 interface MockSetup {
@@ -62,15 +64,18 @@ function createMocks(overrides: Partial<ConversationRecord> = {}): MockSetup {
   };
 
   const sentTexts: string[] = [];
+  const sentMessages: OutgoingMessage[] = [];
   const provider: MockProviderInstance = {
     name: 'mock',
     sentTexts,
+    sentMessages,
     async start() {},
     async stop() {},
     isReady: () => true,
     resolveConversation: () => conv,
     send: async (_target, msg) => {
       sentTexts.push(msg.text);
+      sentMessages.push(msg);
     },
     findOrCreateAgentChannel: async () => ({
       channelId: 'channel-1',
@@ -156,6 +161,27 @@ test('queue does not call downloadAttachments when message has no attachments', 
   assert.equal(deps._mocks.getAgentCwd.mock.callCount(), 0);
   assert.equal(deps._mocks.send.mock.callCount(), 1);
   assert.equal(deps._mocks.send.mock.calls[0].arguments[1], 'just text');
+});
+
+test('queue mentions the first final response chunk for non-ambient turns only', async () => {
+  const { deps, provider } = createMocks();
+  deps.splitMessage = () => ['part-0', 'part-1'];
+
+  const { enqueue } = createQueue(deps);
+  enqueue(makeMessage({ content: 'finish this' }));
+  await settle();
+
+  assert.deepEqual(
+    provider.sentMessages.map((m) => ({ text: m.text, mention: m.mention })),
+    [
+      { text: 'part-0', mention: true },
+      { text: 'part-1', mention: undefined },
+      {
+        text: '-# 💬 150 tokens • $0.0010 • 5.0% context',
+        mention: undefined,
+      },
+    ],
+  );
 });
 
 test('queue sends only attachment refs when message content is empty', async () => {
@@ -438,6 +464,12 @@ test('queue still reports a thrown failure for a non-ambient turn', async () => 
     provider.sentTexts.some((t) => t.includes('Failed to get response from agent')),
     'an addressed turn still gets an error reply',
   );
+  assert.equal(
+    provider.sentMessages.find((m) => m.text.includes('Failed to get response from agent'))
+      ?.mention,
+    true,
+    'a non-ambient thrown failure should notify the user',
+  );
 });
 
 test('queue still reports a failure for a non-ambient turn', async () => {
@@ -452,10 +484,11 @@ test('queue still reports a failure for a non-ambient turn', async () => {
   enqueue(makeMessage({ content: 'hello' }));
   await settle();
 
-  assert.ok(
-    provider.sentTexts.some((t) => t.includes('could not complete this request')),
-    'an addressed turn still gets an error reply',
+  const failure = provider.sentMessages.find((m) =>
+    m.text.includes('could not complete this request'),
   );
+  assert.ok(failure, 'an addressed turn still gets an error reply');
+  assert.equal(failure.mention, true, 'a non-ambient failure should notify the user');
 });
 
 test('queue posts a successful ambient reply with no usage footer', async () => {
@@ -469,4 +502,5 @@ test('queue posts a successful ambient reply with no usage footer', async () => 
   await settle();
 
   assert.deepEqual(provider.sentTexts, ['The break-even win rate is 41%.']);
+  assert.equal(provider.sentMessages[0].mention, undefined, 'ambient replies should not notify');
 });

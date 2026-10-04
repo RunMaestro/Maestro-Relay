@@ -157,6 +157,7 @@ export function createQueue(deps: QueueDeps) {
 
     const target = { provider: message.provider, channelId: message.channelId };
     const messageTarget = { ...target, messageId: message.messageId };
+    const shouldMentionFinal = !options?.ambient;
 
     let reaction: ReactionHandle | undefined;
     if (provider.react) {
@@ -247,6 +248,7 @@ export function createQueue(deps: QueueDeps) {
               text:
                 `🛑 Blocked by SusFactor prompt screening (${reason}). ` +
                 `This message was not forwarded to the agent.`,
+              mention: shouldMentionFinal,
             });
           } else {
             void deps.logger.error(
@@ -255,6 +257,7 @@ export function createQueue(deps: QueueDeps) {
             );
             await provider.send(target, {
               text: '🛑 Prompt screening is unavailable and the relay is configured to fail closed. Message not forwarded.',
+              mention: shouldMentionFinal,
             });
           }
 
@@ -344,7 +347,11 @@ export function createQueue(deps: QueueDeps) {
             `agent=${conv.agentId} session=${conv.sessionId ?? 'new'} channel=${message.channelId} error=${result.error}`,
           );
         }
-        for (const m of toOutgoing(result.response, { split, renderTables, mention: false })) {
+        for (const m of toOutgoing(result.response, {
+          split,
+          renderTables,
+          mention: shouldMentionFinal,
+        })) {
           await sendWithRetry((x) => provider.send(target, x), m);
         }
       } else {
@@ -358,6 +365,7 @@ export function createQueue(deps: QueueDeps) {
         );
         await provider.send(target, {
           text: `⚠️ The agent could not complete this request.${hint}`,
+          mention: shouldMentionFinal,
         });
       }
 
@@ -393,6 +401,7 @@ export function createQueue(deps: QueueDeps) {
       if (!options?.ambient) {
         await provider.send(target, {
           text: '❌ Failed to get response from agent. Check relay logs for details.',
+          mention: shouldMentionFinal,
         });
       }
     }
